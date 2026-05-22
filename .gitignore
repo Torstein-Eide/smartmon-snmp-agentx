@@ -1,0 +1,49 @@
+# Build outputs
+*.o
+*.a
+*.la
+*.lo
+*.so
+*.dylib
+*.dll
+*.exe
+.deps/
+.libs/
+
+# Autotools generated files
+/Makefile
+src/snmp-agentxd/Makefile
+src/snmp-agentxd/Makefile.in
+aclocal.m4
+autom4te.cache/
+config.cache
+config.guess
+config.h
+config.h.in
+config.log
+config.status
+config.sub
+configure
+depcomp
+install-sh
+libtool
+ltmain.sh
+missing
+stamp-h1
+
+# Generated project artifacts
+src/snmp-agentxd/smartmon-snmp-agentxd
+src/snmp-agentxd/smartmon-snmp-agentxd.8
+src/snmp-agentxd/smartmon-snmp-agentxd.service
+src/snmp-agentxd/tests/test_datasrc
+src/snmp-agentxd/tests/test_json
+
+# Local test/runtime output
+.tmp/
+.build/
+build/
+
+# Editor and OS noise
+*~
+*.swp
+.DS_Store
