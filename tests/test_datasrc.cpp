@@ -22,14 +22,14 @@ extern "C" void syslog_stub(int, const char *fmt, ...) {
 
 #define syslog syslog_stub
 int g_verbosity = 0;
-#include "../agentxd_cache.cpp"
-#include "../agentxd_json.cpp"
-#include "../agentxd_datasrc.cpp"
+#include "../src/agentxd_cache.cpp"
+#include "../src/agentxd_json.cpp"
+#include "../src/agentxd_datasrc.cpp"
 #undef syslog
 
-#include "../agentxd_cache.h"
-#include "../agentxd_datasrc.h"
-#include "../agentxd_json.h"
+#include "../src/agentxd_cache.h"
+#include "../src/agentxd_datasrc.h"
+#include "../src/agentxd_json.h"
 
 // ---------------------------------------------------------------------------
 // Load a fixture file and return the device index (0 on failure)

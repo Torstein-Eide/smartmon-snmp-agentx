@@ -1,7 +1,7 @@
 // test_json.cpp — unit tests for agentxd_json parser
 
 #include "test_util.h"
-#include "../agentxd_json.h"
+#include "../src/agentxd_json.h"
 
 #include <climits>
 #include <cstdio>

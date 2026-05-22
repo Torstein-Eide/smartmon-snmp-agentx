@@ -12,8 +12,7 @@
 
 # Autotools generated files
 /Makefile
-src/snmp-agentxd/Makefile
-src/snmp-agentxd/Makefile.in
+/Makefile.in
 aclocal.m4
 autom4te.cache/
 config.cache
@@ -32,11 +31,11 @@ missing
 stamp-h1
 
 # Generated project artifacts
-src/snmp-agentxd/smartmon-snmp-agentxd
-src/snmp-agentxd/smartmon-snmp-agentxd.8
-src/snmp-agentxd/smartmon-snmp-agentxd.service
-src/snmp-agentxd/tests/test_datasrc
-src/snmp-agentxd/tests/test_json
+/smartmon-snmp-agentxd
+/smartmon-snmp-agentxd.service
+/man/smartmon-snmp-agentxd.8
+/tests/test_datasrc
+/tests/test_json
 
 # Local test/runtime output
 .tmp/

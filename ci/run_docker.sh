@@ -58,7 +58,7 @@ docker build \
 # ---------------------------------------------------------------------------
 # Run integration test
 # If .tmp/source/ has JSON files, mount them to override the committed fixtures.
-# Otherwise the image uses src/snmp-agentxd/tests/fixtures/ baked in at build time.
+# Otherwise the image uses tests/fixtures/ baked in at build time.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Running integration test ==="

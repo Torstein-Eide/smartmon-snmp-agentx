@@ -65,15 +65,15 @@ RUN mkdir -p /build && cd /build && \
 
 # ---------------------------------------------------------------------------
 # Unit + integration tests (no net-snmp runtime needed)
-# Fixtures are committed at src/snmp-agentxd/tests/fixtures/
+# Fixtures are committed at tests/fixtures/
 # ---------------------------------------------------------------------------
-RUN cd /src/src/snmp-agentxd/tests && \
-    make test FIXTURES=/src/src/snmp-agentxd/tests/fixtures CXX=g++
+RUN cd /src/tests && \
+    make test FIXTURES=/src/tests/fixtures CXX=g++
 
 # ---------------------------------------------------------------------------
 # Smoke-test: binary must exist and respond to -h
 # ---------------------------------------------------------------------------
-RUN /build/src/snmp-agentxd/smartmon-snmp-agentxd -h 2>&1 | grep -q "usage\|Usage\|Options\|-c\|config" \
+RUN /build/smartmon-snmp-agentxd -h 2>&1 | grep -q "usage\|Usage\|Options\|-c\|config" \
     && echo "Binary smoke-test PASSED"
 
 # ---------------------------------------------------------------------------
@@ -84,8 +84,8 @@ RUN /build/src/snmp-agentxd/smartmon-snmp-agentxd -h 2>&1 | grep -q "usage\|Usag
 RUN cp /src/ci/run_integration_test.sh /usr/local/bin/run_integration_test.sh \
     && chmod +x /usr/local/bin/run_integration_test.sh
 
-ENV AGENTXD_BIN=/build/src/snmp-agentxd/smartmon-snmp-agentxd
-ENV FIXTURES=/src/src/snmp-agentxd/tests/fixtures
+ENV AGENTXD_BIN=/build/smartmon-snmp-agentxd
+ENV FIXTURES=/src/tests/fixtures
 ENV OUTPUT=/output
 
 RUN mkdir -p /output \

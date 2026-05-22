@@ -88,9 +88,10 @@ fi
 # ---------------------------------------------------------------------------
 if [ -z "$BUILD_DIR" ]; then
     for candidate in \
-        "$REPO_ROOT/src/snmp-agentxd/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/build/src/snmp-agentxd/smartmon-snmp-agentxd" \
-        /build/src/snmp-agentxd/smartmon-snmp-agentxd
+        "$REPO_ROOT/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/.build/configure/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/build/smartmon-snmp-agentxd" \
+        /build/smartmon-snmp-agentxd
     do
         if [ -x "$candidate" ]; then
             BUILD_DIR="$(dirname "$candidate")"
@@ -171,15 +172,16 @@ fi
 # ---------------------------------------------------------------------------
 # Assemble the list of files to deploy
 # ---------------------------------------------------------------------------
-AGENTXD_SRC="$REPO_ROOT/src/snmp-agentxd"
+BIN_SRC="$REPO_ROOT/bin"
+SYSTEMD_SRC="$REPO_ROOT/systemd"
 
 BINARIES=("$BINARY")
-[ "$INSTALL_COLLECT" -eq 1 ] && BINARIES+=("$AGENTXD_SRC/smartmon-collect")
+[ "$INSTALL_COLLECT" -eq 1 ] && BINARIES+=("$BIN_SRC/smartmon-collect")
 
-SERVICE_FILES=("$AGENTXD_SRC/smartmon-snmp-agentxd.service.in")
+SERVICE_FILES=("$SYSTEMD_SRC/smartmon-snmp-agentxd.service.in")
 [ "$INSTALL_COLLECT" -eq 1 ] && SERVICE_FILES+=(
-    "$AGENTXD_SRC/smartmon-collect.service"
-    "$AGENTXD_SRC/smartmon-collect.timer"
+    "$SYSTEMD_SRC/smartmon-collect.service"
+    "$SYSTEMD_SRC/smartmon-collect.timer"
 )
 
 MIB_FILES=("$REPO_ROOT"/doc/SMARTMON-*.mib)

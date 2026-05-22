@@ -63,9 +63,10 @@ fi
 # ---------------------------------------------------------------------------
 if [ -z "$BUILD_DIR" ]; then
     for candidate in \
-        "$REPO_ROOT/src/snmp-agentxd/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/build/src/snmp-agentxd/smartmon-snmp-agentxd" \
-        /build/src/snmp-agentxd/smartmon-snmp-agentxd
+        "$REPO_ROOT/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/.build/configure/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/build/smartmon-snmp-agentxd" \
+        /build/smartmon-snmp-agentxd
     do
         if [ -x "$candidate" ]; then
             BINARY="$candidate"
@@ -75,7 +76,6 @@ if [ -z "$BUILD_DIR" ]; then
     done
 else
     BINARY="$BUILD_DIR/smartmon-snmp-agentxd"
-    [ -x "$BINARY" ] || BINARY="$BUILD_DIR/src/snmp-agentxd/smartmon-snmp-agentxd"
 fi
 
 if [ -z "${BINARY:-}" ] || [ ! -x "$BINARY" ]; then
@@ -88,7 +88,9 @@ SYSCONFDIR="/etc"
 UNITDIR="/lib/systemd/system"
 MIBDIR="/usr/share/snmp/mibs"
 CONFDIR="$SYSCONFDIR/smartmontools"
-AGENTXD_SRC="$REPO_ROOT/src/snmp-agentxd"
+BIN_SRC="$REPO_ROOT/bin"
+MAN_SRC="$REPO_ROOT/man"
+SYSTEMD_SRC="$REPO_ROOT/systemd"
 
 echo "=== Installing smartmon-snmp-agentxd ==="
 echo "  binary      : $BINARY"
@@ -143,7 +145,7 @@ install -m 755 "$BINARY" "$SBINDIR/smartmon-snmp-agentxd"
 echo "  $SBINDIR/smartmon-snmp-agentxd"
 
 if [ "$INSTALL_COLLECT" -eq 1 ]; then
-    COLLECT_SCRIPT="$AGENTXD_SRC/smartmon-collect"
+    COLLECT_SCRIPT="$BIN_SRC/smartmon-collect"
     if [ -f "$COLLECT_SCRIPT" ]; then
         install -m 755 "$COLLECT_SCRIPT" "$SBINDIR/smartmon-collect"
         echo "  $SBINDIR/smartmon-collect"
@@ -196,8 +198,8 @@ echo "  runtime libraries OK"
 # Man page (if built)
 # ---------------------------------------------------------------------------
 for candidate in \
-    "$REPO_ROOT/doc/smartmon-snmp-agentxd.8" \
-    "$(dirname "$BINARY")/../../doc/smartmon-snmp-agentxd.8"
+    "$MAN_SRC/smartmon-snmp-agentxd.8" \
+    "$(dirname "$BINARY")/../man/smartmon-snmp-agentxd.8"
 do
     if [ -f "$candidate" ]; then
         MANDIR="${PREFIX}/share/man/man8"
@@ -254,7 +256,7 @@ echo "--- installing systemd units ---"
 install -d "$UNITDIR"
 
 # agentxd service (substitute @variables@)
-UNIT_SRC="$AGENTXD_SRC/smartmon-snmp-agentxd.service.in"
+UNIT_SRC="$SYSTEMD_SRC/smartmon-snmp-agentxd.service.in"
 UNIT_DEST="$UNITDIR/smartmon-snmp-agentxd.service"
 if [ -f "$UNIT_SRC" ]; then
     sed \
@@ -270,7 +272,7 @@ fi
 # collect service + timer
 if [ "$INSTALL_COLLECT" -eq 1 ]; then
     for unit in smartmon-collect.service smartmon-collect.timer; do
-        src="$AGENTXD_SRC/$unit"
+        src="$SYSTEMD_SRC/$unit"
         [ -f "$src" ] || continue
         dest="$UNITDIR/$unit"
         install -m 644 "$src" "$dest"

@@ -4,7 +4,12 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'src/snmp-agentxd/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'bin/**'
+      - 'etc/**'
+      - 'man/**'
+      - 'systemd/**'
       - 'ci/Dockerfile.agentxd'
       - 'ci/run_integration_test.sh'
       - '.github/workflows/snmp-agentxd.yml'
@@ -13,7 +18,12 @@ on:
   pull_request:
     branches: [ "main" ]
     paths:
-      - 'src/snmp-agentxd/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'bin/**'
+      - 'etc/**'
+      - 'man/**'
+      - 'systemd/**'
       - 'ci/Dockerfile.agentxd'
       - 'ci/run_integration_test.sh'
       - '.github/workflows/snmp-agentxd.yml'
@@ -36,7 +46,7 @@ jobs:
 
       - name: Run tests
         run: |
-          cd src/snmp-agentxd/tests
+          cd tests
           make test
 
   # ---------------------------------------------------------------------------
@@ -101,7 +111,7 @@ jobs:
             --enable=warning,style,performance \
             --suppress=missingIncludeSystem \
             --suppress=unmatchedSuppression \
-            -I src/snmp-agentxd \
-            src/snmp-agentxd/*.cpp src/snmp-agentxd/*.h \
+            -I src \
+            src/*.cpp src/*.h \
             --suppress=unusedFunction \
             2>&1 | tee cppcheck.txt

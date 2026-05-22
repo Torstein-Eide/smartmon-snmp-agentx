@@ -80,13 +80,13 @@ sudo scripts/install-agentxd.sh
 ### Manual install
 
 ```bash
-sudo install -m 755 .build/configure/src/snmp-agentxd/smartmon-snmp-agentxd /usr/sbin/
-sudo install -m 644 src/snmp-agentxd/smartmon-snmp-agentxd.conf \
+sudo install -m 755 .build/configure/smartmon-snmp-agentxd /usr/sbin/
+sudo install -m 644 etc/smartmon-snmp-agentxd.conf \
     /etc/smartmontools/snmp-agentxd.conf
 sudo install -m 644 doc/SMARTMON-*.mib /usr/share/snmp/mibs/
 sudo sed -e 's|@sbindir@|/usr/sbin|' \
          -e 's|@sysconfdir@|/etc|' \
-    src/snmp-agentxd/smartmon-snmp-agentxd.service.in \
+    systemd/smartmon-snmp-agentxd.service.in \
     > /lib/systemd/system/smartmon-snmp-agentxd.service
 sudo systemctl daemon-reload
 ```
@@ -198,7 +198,7 @@ make -j$(nproc)
 ### Unit tests
 
 ```bash
-cd src/snmp-agentxd/tests
+cd tests
 make test
 ```
 
@@ -211,7 +211,7 @@ Requires `snmpd` and the built binary:
 ci/run_integration_test.sh
 
 # Or specify explicitly:
-AGENTXD_BIN=.build/configure/src/snmp-agentxd/smartmon-snmp-agentxd \
+AGENTXD_BIN=.build/configure/smartmon-snmp-agentxd \
     ci/run_integration_test.sh
 ```
 

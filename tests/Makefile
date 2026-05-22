@@ -3,8 +3,8 @@
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++14 -Wall -Wextra -g
-SRCDIR   := ..
-REPO_ROOT := $(abspath ../../..)
+SRCDIR   := ../src
+REPO_ROOT := $(abspath ..)
 FIXTURES ?= $(abspath fixtures)
 BUILDDIR ?= $(REPO_ROOT)/.build/snmp-agentxd/tests
 

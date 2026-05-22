@@ -11,7 +11,7 @@
 #
 # Defaults (all overridable via environment variables):
 #   AGENTXD_BIN  — searched in common build locations relative to repo root
-#   FIXTURES     — src/snmp-agentxd/tests/fixtures (committed test data)
+#   FIXTURES     — tests/fixtures (committed test data)
 #   OUTPUT       — .tmp/test/
 #
 # Known fixture values verified (device index is discovered dynamically):
@@ -34,10 +34,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Locate the binary — check env var, then common build locations
 if [ -z "${AGENTXD_BIN:-}" ]; then
     for candidate in \
-        /build/src/snmp-agentxd/smartmon-snmp-agentxd \
-        "$REPO_ROOT/.build/configure/src/snmp-agentxd/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/build/src/snmp-agentxd/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/src/snmp-agentxd/smartmon-snmp-agentxd"
+        /build/smartmon-snmp-agentxd \
+        "$REPO_ROOT/.build/configure/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/build/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/smartmon-snmp-agentxd"
     do
         if [ -x "$candidate" ]; then
             AGENTXD_BIN="$candidate"
@@ -47,7 +47,7 @@ if [ -z "${AGENTXD_BIN:-}" ]; then
     AGENTXD_BIN="${AGENTXD_BIN:-}"
 fi
 
-FIXTURES="${FIXTURES:-$REPO_ROOT/src/snmp-agentxd/tests/fixtures}"
+FIXTURES="${FIXTURES:-$REPO_ROOT/tests/fixtures}"
 OUTPUT="${OUTPUT:-$REPO_ROOT/.tmp/test}"
 
 # Use a per-run temp dir for the AgentX socket so no root is needed
