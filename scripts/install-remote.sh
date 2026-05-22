@@ -11,6 +11,7 @@
 # Options:
 #   --prefix PREFIX      Installation prefix on remote (default: /usr)
 #   --build-dir DIR      Local directory containing the built binary
+#   --export-dir DIR     Local export directory from ci/build_debian11_export.sh
 #   --ssh-key FILE       SSH private key (-i FILE)
 #   --port PORT          SSH port (default: 22)
 #   --state-dir DIR      JSON state directory on remote
@@ -27,6 +28,10 @@
 #   # Deploy to ops@server01 using default build location
 #   scripts/install-remote.sh ops@server01
 #
+#   # Build in Debian 11 and deploy that exported binary
+#   ci/build_debian11_export.sh
+#   scripts/install-remote.sh ops@server01
+#
 #   # Deploy to a non-standard SSH port with a specific key
 #   scripts/install-remote.sh --port 2222 --ssh-key ~/.ssh/ops_ed25519 ops@server01
 #
@@ -41,6 +46,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Defaults
 PREFIX="/usr"
 BUILD_DIR=""
+EXPORT_DIR=""
 SSH_KEY=""
 SSH_PORT=22
 STATE_DIR="/run/smartmontools/json"
@@ -55,6 +61,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --prefix)       PREFIX="$2";       shift 2 ;;
         --build-dir)    BUILD_DIR="$2";    shift 2 ;;
+        --export-dir)   EXPORT_DIR="$2";   shift 2 ;;
         --ssh-key)      SSH_KEY="$2";      shift 2 ;;
         --port)         SSH_PORT="$2";     shift 2 ;;
         --state-dir)    STATE_DIR="$2";    shift 2 ;;
@@ -86,10 +93,13 @@ fi
 # ---------------------------------------------------------------------------
 # Locate the built binary
 # ---------------------------------------------------------------------------
-if [ -z "$BUILD_DIR" ]; then
+if [ -n "$EXPORT_DIR" ]; then
+    BUILD_DIR="$EXPORT_DIR"
+elif [ -z "$BUILD_DIR" ]; then
     for candidate in \
+        "$REPO_ROOT/.tmp/export/debian11/smartmon-snmp-agentxd" \
         "$REPO_ROOT/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/.build/configure/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/.build/smartmon-snmp-agentxd" \
         "$REPO_ROOT/build/smartmon-snmp-agentxd" \
         /build/smartmon-snmp-agentxd
     do
@@ -103,8 +113,14 @@ fi
 BINARY="${BUILD_DIR:+$BUILD_DIR/}smartmon-snmp-agentxd"
 if [ ! -x "$BINARY" ]; then
     echo "ERROR: Binary not found. Build first or pass --build-dir." >&2
+    echo "  Recommended export build: ci/build_debian11_export.sh" >&2
+    echo "  Expected export binary:   .tmp/export/debian11/smartmon-snmp-agentxd" >&2
     exit 1
 fi
+
+BUILD_INFO="$BUILD_DIR/build-info.txt"
+LINKAGE_INFO="$BUILD_DIR/ldd.txt"
+PACKAGE_INFO="$BUILD_DIR/packages.txt"
 
 # ---------------------------------------------------------------------------
 # SSH / rsync helpers
@@ -156,6 +172,7 @@ copy_to_remote() {
 # If it resolves to /usr/local, the binary was built against a custom
 # net-snmp and will fail on a clean target.  Abort with a clear message.
 # ---------------------------------------------------------------------------
+
 NON_SYSTEM_LIBS=$(ldd "$BINARY" 2>/dev/null | awk '{print $3}' | grep -E '^/usr/local' || true)
 if [ -n "$NON_SYSTEM_LIBS" ]; then
     echo "" >&2
@@ -163,9 +180,13 @@ if [ -n "$NON_SYSTEM_LIBS" ]; then
     echo "$NON_SYSTEM_LIBS" >&2
     echo "" >&2
     echo "Rebuild the binary against the system net-snmp:" >&2
-    echo "  apt-get install libsnmp-dev" >&2
-    echo "  ./configure && make" >&2
+    echo "  ci/build_debian11_export.sh" >&2
     echo "Then re-run this script." >&2
+    exit 1
+fi
+
+if [ -f "$LINKAGE_INFO" ] && grep -q '/usr/local' "$LINKAGE_INFO"; then
+    echo "ERROR: export linkage report contains /usr/local libraries: $LINKAGE_INFO" >&2
     exit 1
 fi
 
@@ -192,6 +213,15 @@ echo "  prefix       : $PREFIX"
 echo "  state_dir    : $STATE_DIR"
 echo "  ssh port     : $SSH_PORT"
 echo "  binary       : $BINARY"
+if [ -f "$BUILD_INFO" ]; then
+    echo "  build info   : $BUILD_INFO"
+fi
+if [ -f "$LINKAGE_INFO" ]; then
+    echo "  linkage      : $LINKAGE_INFO"
+fi
+if [ -f "$PACKAGE_INFO" ]; then
+    echo "  packages     : $PACKAGE_INFO"
+fi
 echo "  install poll : $([ "$INSTALL_COLLECT" -eq 1 ] && echo yes || echo no)"
 [ "$DRY_RUN" -eq 1 ] && echo "  *** DRY RUN — no changes will be made ***"
 echo ""

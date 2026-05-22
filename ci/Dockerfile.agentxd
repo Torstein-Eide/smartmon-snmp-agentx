@@ -15,7 +15,7 @@
 # The image:
 #   1. Adds net-snmp build + runtime deps on top of the docker-build base
 #   2. Copies MIB files into /usr/share/snmp/mibs/ for human-readable snmpwalk
-#   3. Builds the full smartmontools tree with --with-snmp-agentx
+#   3. Builds the standalone AgentX daemon sources
 #   4. Runs the agentxd unit + integration tests against fixture JSON files
 #   5. Verifies the binary responds to -h
 #   6. On docker run: executes the live server+client integration test
@@ -26,7 +26,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
 # Net-SNMP build + runtime dependencies
-# (docker-build base already has autoconf, automake, g++, make, pkg-config)
+# (docker-build base already has g++, make, and common build tools)
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libsnmp-dev \
@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ---------------------------------------------------------------------------
 # Copy source tree — use rsync with .gitignore rules so local build artifacts
-# (config.status, Makefile, *.o, …) are excluded from /src.
+# (*.o, .build/, .tmp/, ...) are excluded from /src.
 # ---------------------------------------------------------------------------
 COPY . /src-raw
 RUN rsync -a --filter=':- .gitignore' --exclude='.git' /src-raw/ /src/ \
@@ -53,15 +53,7 @@ RUN cp /src/doc/SMARTMON-*.mib /usr/share/snmp/mibs/
 # Build
 # ---------------------------------------------------------------------------
 WORKDIR /src
-RUN ./autogen.sh --force
-
-RUN mkdir -p /build && cd /build && \
-    SMARTMONTOOLS_TEST_BUILD=1 \
-    /src/configure \
-        --with-snmp-agentx \
-        --disable-static \
-        CXXFLAGS="-O2 -Wall" \
-    && SMARTMONTOOLS_TEST_BUILD=1 make -j"$(nproc)"
+RUN make BUILDDIR=/build SYSCONFDIR=/etc
 
 # ---------------------------------------------------------------------------
 # Unit + integration tests (no net-snmp runtime needed)

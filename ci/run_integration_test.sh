@@ -35,7 +35,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ -z "${AGENTXD_BIN:-}" ]; then
     for candidate in \
         /build/smartmon-snmp-agentxd \
-        "$REPO_ROOT/.build/configure/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/.build/smartmon-snmp-agentxd" \
         "$REPO_ROOT/build/smartmon-snmp-agentxd" \
         "$REPO_ROOT/smartmon-snmp-agentxd"
     do

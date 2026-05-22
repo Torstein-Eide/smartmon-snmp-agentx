@@ -1,0 +1,14 @@
+.git/
+.build/
+.tmp/
+build/
+*.o
+*.a
+*.la
+*.lo
+*.so
+*.dylib
+*.dll
+*.exe
+.deps/
+.libs/

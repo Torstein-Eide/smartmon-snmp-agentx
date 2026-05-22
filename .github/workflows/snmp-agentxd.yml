@@ -13,8 +13,7 @@ on:
       - 'ci/Dockerfile.agentxd'
       - 'ci/run_integration_test.sh'
       - '.github/workflows/snmp-agentxd.yml'
-      - 'configure.ac'
-      - 'Makefile.am'
+      - 'Makefile'
   pull_request:
     branches: [ "main" ]
     paths:
@@ -27,8 +26,7 @@ on:
       - 'ci/Dockerfile.agentxd'
       - 'ci/run_integration_test.sh'
       - '.github/workflows/snmp-agentxd.yml'
-      - 'configure.ac'
-      - 'Makefile.am'
+      - 'Makefile'
   workflow_dispatch:
 
 jobs:

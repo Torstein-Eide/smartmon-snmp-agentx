@@ -61,9 +61,18 @@ MIB files are installed to `/usr/share/snmp/mibs/`.
 
 ## Prerequisites
 
-- **`snmpd`** (net-snmp ≥ 5.8) configured as AgentX master
+- **`g++`** with C++14 support
+- **`make`**
+- **`libsnmp-dev`** for net-snmp headers, libraries, and `net-snmp-config`
+- **`snmp`** and **`snmpd`** for live SNMP integration tests
 - **`smartd`** configured with `--jsonstate` to write JSON state files
 - Read access to the `state_dir` configured for smartd
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt-get install g++ make libsnmp-dev snmp snmpd
+```
 
 ---
 
@@ -72,7 +81,6 @@ MIB files are installed to `/usr/share/snmp/mibs/`.
 ### From a source build
 
 ```bash
-./configure --with-snmp-agentx
 make -j$(nproc)
 sudo scripts/install-agentxd.sh
 ```
@@ -80,7 +88,7 @@ sudo scripts/install-agentxd.sh
 ### Manual install
 
 ```bash
-sudo install -m 755 .build/configure/smartmon-snmp-agentxd /usr/sbin/
+sudo install -m 755 .build/smartmon-snmp-agentxd /usr/sbin/
 sudo install -m 644 etc/smartmon-snmp-agentxd.conf \
     /etc/smartmontools/snmp-agentxd.conf
 sudo install -m 644 doc/SMARTMON-*.mib /usr/share/snmp/mibs/
@@ -189,10 +197,32 @@ snmpwalk -v2c -c public -m ALL localhost \
 ### Build
 
 ```bash
-./autogen.sh --force
-mkdir -p .build/configure && cd .build/configure
-../../configure --with-snmp-agentx --disable-static CXXFLAGS="-O2 -Wall"
 make -j$(nproc)
+```
+
+### Static build
+
+Full static linking depends on static versions of net-snmp and its dependency
+libraries being installed on the build host:
+
+```bash
+make clean
+make LDFLAGS="-static"
+```
+
+Check the result with:
+
+```bash
+ldd .build/smartmon-snmp-agentxd
+```
+
+A fully static binary usually reports `not a dynamic executable`. If full static
+linking fails because static net-snmp dependencies are unavailable, use a
+partially static C++ runtime build instead:
+
+```bash
+make clean
+make LDFLAGS="-static-libstdc++ -static-libgcc"
 ```
 
 ### Unit tests
@@ -207,11 +237,11 @@ make test
 Requires `snmpd` and the built binary:
 
 ```bash
-# Auto-detects binary in .build/configure/
+# Auto-detects binary in .build/
 ci/run_integration_test.sh
 
 # Or specify explicitly:
-AGENTXD_BIN=.build/configure/smartmon-snmp-agentxd \
+AGENTXD_BIN=.build/smartmon-snmp-agentxd \
     ci/run_integration_test.sh
 ```
 
@@ -229,6 +259,29 @@ ci/run_docker.sh
 
 This builds using `ghcr.io/smartmontools/docker-build:master` as the base and
 runs the full integration test suite inside a container.
+
+### Debian 11 export build
+
+Use the Debian 11 export build when you need a release binary linked against
+Debian 11 system net-snmp libraries instead of libraries from your local build
+environment:
+
+```bash
+ci/build_debian11_export.sh
+```
+
+Artifacts are written to `.tmp/export/debian11/`:
+
+| File | Description |
+|------|-------------|
+| `smartmon-snmp-agentxd` | Exported daemon binary |
+| `ldd.txt` | Dynamic library linkage report |
+| `file.txt` | Binary type report |
+| `packages.txt` | Debian package versions used for the build |
+| `build-info.txt` | Compiler and net-snmp build flags |
+
+The export build fails if `ldd.txt` contains `/usr/local`, which prevents
+accidental linkage against a developer-installed net-snmp build.
 
 ---
 

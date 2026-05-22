@@ -64,7 +64,7 @@ fi
 if [ -z "$BUILD_DIR" ]; then
     for candidate in \
         "$REPO_ROOT/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/.build/configure/smartmon-snmp-agentxd" \
+        "$REPO_ROOT/.build/smartmon-snmp-agentxd" \
         "$REPO_ROOT/build/smartmon-snmp-agentxd" \
         /build/smartmon-snmp-agentxd
     do
@@ -187,7 +187,7 @@ if ldd "$BINARY" 2>/dev/null | grep -q "not found"; then
         ldd "$BINARY" 2>/dev/null | grep "not found" >&2
         echo "" >&2
         echo "The binary must be built against the system net-snmp (libsnmp-dev)." >&2
-        echo "Rebuild with:  ./configure && make" >&2
+        echo "Rebuild with:  make" >&2
         echo "Ensure libsnmp-dev is installed before building." >&2
         exit 1
     fi
