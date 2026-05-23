@@ -1,0 +1,436 @@
+# ci/integration_test.yaml — config and test specs for run_integration_test_v3.py
+
+config:
+  ent_oid: "1.3.6.1.4.1.9999.1.1"
+  community: "public"
+  snmp_port_base: 10161
+  trap_port_base: 12162
+  binary_search_paths:
+    - "/build/smartmon-snmp-agentxd"
+    - ".build/smartmon-snmp-agentxd"
+    - "build/smartmon-snmp-agentxd"
+    - "smartmon-snmp-agentxd"
+  agentx_register_poll_attempts: 40
+  agentx_register_poll_interval: 0.5
+
+fixture_variants:
+  patterns:
+    - "*.failing.json"
+    - "*.selftest-fail.json"
+    - "*.attr-fail.ata.json"
+    - "*.nofail.ata.json"
+    - "*.uncorrected.scsi.json"
+
+# Each device entry describes how to discover the device's index from the walk
+# output.  The runner greps the walk file for a line matching value_pattern and
+# extracts the second-to-last OID component as the index.
+#
+# oid_grep_re: ERE applied to the full OID portion (after ENT) of matching lines.
+#   The device index is the second-to-last dot-separated component.
+# value_pattern: literal string matched against the " = VALUE" part of the line.
+
+discovery:
+  nvme:
+    label: "Samsung 980 PRO"
+    walk_label: "nvme"
+    oid_grep_re: '\.3\.1\.15\.1\.15\.[0-9]+\.1'
+    value_pattern: "Counter64: 1827"
+
+  sata:
+    label: "WDC SELFTESTS"
+    walk_label: "sata"
+    oid_grep_re: '\.4\.1\.9\.1\.9\.[0-9]+\.9'
+    value_pattern: "Counter64: 4321"
+
+  sas:
+    label: "SEAGATE ST4000NM0023"
+    walk_label: "sas"
+    oid_grep_re: '\.5\.1\.6\.1\.2\.[0-9]+\.1'
+    value_pattern: "Gauge32: 3"
+
+# Walk definitions — which OID subtree to walk for each label.
+# Used by both discovery and section tests.
+walks:
+  common: ".2"
+  nvme:   ".3"
+  sata:   ".4"
+  sas:    ".5"
+  sensor: ".6"
+
+# ---------------------------------------------------------------------------
+# Test sections
+# ---------------------------------------------------------------------------
+# Each section has:
+#   name:         Human-readable label for summary output
+#   walk:         Which walk file to query (key from walks: above)
+#   device:       (optional) Which discovery entry provides {D} substitution
+#   oid_template: (optional) OID suffix pattern shared by all tests in the section.
+#                 Supports {col} (replaced per-test) and {inst} (replaced per-test
+#                 when specified, otherwise removed).  Also supports {D}, {nvme},
+#                 {sata}, {sas} device-index substitutions.
+#   skip:         (optional) Skip reason — section is not run
+#   tests:        List of test entries
+#
+# Test entry fields:
+#   label:    Short description
+#   type:     "oid" (default) or "rows"
+#
+#   For type=oid with oid_template:
+#     col:    Column number substituted into {col} in the section's oid_template
+#     inst:   (optional) Instance index substituted into {inst} in the template
+#
+#   For type=oid without oid_template (or to override):
+#     oid:    Full OID suffix relative to ent_oid (e.g. ".2.1.1.0")
+#             Supports {D} for device index, {nvme}/{sata}/{sas} for cross-refs
+#   expected: ERE matched against the "= VALUE" part of the snmpwalk line
+#
+#   For type=rows:
+#     oid_regex: ERE suffix applied after ent_oid (dots must be pre-escaped)
+#     min:       Minimum number of matching lines expected
+
+sections:
+
+  - name: "Common MIB"
+    walk: "common"
+    # Each test references a different device so no shared oid_template; use oid: directly.
+    tests:
+      - {label: "deviceCount scalar",       oid: ".2.1.1.0",            expected: "Gauge32: [0-9]+"}
+      - {label: "device table >= 3 rows",   type: rows, oid_regex: '\.2\.1\.3\.1\.2\.', min: 3}
+      - {label: "NVMe path",                oid: ".2.1.3.1.3.{nvme}",   expected: 'STRING: "/dev/nvme[0-9]+"'}
+      - {label: "NVMe type = 5",            oid: ".2.1.3.1.4.{nvme}",   expected: "INTEGER: 5"}
+      - {label: "NVMe pollResult = 1",      oid: ".2.1.3.1.6.{nvme}",   expected: "INTEGER: 1"}
+      - {label: "NVMe pollExitStatus = 0",  oid: ".2.1.3.1.7.{nvme}",   expected: "Gauge32: 0"}
+      - {label: "SATA path",                oid: ".2.1.3.1.3.{sata}",   expected: 'STRING: ".*"'}
+      - {label: "SATA type = 1",            oid: ".2.1.3.1.4.{sata}",   expected: "INTEGER: 1"}
+      - {label: "SATA pollResult = 1",      oid: ".2.1.3.1.6.{sata}",   expected: "INTEGER: 1"}
+      - {label: "SATA pollExitStatus = 0",  oid: ".2.1.3.1.7.{sata}",   expected: "Gauge32: 0"}
+      - {label: "SAS path",                 oid: ".2.1.3.1.3.{sas}",    expected: 'STRING: ".*"'}
+      - {label: "SAS type = 3",             oid: ".2.1.3.1.4.{sas}",    expected: "INTEGER: 3"}
+      - {label: "SAS pollResult = 1",       oid: ".2.1.3.1.6.{sas}",    expected: "INTEGER: 1"}
+      - {label: "SAS pollExitStatus = 0",   oid: ".2.1.3.1.7.{sas}",    expected: "Gauge32: 0"}
+
+  # ---------------------------------------------------------------------------
+  # NVMe — Samsung 980 PRO 1TB
+  # ---------------------------------------------------------------------------
+
+  - name: "NVMe Health"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.15.1.{col}.{D}.1"
+    tests:
+      - {label: "col1  healthOverallStatus = 1 (passed)",         col: 1,  expected: "INTEGER: 1"}
+      - {label: "col2  criticalWarning (BITS) = 00",              col: 2,  expected: 'Hex-STRING: 00 *'}
+      - {label: "col7  dataUnitsRead",                            col: 7,  expected: "Counter64: 12004521"}
+      - {label: "col8  dataUnitsWritten",                         col: 8,  expected: "Counter64: 44110234"}
+      - {label: "col9  dataBytesRead",                            col: 9,  expected: "Counter64: 6146314752000"}
+      - {label: "col10 dataBytesWritten",                         col: 10, expected: "Counter64: 22584439808000"}
+      - {label: "col11 hostReadCommands",                         col: 11, expected: "Counter64: 198443021"}
+      - {label: "col12 hostWriteCommands",                        col: 12, expected: "Counter64: 612303918"}
+      - {label: "col13 controllerBusyTimeMinutes = 1832",         col: 13, expected: "Counter64: 1832"}
+      - {label: "col14 powerCycles = 14",                         col: 14, expected: "Counter64: 14"}
+      - {label: "col15 powerOnHours = 1827",                      col: 15, expected: "Counter64: 1827"}
+      - {label: "col16 unsafeShutdowns = 3",                      col: 16, expected: "Counter64: 3"}
+      - {label: "col17 mediaDataIntegrityErrors = 0",             col: 17, expected: "Counter64: 0"}
+      - {label: "col18 errorInformationLogEntries = 0",           col: 18, expected: "Counter64: 0"}
+      - {label: "col19 warningTemperatureTimeMinutes = 0",        col: 19, expected: "Counter64: 0"}
+      - {label: "col20 criticalTemperatureTimeMinutes = 0",       col: 20, expected: "Counter64: 0"}
+      - {label: "col22 currentSelfTestOperationValue = 0",        col: 22, expected: "Gauge32: 0"}
+      - {label: "col23 currentSelfTestOperationString",           col: 23, expected: 'STRING: "No self-test in progress"'}
+
+  - name: "NVMe Self-test"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.18.1.{col}.{D}.{inst}"
+    tests:
+      - {label: "table >= 2 entries",                     type: rows, oid_regex: '\.3\.1\.18\.1\.2\.', min: 2}
+      - {label: "entry[1] col2  testNumber = 1",          col: 2,  inst: 1, expected: "Gauge32: 1"}
+      - {label: "entry[1] col3  testType = 1 (Short)",    col: 3,  inst: 1, expected: "INTEGER: 1"}
+      - {label: "entry[1] col4  result = 0 (no error)",   col: 4,  inst: 1, expected: "INTEGER: 0"}
+      - {label: "entry[1] col5  resultStr",               col: 5,  inst: 1, expected: 'STRING: "Completed without error"'}
+      - {label: "entry[1] col6  powerOnHoursAtTest=1826", col: 6,  inst: 1, expected: "Counter64: 1826"}
+      - {label: "entry[1] col8  namespaceId = 0xFFFFFFFF",col: 8,  inst: 1, expected: "Gauge32: 4294967295"}
+      - {label: "entry[1] col9  segmentNumber = 0",       col: 9,  inst: 1, expected: "Gauge32: 0"}
+      - {label: "entry[1] col10 statusCodeType = 0",      col: 10, inst: 1, expected: "Gauge32: 0"}
+      - {label: "entry[1] col11 statusCode = 0",          col: 11, inst: 1, expected: "Gauge32: 0"}
+      - {label: "entry[2] col2  testNumber = 2",          col: 2,  inst: 2, expected: "Gauge32: 2"}
+      - {label: "entry[2] col3  testType = 2 (Extended)", col: 3,  inst: 2, expected: "INTEGER: 2"}
+      - {label: "entry[2] col4  result = 0 (no error)",   col: 4,  inst: 2, expected: "INTEGER: 0"}
+      - {label: "entry[2] col6  powerOnHoursAtTest=1800", col: 6,  inst: 2, expected: "Counter64: 1800"}
+
+  - name: "NVMe Controller"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.3.1.{col}.{D}.1"
+    tests:
+      - {label: "col1  modelNumber",                col: 1,  expected: 'STRING: "Samsung SSD 980 PRO 1TB"'}
+      - {label: "col2  serialNumber",               col: 2,  expected: 'STRING: "S6B0NJ0N123456"'}
+      - {label: "col3  firmwareVersion",            col: 3,  expected: 'STRING: "5B2QGXA7"'}
+      - {label: "col4  pciVendorId = 5387",         col: 4,  expected: "Gauge32: 5387"}
+      - {label: "col6  totalCapacityBytes",         col: 6,  expected: "Counter64: 1000204886016"}
+      - {label: "col7  unallocatedCapacityBytes",   col: 7,  expected: "Counter64: 0"}
+      - {label: "col8  controllerId = 1",           col: 8,  expected: "Gauge32: 1"}
+      - {label: "col9  version = 1.3",              col: 9,  expected: 'STRING: "1.3"'}
+      - {label: "col10 namespaceCount = 1",         col: 10, expected: "Gauge32: 1"}
+      - {label: "col11 maxDataTransferPages = 0",   col: 11, expected: "Gauge32: 0"}
+      - {label: "col15 pciSubsystemId = 2",         col: 15, expected: "Gauge32: 2"}
+      - {label: "col16 versionValue = 66304",       col: 16, expected: "Gauge32: 66304"}
+      - {label: "col17 pciVendorIdText",            col: 17, expected: 'STRING: "YAMASHITA Systems Corp"'}
+      - {label: "col18 pciSubsystemIdText = empty", col: 18, expected: '""'}
+
+  - name: "NVMe Namespace"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.6.1.{col}.{D}.1"
+    tests:
+      - {label: "ns[1] col1  namespaceId = 1",         col: 1,  expected: "Gauge32: 1"}
+      - {label: "ns[1] col2  sizeBytes",               col: 2,  expected: "Counter64: 1000204886016"}
+      - {label: "ns[1] col3  capacityBytes",           col: 3,  expected: "Counter64: 1000204886016"}
+      - {label: "ns[1] col4  utilizationBytes",        col: 4,  expected: "Counter64: 998400000000"}
+      - {label: "ns[1] col5  formattedLbaSize = 512",  col: 5,  expected: "Gauge32: 512"}
+      - {label: "ns[1] col8  sizeBlocks",              col: 8,  expected: "Counter64: 1953525168"}
+      - {label: "ns[1] col10 utilizationBlocks",       col: 10, expected: "Counter64: 1950000000"}
+
+  - name: "NVMe Power State"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.9.1.{col}.{D}.{inst}"
+    # inst = power state index (starts at 0)
+    tests:
+      - {label: "ps[0] col2  operational = true",        col: 2,  inst: 0, expected: "INTEGER: 1"}
+      - {label: "ps[0] col3  maxPowerMilliWatts = 7000", col: 3,  inst: 0, expected: "Gauge32: 7000"}
+      - {label: "ps[0] col6  readLatencyRank = 0",       col: 6,  inst: 0, expected: "Gauge32: 0"}
+      - {label: "ps[0] col7  readThroughputRank = 0",    col: 7,  inst: 0, expected: "Gauge32: 0"}
+      - {label: "ps[0] col8  writeLatencyRank = 0",      col: 8,  inst: 0, expected: "Gauge32: 0"}
+      - {label: "ps[0] col9  writeThroughputRank = 0",   col: 9,  inst: 0, expected: "Gauge32: 0"}
+      - {label: "ps[0] col10 entryLatencyUsec = 0",      col: 10, inst: 0, expected: "Gauge32: 0"}
+      - {label: "ps[0] col11 exitLatencyUsec = 0",       col: 11, inst: 0, expected: "Gauge32: 0"}
+      - {label: "ps[1] col2  operational = false",       col: 2,  inst: 1, expected: "INTEGER: 2"}
+      - {label: "ps[1] col3  maxPowerMilliWatts = 10",   col: 3,  inst: 1, expected: "Gauge32: 10"}
+      - {label: "ps[1] col6  readLatencyRank = 3",       col: 6,  inst: 1, expected: "Gauge32: 3"}
+      - {label: "ps[1] col7  readThroughputRank = 3",    col: 7,  inst: 1, expected: "Gauge32: 3"}
+      - {label: "ps[1] col8  writeLatencyRank = 3",      col: 8,  inst: 1, expected: "Gauge32: 3"}
+      - {label: "ps[1] col9  writeThroughputRank = 3",   col: 9,  inst: 1, expected: "Gauge32: 3"}
+      - {label: "ps[1] col10 entryLatencyUsec = 5000",   col: 10, inst: 1, expected: "Gauge32: 5000"}
+      - {label: "ps[1] col11 exitLatencyUsec = 10000",   col: 11, inst: 1, expected: "Gauge32: 10000"}
+
+  - name: "NVMe LBA Format"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.12.1.{col}.{D}.{inst}"
+    # inst = "{nsId}.{fmtId}" — only one namespace and one format in fixture
+    tests:
+      - {label: "lba[0] col2 current = true",          col: 2, inst: "1.0", expected: "INTEGER: 1"}
+      - {label: "lba[0] col3 dataSizeBytes = 512",      col: 3, inst: "1.0", expected: "Gauge32: 512"}
+      - {label: "lba[0] col4 metadataSizeBytes = 0",    col: 4, inst: "1.0", expected: "Gauge32: 0"}
+      - {label: "lba[0] col5 relativePerformance = 0",  col: 5, inst: "1.0", expected: "Gauge32: 0"}
+
+  - name: "NVMe Error Log"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.21.1.{col}.{D}.1"
+    tests:
+      - {label: "errlog[1] col2  errorCount = 7",           col: 2,  expected: "Counter64: 7"}
+      - {label: "errlog[1] col3  sqid = 0",                 col: 3,  expected: "Gauge32: 0"}
+      - {label: "errlog[1] col4  commandId = 3",            col: 4,  expected: "Gauge32: 3"}
+      - {label: "errlog[1] col5  statusField = 5",          col: 5,  expected: "Gauge32: 5"}
+      - {label: "errlog[1] col8  nsid = 1",                 col: 8,  expected: "Gauge32: 1"}
+      - {label: "errlog[1] col10 statusCode = 5",           col: 10, expected: "Gauge32: 5"}
+      - {label: "errlog[1] col11 statusCodeType = 0",       col: 11, expected: "Gauge32: 0"}
+      - {label: "errlog[1] col12 doNotRetry = 2 (false)",   col: 12, expected: "INTEGER: 2"}
+      - {label: "errlog[1] col13 statusString",             col: 13, expected: 'STRING: "Invalid Field in Command"'}
+      - {label: "errlog[1] col14 phaseTag = 2 (false)",     col: 14, expected: "INTEGER: 2"}
+
+  - name: "NVMe Capability"
+    walk: "nvme"
+    device: nvme
+    oid_template: ".3.1.24.1.{col}.{D}.1"
+    tests:
+      - {label: "col1 firmwareUpdateRaw = 0",           col: 1, expected: "Gauge32: 0"}
+      - {label: "col2 firmwareSlotCount = 0",           col: 2, expected: "Gauge32: 0"}
+      - {label: "col3 firmwareResetRequired = false",   col: 3, expected: "INTEGER: 2"}
+      - {label: "col4 optionalAdminCommandRaw = 0",     col: 4, expected: "Gauge32: 0"}
+      - {label: "col5 optionalNvmCommandRaw = 0",       col: 5, expected: "Gauge32: 0"}
+      - {label: "col6 logPageAttributesRaw = 0",        col: 6, expected: "Gauge32: 0"}
+      - {label: "col7 optionalAdminCommandText = empty",col: 7, expected: '""'}
+      - {label: "col8 optionalNvmCommandText = empty",  col: 8, expected: '""'}
+      - {label: "col9 logPageAttributesText = empty",   col: 9, expected: '""'}
+
+  # ---------------------------------------------------------------------------
+  # SATA — WDC WD140EFGX SELFTESTS
+  # ---------------------------------------------------------------------------
+
+  - name: "SATA Info"
+    walk: "sata"
+    device: sata
+    oid_template: ".4.1.3.1.{col}.{D}"
+    # No trailing instance index — each drive has exactly one row
+    tests:
+      - {label: "col1  modelFamily",             col: 1,  expected: 'STRING: "Western Digital Red"'}
+      - {label: "col2  modelName",               col: 2,  expected: 'STRING: "WDC WD140EFGX-68B0GN0"'}
+      - {label: "col3  serialNumber",            col: 3,  expected: 'STRING: "WD140SELFTESTS"'}
+      - {label: "col4  firmwareVersion",         col: 4,  expected: 'STRING: "MGNTN10"'}
+      - {label: "col8  rotationRate = 5400",     col: 8,  expected: "Gauge32: 5400"}
+      - {label: "col10 logicalBlockSize = 4096", col: 10, expected: "Gauge32: 4096"}
+      - {label: "col12 userCapacityBytes",       col: 12, expected: "Counter64: 14000519643136"}
+      - {label: "col13 inSmartctlDb = 1",        col: 13, expected: "INTEGER: 1"}
+      - {label: "col14 smartAvailable = 1",      col: 14, expected: "INTEGER: 1"}
+      - {label: "col15 smartEnabled = 1",        col: 15, expected: "INTEGER: 1"}
+      - {label: "col16 trimSupported = 2",       col: 16, expected: "INTEGER: 2"}
+
+  - name: "SATA Health"
+    walk: "sata"
+    device: sata
+    oid_template: ".4.1.6.1.{col}.{D}"
+    # No trailing instance index — each drive has exactly one row
+    tests:
+      - {label: "col1 overallStatus = 1 (passed)", col: 1, expected: "INTEGER: 1"}
+      - {label: "col2 offlineStatusValue = 2",     col: 2, expected: "Gauge32: 2"}
+      - {label: "col4 powerCycles = 42",           col: 4, expected: "Counter64: 42"}
+      - {label: "col5 powerOnHours = 4321",        col: 5, expected: "Counter64: 4321"}
+      - {label: "col6 errorLogCount = 1",          col: 6, expected: "Gauge32: 1"}
+
+  - name: "SATA Attributes"
+    walk: "sata"
+    device: sata
+    oid_template: ".4.1.9.1.{col}.{D}.{inst}"
+    # inst = SMART attribute ID
+    tests:
+      - {label: "attr[1] col2  name = Raw_Read_Error_Rate", col: 2,  inst: 1, expected: 'STRING: "Raw_Read_Error_Rate"'}
+      - {label: "attr[1] col4  prefailure = 1 (true)",      col: 4,  inst: 1, expected: "INTEGER: 1"}
+      - {label: "attr[1] col5  updatedOnline = 1 (true)",   col: 5,  inst: 1, expected: "INTEGER: 1"}
+      - {label: "attr[1] col6  value = 200",                col: 6,  inst: 1, expected: "Gauge32: 200"}
+      - {label: "attr[1] col7  worst = 200",                col: 7,  inst: 1, expected: "Gauge32: 200"}
+      - {label: "attr[1] col8  threshold = 51",             col: 8,  inst: 1, expected: "Gauge32: 51"}
+      - {label: "attr[1] col9  rawValue = 0",               col: 9,  inst: 1, expected: "Counter64: 0"}
+      - {label: "attr[1] col10 rawStr = 0",                 col: 10, inst: 1, expected: 'STRING: "0"'}
+      - {label: "attr[9] col2  name = Power_On_Hours",      col: 2,  inst: 9, expected: 'STRING: "Power_On_Hours"'}
+      - {label: "attr[9] col4  prefailure = 2 (false)",     col: 4,  inst: 9, expected: "INTEGER: 2"}
+      - {label: "attr[9] col5  updatedOnline = 1 (true)",   col: 5,  inst: 9, expected: "INTEGER: 1"}
+      - {label: "attr[9] col6  value = 100",                col: 6,  inst: 9, expected: "Gauge32: 100"}
+      - {label: "attr[9] col7  worst = 100",                col: 7,  inst: 9, expected: "Gauge32: 100"}
+      - {label: "attr[9] col8  threshold = 0",              col: 8,  inst: 9, expected: "Gauge32: 0"}
+      - {label: "attr[9] col9  rawValue = 4321",            col: 9,  inst: 9, expected: "Counter64: 4321"}
+      - {label: "attr[9] col10 rawStr = 4321",              col: 10, inst: 9, expected: 'STRING: "4321"'}
+
+  - name: "SATA Self-test"
+    walk: "sata"
+    device: sata
+    oid_template: ".4.1.18.1.{col}.{D}.{inst}"
+    tests:
+      - {label: "table >= 3 entries",                      type: rows, oid_regex: '\.4\.1\.18\.1\.2\.', min: 3}
+      - {label: "entry[1] col2 testNumber = 1 (Short)",    col: 2, inst: 1, expected: "INTEGER: 1"}
+      - {label: "entry[1] col3 result = 1",                col: 3, inst: 1, expected: "INTEGER: 1"}
+      - {label: "entry[1] col4 passed = 1 (true)",         col: 4, inst: 1, expected: "INTEGER: 1"}
+      - {label: "entry[1] col5 remaining = 0%",            col: 5, inst: 1, expected: "Gauge32: 0"}
+      - {label: "entry[1] col6 powerOnHoursAtTest = 4300", col: 6, inst: 1, expected: "Counter64: 4300"}
+      - {label: "entry[1] col7 lbaFirstError = 0",         col: 7, inst: 1, expected: "Counter64: 0"}
+      - {label: "entry[2] col2 testNumber = 2 (Extended)", col: 2, inst: 2, expected: "INTEGER: 2"}
+      - {label: "entry[2] col3 result = 1",                col: 3, inst: 2, expected: "INTEGER: 1"}
+      - {label: "entry[2] col4 passed = 1 (true)",         col: 4, inst: 2, expected: "INTEGER: 1"}
+      - {label: "entry[2] col6 powerOnHoursAtTest = 4100", col: 6, inst: 2, expected: "Counter64: 4100"}
+      - {label: "entry[2] col7 lbaFirstError = 0",         col: 7, inst: 2, expected: "Counter64: 0"}
+      - {label: "entry[3] col2 testNumber = 1 (Short)",    col: 2, inst: 3, expected: "INTEGER: 1"}
+      - {label: "entry[3] col3 result = 0 (failed)",       col: 3, inst: 3, expected: "INTEGER: 0"}
+      - {label: "entry[3] col4 passed = 2 (false)",        col: 4, inst: 3, expected: "INTEGER: 2"}
+      - {label: "entry[3] col5 remaining = 0%",            col: 5, inst: 3, expected: "Gauge32: 0"}
+      - {label: "entry[3] col6 powerOnHoursAtTest = 3800", col: 6, inst: 3, expected: "Counter64: 3800"}
+      - {label: "entry[3] col7 lbaFirstError = 123456789", col: 7, inst: 3, expected: "Counter64: 123456789"}
+
+  - name: "SATA Error Log"
+    walk: "sata"
+    device: sata
+    oid_template: ".4.1.12.1.{col}.{D}.1"
+    tests:
+      - {label: "errlog[1] col2  errorNumber = 1",       col: 2,  expected: "Gauge32: 1"}
+      - {label: "errlog[1] col3  lifetimeHours = 4100",  col: 3,  expected: "Counter64: 4100"}
+      - {label: "errlog[1] col4  description",           col: 4,  expected: 'STRING: "Error: ICRC, ABRT at LBA = 0x0000abcd"'}
+      - {label: "errlog[1] col5  compRegError = 4",      col: 5,  expected: "Gauge32: 4"}
+      - {label: "errlog[1] col7  lba = 43981",           col: 7,  expected: "Counter64: 43981"}
+      - {label: "errlog[1] col12 stateValue = 15",       col: 12, expected: "INTEGER: 15"}
+
+  # ---------------------------------------------------------------------------
+  # SAS — SEAGATE ST4000NM0023
+  # ---------------------------------------------------------------------------
+
+  - name: "SAS Health"
+    walk: "sas"
+    device: sas
+    oid_template: ".5.1.6.1.{col}.{D}.1"
+    tests:
+      - {label: "col1 index = 1",                          col: 1, expected: "INTEGER: 1"}
+      - {label: "col2 grownDefectCount = 3",               col: 2, expected: "Gauge32: 3"}
+      - {label: "col3 primaryDefectCount = 0",             col: 3, expected: "Counter64: 0"}
+      - {label: "col4 selfTestStatus = 2 (not running)",   col: 4, expected: "INTEGER: 2"}
+      - {label: "col5 selfTestPercent = 0",                col: 5, expected: "Gauge32: 0"}
+
+  - name: "SAS Error Counters"
+    walk: "sas"
+    device: sas
+    oid_template: ".5.1.9.1.{col}.{D}.{inst}"
+    # inst = direction: 1=read, 2=write
+    tests:
+      - {label: "table >= 2 rows",                              type: rows, oid_regex: '\.5\.1\.9\.1\.2\.', min: 2}
+      - {label: "read  col2 correctedWithDelay = 0",            col: 2, inst: 1, expected: "Counter64: 0"}
+      - {label: "read  col3 correctedWithRetry = 0",            col: 3, inst: 1, expected: "Counter64: 0"}
+      - {label: "read  col4 correctedTotal = 0",                col: 4, inst: 1, expected: "Counter64: 0"}
+      - {label: "read  col5 uncorrectedTotal = 0",              col: 5, inst: 1, expected: "Counter64: 0"}
+      - {label: "read  col6 totalBytesProcessed",               col: 6, inst: 1, expected: "Counter64: 18432971"}
+      - {label: "read  col7 totalBytesTransferred",             col: 7, inst: 1, expected: "Counter64: 47221194000000"}
+      - {label: "read  col8 errorCount = 0",                    col: 8, inst: 1, expected: "Counter64: 0"}
+      - {label: "write col2 correctedWithDelay = 0",            col: 2, inst: 2, expected: "Counter64: 0"}
+      - {label: "write col5 uncorrectedTotal = 0",              col: 5, inst: 2, expected: "Counter64: 0"}
+      - {label: "write col6 totalBytesProcessed = 0",           col: 6, inst: 2, expected: "Counter64: 0"}
+      - {label: "write col7 totalBytesTransferred",             col: 7, inst: 2, expected: "Counter64: 6214377000000"}
+      - {label: "write col8 errorCount = 0",                    col: 8, inst: 2, expected: "Counter64: 0"}
+
+  - name: "SAS Self-test"
+    walk: "sas"
+    device: sas
+    oid_template: ".5.1.12.1.{col}.{D}.{inst}"
+    tests:
+      - {label: "table >= 2 entries",                          type: rows, oid_regex: '\.5\.1\.12\.1\.2\.', min: 2}
+      - {label: "entry[1] col2 testNumber = 1 (Short)",        col: 2, inst: 1, expected: "INTEGER: 1"}
+      - {label: "entry[1] col4 errorCode = 0",                 col: 4, inst: 1, expected: "INTEGER: 0"}
+      - {label: "entry[1] col5 resultStr = Completed",         col: 5, inst: 1, expected: 'STRING: "Completed"'}
+      - {label: "entry[1] col6 passed = 1 (true)",             col: 6, inst: 1, expected: "INTEGER: 1"}
+      - {label: "entry[1] col7 powerOnHoursAtTest = 8741",     col: 7, inst: 1, expected: "Counter64: 8741"}
+      - {label: "entry[1] col8 lbaFirstError = 0",             col: 8, inst: 1, expected: "Counter64: 0"}
+      - {label: "entry[2] col2 testNumber = 2 (Extended)",     col: 2, inst: 2, expected: "INTEGER: 2"}
+      - {label: "entry[2] col4 errorCode = 0",                 col: 4, inst: 2, expected: "INTEGER: 0"}
+      - {label: "entry[2] col5 resultStr = Completed",         col: 5, inst: 2, expected: 'STRING: "Completed"'}
+      - {label: "entry[2] col6 passed = 1 (true)",             col: 6, inst: 2, expected: "INTEGER: 1"}
+      - {label: "entry[2] col7 powerOnHoursAtTest = 8568",     col: 7, inst: 2, expected: "Counter64: 8568"}
+      - {label: "entry[2] col8 lbaFirstError = 0",             col: 8, inst: 2, expected: "Counter64: 0"}
+
+  - name: "SAS Info"
+    walk: "sas"
+    device: sas
+    oid_template: ".5.1.3.1.{col}.{D}.1"
+    tests:
+      - {label: "col1  vendor = SEAGATE",              col: 1,  expected: 'STRING: "SEAGATE"'}
+      - {label: "col2  product = ST4000NM0023",        col: 2,  expected: 'STRING: "ST4000NM0023"'}
+      - {label: "col3  revision = 0004",               col: 3,  expected: 'STRING: "0004"'}
+      - {label: "col4  compliance = SPC-4",            col: 4,  expected: 'STRING: "SPC-4"'}
+      - {label: "col5  serialNumber = Z1Z0ABCD",       col: 5,  expected: 'STRING: "Z1Z0ABCD"'}
+      - {label: "col7  scsiModelName",                 col: 7,  expected: 'STRING: "SEAGATE ST4000NM0023"'}
+      - {label: "col8  rotationRate = 7200",           col: 8,  expected: "Gauge32: 7200"}
+      - {label: "col9  formFactor = 3.5 inches",       col: 9,  expected: 'STRING: "3.5 inches"'}
+      - {label: "col10 logicalBlockSize = 512",        col: 10, expected: "Gauge32: 512"}
+      - {label: "col12 userCapacityBytes",             col: 12, expected: "Counter64: 4000787030016"}
+      - {label: "col13 powerCycles = 15",              col: 13, expected: "Counter64: 15"}
+      - {label: "col14 powerOnHours = 8741",           col: 14, expected: "Counter64: 8741"}
+
+  - name: "SAS Background Scan"
+    walk: "sas"
+    device: sas
+    oid_template: ".5.1.15.1.{col}.{D}.1"
+    tests:
+      - {label: "col1 status = 4 (Idle)",         col: 1, expected: "INTEGER: 4"}
+      - {label: "col2 progressPercent = 0",        col: 2, expected: "Gauge32: 0"}
+      - {label: "col3 scansPerformed = 3",         col: 3, expected: "Counter64: 3"}
+      - {label: "col4 mediumScansPerformed = 12",  col: 4, expected: "Counter64: 12"}
+
+  - name: "Sensor MIB"
+    walk: "sensor"
+    skip: "not yet implemented"
+    tests: []
