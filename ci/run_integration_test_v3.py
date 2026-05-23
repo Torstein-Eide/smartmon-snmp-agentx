@@ -399,9 +399,91 @@ def print_section_result(name: str, passed: int, failed: int, skipped: int,
         if skipped:
             summary += f", {_yellow(str(skipped) + ' skipped')}"
         print(f"{padded}  [{summary}]")
-        for msg in failures:
-            for line in msg.splitlines():
-                print(f"    {_red(line) if line.startswith('FAIL') else line}")
+
+
+# ---------------------------------------------------------------------------
+# Notification (trap delivery) tests
+# ---------------------------------------------------------------------------
+
+def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Path,
+                          trap_log: Path, ent_oid: str) -> tuple[int, int, list[str]]:
+    """Copy trigger fixture over live fixture, wait, verify traps received."""
+    passed = failed = 0
+    failures: list[str] = []
+
+    trigger_name = notif.get("trigger_fixture", "")
+    replace_name = notif.get("replace_fixture", "")
+    wait_sec = float(notif.get("wait_seconds", 3.0))
+    expected_traps = notif.get("expected_traps", [])
+
+    trigger_path = fixture_variants / trigger_name
+    replace_path = live_fixtures / replace_name
+
+    if not trigger_path.exists():
+        failures.append(f"FAIL: trigger fixture not found: {trigger_path}")
+        return 0, 1, failures
+    if not replace_path.exists():
+        failures.append(f"FAIL: live fixture not found: {replace_path}")
+        return 0, 1, failures
+
+    trap_before = trap_log.read_text() if trap_log.exists() else ""
+    shutil.copy2(trigger_path, replace_path)
+    time.sleep(wait_sec)
+    trap_after = trap_log.read_text() if trap_log.exists() else ""
+    new_trap_text = trap_after[len(trap_before):]
+
+    if not expected_traps:
+        if new_trap_text.strip():
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"FAIL: no trap received after fixture swap\n      traplog: {trap_log}")
+    else:
+        for et in expected_traps:
+            oid_suffix = et.get("oid_suffix", "")
+            value_pat = et.get("value_pattern", ".*")
+            oid_full = f"{ent_oid}{oid_suffix}"
+            pattern = re.compile(rf"{re.escape(oid_full)}.*{value_pat}")
+            if pattern.search(new_trap_text):
+                passed += 1
+            else:
+                failed += 1
+                failures.append(
+                    f"FAIL: trap OID not received\n"
+                    f"      oid     : {oid_full}\n"
+                    f"      pattern : {value_pat}\n"
+                    f"      traplog : {trap_log}"
+                )
+
+    return passed, failed, failures
+
+
+def run_notifications(cfg: dict, live_fixtures: Path, fixture_variants: Path,
+                      trap_log: Path, ent_oid: str,
+                      section_filter: Optional[str]
+                      ) -> tuple[int, int, int, list[tuple[str, list[str]]]]:
+    total_pass = total_fail = total_skip = 0
+    all_failures: list[tuple[str, list[str]]] = []
+
+    for notif in cfg.get("notifications", []):
+        name = notif.get("name", "(unnamed notification)")
+        if section_filter and section_filter.lower() not in name.lower():
+            continue
+        skip_reason = notif.get("skip")
+        if skip_reason:
+            print_section_result(name, 0, 0, 1, skip_reason, [])
+            total_skip += 1
+            continue
+        p, f, failures = run_notification_test(
+            notif, live_fixtures, fixture_variants, trap_log, ent_oid
+        )
+        print_section_result(name, p, f, 0, None, failures)
+        total_pass += p
+        total_fail += f
+        if failures:
+            all_failures.append((name, failures))
+
+    return total_pass, total_fail, total_skip, all_failures
 
 
 # ---------------------------------------------------------------------------
@@ -539,10 +621,10 @@ def main() -> int:
         # Run test sections
         print()
         total_pass = total_fail = total_skip = 0
-        sections = cfg.get("sections", [])
+        all_section_failures: list[tuple[str, list[str]]] = []
 
         section_filter = args.section
-        for section in sections:
+        for section in cfg.get("sections", []):
             name = section.get("name", "(unnamed)")
             if section_filter and section_filter.lower() not in name.lower():
                 continue
@@ -558,6 +640,27 @@ def main() -> int:
             total_pass += p
             total_fail += f
             total_skip += s
+            if failures:
+                all_section_failures.append((name, failures))
+
+        # Notification (trap delivery) tests
+        np, nf, ns, notif_failures = run_notifications(
+            cfg, live_fixtures, fixture_variants, trap_log, ent_oid, section_filter
+        )
+        total_pass += np
+        total_fail += nf
+        total_skip += ns
+        all_section_failures.extend(notif_failures)
+
+        # Print collected failures
+        if all_section_failures:
+            print()
+            print(_bold("=== Failures ==="))
+            for sec_name, msgs in all_section_failures:
+                print(f"  [{_bold(sec_name)}]")
+                for msg in msgs:
+                    for line in msg.splitlines():
+                        print(f"    {_red(line) if line.startswith('FAIL') else line}")
 
         # Final summary
         print()

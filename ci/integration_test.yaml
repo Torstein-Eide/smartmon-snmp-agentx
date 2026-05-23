@@ -470,3 +470,25 @@ sections:
       - {label: "s[10] col7 value = 38°C",                 col: 7,  inst: 10, expected: "INTEGER: 38"}
       - {label: "s[11] col3 name = Sensor 2",              col: 3,  inst: 11, expected: 'STRING: "Sensor 2"'}
       - {label: "s[11] col7 value = 41°C",                 col: 7,  inst: 11, expected: "INTEGER: 41"}
+
+# ---------------------------------------------------------------------------
+# Notification tests (SNMP trap delivery)
+# ---------------------------------------------------------------------------
+# Each entry swaps a "failing" fixture into the live fixture directory,
+# waits for inotify -> re-parse -> trap delivery, then checks snmptrapd output.
+#
+# Fields:
+#   trigger_fixture:  filename (from fixture-variants/) to copy over replace_fixture
+#   replace_fixture:  filename (in live fixtures/) to be overwritten
+#   wait_seconds:     how long to wait for trap delivery (inotify + parse + send)
+#   expected_traps:   list of {oid_suffix, value_pattern} to match in trapd.log
+#   skip:             skip reason string (omit to enable the test)
+
+notifications:
+  - name: "NVMe health fail trap"
+    trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.failing.json"
+    replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
+    expected_traps:
+      - {oid_suffix: ".3.2.2", value_pattern: ".*"}
