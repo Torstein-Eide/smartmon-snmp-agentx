@@ -427,7 +427,8 @@ def print_section_result(name: str, passed: int, failed: int, skipped: int,
 # ---------------------------------------------------------------------------
 
 def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Path,
-                          trap_log: Path, ent_oid: str) -> tuple[int, int, list[str]]:
+                          trap_log: Path, ent_oid: str,
+                          all_indices: dict[str, str]) -> tuple[int, int, list[str]]:
     """Apply a fixture action, wait, verify traps received."""
     passed = failed = 0
     failures: list[str] = []
@@ -492,7 +493,7 @@ def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Pa
             failures.append(f"FAIL: no trap received after fixture swap\n      traplog: {trap_log}")
     else:
         for et in expected_traps:
-            oid_suffix = et.get("oid_suffix", "")
+            oid_suffix = substitute_oid(et.get("oid_suffix", ""), None, all_indices)
             value_pat = et.get("value_pattern", ".*")
             oid_full = f"{ent_oid}{oid_suffix}"
             oid_forms = [re.escape(oid_full)]
@@ -515,6 +516,7 @@ def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Pa
 
 def run_notifications(cfg: dict, live_fixtures: Path, fixture_variants: Path,
                       trap_log: Path, ent_oid: str,
+                      all_indices: dict[str, str],
                       section_filter: Optional[str]
                       ) -> tuple[int, int, int, list[tuple[str, list[str]]]]:
     total_pass = total_fail = total_skip = 0
@@ -530,7 +532,7 @@ def run_notifications(cfg: dict, live_fixtures: Path, fixture_variants: Path,
             total_skip += 1
             continue
         p, f, failures = run_notification_test(
-            notif, live_fixtures, fixture_variants, trap_log, ent_oid
+            notif, live_fixtures, fixture_variants, trap_log, ent_oid, all_indices
         )
         print_section_result(name, p, f, 0, None, failures)
         total_pass += p
@@ -703,7 +705,7 @@ def main() -> int:
 
         # Notification (trap delivery) tests
         np, nf, ns, notif_failures = run_notifications(
-            cfg, live_fixtures, fixture_variants, trap_log, ent_oid, section_filter
+            cfg, live_fixtures, fixture_variants, trap_log, ent_oid, indices, section_filter
         )
         total_pass += np
         total_fail += nf

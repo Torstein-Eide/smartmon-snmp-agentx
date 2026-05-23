@@ -14,7 +14,7 @@ IMPORTS
     SmartmonAtaSelfTestResult, SmartmonScsiErrorDirection,
     SmartmonLogicalBlockAddress, smartmonRoot
         FROM SMARTMON-TC-MIB
-    smartmonDeviceIndex, smartmonDeviceName, smartmonDevicePath,
+    smartmonDeviceIndex, smartmonDevicePath,
     smartmonDeviceLastPollTime
         FROM SMARTMON-COMMON-MIB;
 
@@ -604,7 +604,8 @@ smartmonSasBgScanIndex OBJECT-TYPE
 
 smartmonSasHealthFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonSasScsiModelName,
+        smartmonSasSerialNumber,
         smartmonDevicePath,
         smartmonSasHealthOverallStatus,
         smartmonDeviceLastPollTime
@@ -616,7 +617,8 @@ smartmonSasHealthFailed NOTIFICATION-TYPE
 
 smartmonSasSelfTestFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonSasScsiModelName,
+        smartmonSasSerialNumber,
         smartmonDevicePath,
         smartmonSasSelfTestType,
         smartmonSasSelfTestResult,
@@ -631,7 +633,8 @@ smartmonSasSelfTestFailed NOTIFICATION-TYPE
 
 smartmonSasUncorrectedErrorsIncreased NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonSasScsiModelName,
+        smartmonSasSerialNumber,
         smartmonDevicePath,
         smartmonSasErrorDirection,
         smartmonSasUncorrectedErrors,

@@ -18,7 +18,7 @@ IMPORTS
     SmartmonAtaLogAddress, SmartmonAtaDevStatPage, SmartmonAtaOfflineStatus,
     SmartmonLogicalBlockAddress, smartmonRoot
         FROM SMARTMON-TC-MIB
-    smartmonDeviceIndex, smartmonDeviceName, smartmonDevicePath,
+    smartmonDeviceIndex, smartmonDevicePath,
     smartmonDeviceLastPollTime
         FROM SMARTMON-COMMON-MIB;
 
@@ -1892,7 +1892,8 @@ smartmonSataPendingDefectsLba OBJECT-TYPE
 
 smartmonSataHealthFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonSataModelName,
+        smartmonSataSerialNumber,
         smartmonDevicePath,
         smartmonSataHealthOverallStatus,
         smartmonDeviceLastPollTime
@@ -1904,7 +1905,8 @@ smartmonSataHealthFailed NOTIFICATION-TYPE
 
 smartmonSataAttrFailing NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonSataModelName,
+        smartmonSataSerialNumber,
         smartmonDevicePath,
         smartmonSataAttrId,
         smartmonSataAttrName,
@@ -1920,7 +1922,8 @@ smartmonSataAttrFailing NOTIFICATION-TYPE
 
 smartmonSataSelfTestFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonSataModelName,
+        smartmonSataSerialNumber,
         smartmonDevicePath,
         smartmonSataSelfTestType,
         smartmonSataSelfTestResult,

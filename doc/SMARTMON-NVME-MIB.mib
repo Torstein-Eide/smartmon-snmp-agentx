@@ -14,7 +14,7 @@ IMPORTS
     SmartmonPercentage, SmartmonNvmeSelfTestResult,
     SmartmonLogicalBlockAddress, smartmonRoot
         FROM SMARTMON-TC-MIB
-    smartmonDeviceIndex, smartmonDeviceName, smartmonDevicePath,
+    smartmonDeviceIndex, smartmonDevicePath,
     smartmonDeviceLastPollTime
         FROM SMARTMON-COMMON-MIB;
 
@@ -1252,7 +1252,8 @@ smartmonNvmeCapabilityIndex OBJECT-TYPE
 
 smartmonNvmeHealthFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonNvmeModelNumber,
+        smartmonNvmeSerialNumber,
         smartmonDevicePath,
         smartmonNvmeHealthOverallStatus,
         smartmonNvmeCriticalWarning,
@@ -1265,7 +1266,8 @@ smartmonNvmeHealthFailed NOTIFICATION-TYPE
 
 smartmonNvmeSelfTestFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonDeviceName,
+        smartmonNvmeModelNumber,
+        smartmonNvmeSerialNumber,
         smartmonDevicePath,
         smartmonNvmeSelfTestNumber,
         smartmonNvmeSelfTestResult,

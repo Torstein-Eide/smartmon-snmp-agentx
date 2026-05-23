@@ -116,8 +116,8 @@ static void append_date_time(netsnmp_variable_list **vars,
 }
 
 static void append_counter64_2idx(netsnmp_variable_list **vars,
-                                  const oid *col_oid, size_t col_len,
-                                  uint32_t idx1, uint32_t idx2,
+                                   const oid *col_oid, size_t col_len,
+                                   uint32_t idx1, uint32_t idx2,
                                   uint64_t value) {
     struct counter64 c64;
     c64.high = (u_long)(value >> 32);
@@ -127,7 +127,37 @@ static void append_counter64_2idx(netsnmp_variable_list **vars,
     inst[col_len] = (oid)idx1;
     inst[col_len + 1] = (oid)idx2;
     snmp_varlist_add_variable(vars, inst.data(), inst.size(),
-                              ASN_COUNTER64, (u_char*)&c64, sizeof(c64));
+                               ASN_COUNTER64, (u_char*)&c64, sizeof(c64));
+}
+
+static const CacheNvmeControllerRow *find_nvme_controller(uint32_t dev_idx) {
+    for (const auto &row : g_cache.nvme_controllers)
+        if (row.device_index == dev_idx)
+            return &row;
+    return nullptr;
+}
+
+static const CacheSataInfoRow *find_sata_info(uint32_t dev_idx) {
+    for (const auto &row : g_cache.sata_info)
+        if (row.device_index == dev_idx)
+            return &row;
+    return nullptr;
+}
+
+static const CacheSasInfoRow *find_sas_info(uint32_t dev_idx) {
+    for (const auto &row : g_cache.sas_info)
+        if (row.device_index == dev_idx)
+            return &row;
+    return nullptr;
+}
+
+static void append_device_path(netsnmp_variable_list **vars,
+                               uint32_t dev_idx,
+                               const CacheDeviceRow *dev) {
+    if (!dev)
+        return;
+    append_string(vars, oid_device_path, OID_LEN(oid_device_path),
+                  dev_idx, dev->path.c_str());
 }
 
 static void append_device_identity(netsnmp_variable_list **vars,
@@ -137,8 +167,46 @@ static void append_device_identity(netsnmp_variable_list **vars,
         return;
     append_string(vars, oid_device_name, OID_LEN(oid_device_name),
                   dev_idx, dev->name.c_str());
-    append_string(vars, oid_device_path, OID_LEN(oid_device_path),
-                  dev_idx, dev->path.c_str());
+    append_device_path(vars, dev_idx, dev);
+}
+
+static void append_nvme_identity(netsnmp_variable_list **vars,
+                                 uint32_t dev_idx,
+                                 const CacheDeviceRow *dev) {
+    const CacheNvmeControllerRow *ctrl = find_nvme_controller(dev_idx);
+    if (ctrl) {
+        append_string_2idx(vars, oid_nvme_model_number, OID_LEN(oid_nvme_model_number),
+                           dev_idx, 1, ctrl->model_number.c_str());
+        append_string_2idx(vars, oid_nvme_serial_number, OID_LEN(oid_nvme_serial_number),
+                           dev_idx, 1, ctrl->serial_number.c_str());
+    }
+    append_device_path(vars, dev_idx, dev);
+}
+
+static void append_sata_identity(netsnmp_variable_list **vars,
+                                 uint32_t dev_idx,
+                                 const CacheDeviceRow *dev) {
+    const CacheSataInfoRow *info = find_sata_info(dev_idx);
+    if (info) {
+        append_string(vars, oid_sata_model_name, OID_LEN(oid_sata_model_name),
+                      dev_idx, info->model_name.c_str());
+        append_string(vars, oid_sata_serial_number, OID_LEN(oid_sata_serial_number),
+                      dev_idx, info->serial_number.c_str());
+    }
+    append_device_path(vars, dev_idx, dev);
+}
+
+static void append_sas_identity(netsnmp_variable_list **vars,
+                                uint32_t dev_idx,
+                                const CacheDeviceRow *dev) {
+    const CacheSasInfoRow *info = find_sas_info(dev_idx);
+    if (info) {
+        append_string_2idx(vars, oid_sas_scsi_model_name, OID_LEN(oid_sas_scsi_model_name),
+                           dev_idx, 1, info->scsi_model_name.c_str());
+        append_string_2idx(vars, oid_sas_serial_number, OID_LEN(oid_sas_serial_number),
+                           dev_idx, 1, info->serial_number.c_str());
+    }
+    append_device_path(vars, dev_idx, dev);
 }
 
 // ---------------------------------------------------------------------------
@@ -161,10 +229,10 @@ void notify_device_health_changed(uint32_t dev_idx, int new_status) {
     }
 
     netsnmp_variable_list *vars = make_trap_header(notif_oid, notif_len);
-    append_device_identity(&vars, dev_idx, dev);
 
     if (dev) {
         if (dev->proto == PROTO_NVME) {
+            append_nvme_identity(&vars, dev_idx, dev);
             append_uint32_2idx(&vars,
                 oid_nvme_health_status, OID_LEN(oid_nvme_health_status),
                 dev_idx, 1, ASN_INTEGER, (u_long)new_status);
@@ -181,10 +249,12 @@ void notify_device_health_changed(uint32_t dev_idx, int new_status) {
                 break;
             }
         } else if (dev->proto == PROTO_ATA || dev->proto == PROTO_SAT) {
+            append_sata_identity(&vars, dev_idx, dev);
             append_uint32_2idx(&vars,
                 oid_sata_health_status, OID_LEN(oid_sata_health_status),
                 dev_idx, 1, ASN_INTEGER, (u_long)new_status);
         } else if (dev->proto == PROTO_SCSI || dev->proto == PROTO_SAS) {
+            append_sas_identity(&vars, dev_idx, dev);
             append_uint32_2idx(&vars,
                 oid_sas_health_status, OID_LEN(oid_sas_health_status),
                 dev_idx, 1, ASN_INTEGER, (u_long)new_status);
@@ -227,7 +297,7 @@ void notify_nvme_selftest_failed(uint32_t dev_idx, const CacheNvmeSelfTestRow &s
                          OID_LEN(oid_notif_nvme_selftest_failed));
 
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
-    append_device_identity(&vars, dev_idx, dev);
+    append_nvme_identity(&vars, dev_idx, dev);
 
     uint32_t entry = st.entry_index;
     append_uint32_2idx(&vars, oid_nvme_selftest_number,
@@ -257,7 +327,7 @@ void notify_sata_selftest_failed(uint32_t dev_idx, const CacheSataSelfTestRow &s
                          OID_LEN(oid_notif_sata_selftest_failed));
 
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
-    append_device_identity(&vars, dev_idx, dev);
+    append_sata_identity(&vars, dev_idx, dev);
 
     uint32_t entry = st.entry_index;
     append_uint32_2idx(&vars, oid_sata_selftest_type,
@@ -281,7 +351,7 @@ void notify_sas_selftest_failed(uint32_t dev_idx, const CacheSasSelfTestRow &st)
                          OID_LEN(oid_notif_sas_selftest_failed));
 
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
-    append_device_identity(&vars, dev_idx, dev);
+    append_sas_identity(&vars, dev_idx, dev);
 
     uint32_t entry = st.entry_index;
     append_uint32_2idx(&vars, oid_sas_selftest_type,
@@ -344,7 +414,7 @@ void notify_sata_attr_failing(uint32_t dev_idx, const CacheSataAttrRow &attr) {
                          OID_LEN(oid_notif_sata_attr_threshold_met));
 
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
-    append_device_identity(&vars, dev_idx, dev);
+    append_sata_identity(&vars, dev_idx, dev);
 
     uint32_t attr_id = attr.attr_id;
     append_uint32_2idx(&vars, oid_sata_attr_id,
@@ -375,7 +445,7 @@ void notify_sas_uncorrected_errors_increased(uint32_t dev_idx,
                          OID_LEN(oid_notif_sas_uncorrected_errors));
 
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
-    append_device_identity(&vars, dev_idx, dev);
+    append_sas_identity(&vars, dev_idx, dev);
 
     uint32_t dir = (uint32_t)ec.direction;
     append_counter64_2idx(&vars, oid_sas_uncorrected_errors,

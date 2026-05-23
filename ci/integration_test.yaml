@@ -524,6 +524,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".3.2.1", value_pattern: ".*"}
+      - {oid_suffix: ".3.1.3.1.1.{nvme}.1", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
+      - {oid_suffix: ".3.1.3.1.2.{nvme}.1", value_pattern: 'STRING: "?S6B0NJ0N123456"?'}
 
   - name: "nvme SelfTestFailed"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.selftest-fail.json"
@@ -531,6 +533,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".3.2.2", value_pattern: ".*"}
+      - {oid_suffix: ".3.1.3.1.1.{nvme}.1", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
+      - {oid_suffix: ".3.1.3.1.2.{nvme}.1", value_pattern: 'STRING: "?S6B0NJ0N123456"?'}
 
   # ── SATA (smartmonSataMIB = ent_oid.4; notifications at .4.2.x) ──────
   - name: "sata HealthFailed"
@@ -539,6 +543,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".4.2.1", value_pattern: ".*"}
+      - {oid_suffix: ".4.1.3.1.2.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
+      - {oid_suffix: ".4.1.3.1.3.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
 
   - name: "sata AttrFailing"
     trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.attr-fail.ata.json"
@@ -546,6 +552,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".4.2.2", value_pattern: ".*"}
+      - {oid_suffix: ".4.1.3.1.2.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
+      - {oid_suffix: ".4.1.3.1.3.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
 
   - name: "sata SelfTestFailed"
     trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.selftest-fail.ata.json"
@@ -553,6 +561,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".4.2.3", value_pattern: ".*"}
+      - {oid_suffix: ".4.1.3.1.2.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
+      - {oid_suffix: ".4.1.3.1.3.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
 
   # ── SAS (smartmonSasMIB = ent_oid.5; notifications at .5.2.x) ────────
   - name: "sas HealthFailed"
@@ -561,6 +571,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".5.2.1", value_pattern: ".*"}
+      - {oid_suffix: ".5.1.3.1.7.{sas}.1", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
+      - {oid_suffix: ".5.1.3.1.5.{sas}.1", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
 
   - name: "sas SelfTestFailed"
     trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.selftest-fail.scsi.json"
@@ -568,6 +580,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".5.2.2", value_pattern: ".*"}
+      - {oid_suffix: ".5.1.3.1.7.{sas}.1", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
+      - {oid_suffix: ".5.1.3.1.5.{sas}.1", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
 
   - name: "sas UncorrectedErrorsIncreased"
     trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.uncorrected.scsi.json"
@@ -575,6 +589,8 @@ notifications:
     wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".5.2.3", value_pattern: ".*"}
+      - {oid_suffix: ".5.1.3.1.7.{sas}.1", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
+      - {oid_suffix: ".5.1.3.1.5.{sas}.1", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
 
   # ── Sensor (smartmonSensorMIB = ent_oid.6; notifications at .6.2.x) ──
   # Sensor threshold fixtures add nvme_composite_temperature_threshold to

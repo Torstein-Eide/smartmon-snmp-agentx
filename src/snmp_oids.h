@@ -118,6 +118,10 @@ static const oid oid_nvme_capability_row_count[]   = { SMARTMON_ENT, 3, 1, 22 };
 static const oid oid_nvme_capability_last_change[] = { SMARTMON_ENT, 3, 1, 23 };
 static const oid oid_nvme_capability_table[]       = { SMARTMON_ENT, 3, 1, 24 };
 
+// NVMe controller table column OIDs (table = .3.1.3; col 1=modelNumber, col 2=serialNumber)
+static const oid oid_nvme_model_number[]           = { SMARTMON_ENT, 3, 1, 3, 1, 1 };
+static const oid oid_nvme_serial_number[]          = { SMARTMON_ENT, 3, 1, 3, 1, 2 };
+
 // NVMe health table column OIDs (table = .3.1.15; col 1 = overallStatus, col 2 = criticalWarning)
 static const oid oid_nvme_health_status[]          = { SMARTMON_ENT, 3, 1, 15, 1, 1 };
 static const oid oid_nvme_critical_warning[]       = { SMARTMON_ENT, 3, 1, 15, 1, 2 };
@@ -202,6 +206,10 @@ static const oid oid_sata_pending_def_row_count[]  = { SMARTMON_ENT, 4, 1, 41 };
 static const oid oid_sata_pending_def_last_change[]= { SMARTMON_ENT, 4, 1, 42 };
 static const oid oid_sata_pending_def_table[]      = { SMARTMON_ENT, 4, 1, 43 };
 
+// SATA info table column OIDs (table = .4.1.3; col 2=modelName, col 3=serialNumber)
+static const oid oid_sata_model_name[]             = { SMARTMON_ENT, 4, 1, 3, 1, 2 };
+static const oid oid_sata_serial_number[]          = { SMARTMON_ENT, 4, 1, 3, 1, 3 };
+
 // SATA health table column OIDs (table = .4.1.6; col 1 = overallStatus)
 static const oid oid_sata_health_status[]          = { SMARTMON_ENT, 4, 1, 6, 1, 1 };
 
@@ -254,6 +262,10 @@ static const oid oid_sas_selftest_table[]           = { SMARTMON_ENT, 5, 1, 12 }
 static const oid oid_sas_bgscan_row_count[]         = { SMARTMON_ENT, 5, 1, 13 };
 static const oid oid_sas_bgscan_last_change[]       = { SMARTMON_ENT, 5, 1, 14 };
 static const oid oid_sas_bgscan_table[]             = { SMARTMON_ENT, 5, 1, 15 };
+
+// SAS info table column OIDs (table = .5.1.3; col 5=serialNumber, col 7=scsiModelName)
+static const oid oid_sas_serial_number[]            = { SMARTMON_ENT, 5, 1, 3, 1, 5 };
+static const oid oid_sas_scsi_model_name[]          = { SMARTMON_ENT, 5, 1, 3, 1, 7 };
 
 // SAS health table column OIDs (table = .5.1.6; col 1 = overallStatus)
 static const oid oid_sas_health_status[]            = { SMARTMON_ENT, 5, 1, 6, 1, 1 };
