@@ -129,7 +129,7 @@ sections:
     oid_template: ".3.1.15.1.{col}.{D}.1"
     tests:
       - {label: "col1  healthOverallStatus = 1 (passed)",         col: 1,  expected: "INTEGER: 1"}
-      - {label: "col2  criticalWarning (BITS) = 00",              col: 2,  expected: 'Hex-STRING: 00 *'}
+      - {label: "col2  criticalWarning (BITS) = 00",              col: 2,  expected: 'BITS: 00 *'}
       - {label: "col7  dataUnitsRead",                            col: 7,  expected: "Counter64: 12004521"}
       - {label: "col8  dataUnitsWritten",                         col: 8,  expected: "Counter64: 44110234"}
       - {label: "col9  dataBytesRead",                            col: 9,  expected: "Counter64: 6146314752000"}
@@ -294,7 +294,7 @@ sections:
     # No trailing instance index — each drive has exactly one row
     tests:
       - {label: "col1 overallStatus = 1 (passed)", col: 1, expected: "INTEGER: 1"}
-      - {label: "col2 offlineStatusValue = 2",     col: 2, expected: "Gauge32: 2"}
+      - {label: "col2 offlineStatusValue = 2",     col: 2, expected: "INTEGER: 2"}
       - {label: "col4 powerCycles = 42",           col: 4, expected: "Counter64: 42"}
       - {label: "col5 powerOnHours = 4321",        col: 5, expected: "Counter64: 4321"}
       - {label: "col6 errorLogCount = 1",          col: 6, expected: "Gauge32: 1"}
@@ -435,7 +435,7 @@ sections:
     device: sas
     oid_template: ".5.1.15.1.{col}.{D}.1"
     tests:
-      - {label: "col1 status = 4 (Idle)",         col: 1, expected: "INTEGER: 4"}
+      - {label: "col1 status = Idle",             col: 1, expected: 'STRING: "Idle"'}
       - {label: "col2 progressPercent = 0",        col: 2, expected: "Gauge32: 0"}
       - {label: "col3 scansPerformed = 3",         col: 3, expected: "Counter64: 3"}
       - {label: "col4 mediumScansPerformed = 12",  col: 4, expected: "Counter64: 12"}

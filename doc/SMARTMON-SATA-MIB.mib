@@ -28,7 +28,8 @@ smartmonSataMIB MODULE-IDENTITY
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl ATA/SATA output.
 
-         TODO: Replace the placeholder enterprise OID before publication."
+         TODO: 1.3.6.1.4.1.9999.1.1 is a placeholder enterprise OID;
+         replace it with an assigned IANA PEN before publication."
     DESCRIPTION
         "The SMARTMON-SATA-MIB exposes ATA/SATA drive health, identity,
          SMART attributes, error log, and self-test log information

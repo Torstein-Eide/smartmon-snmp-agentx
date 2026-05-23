@@ -1,6 +1,7 @@
 // snmp_oids.h — OID arrays for all SMARTMON-* MIBs
 //
-// Enterprise: 1.3.6.1.4.1.9999.1.1
+// TODO: 1.3.6.1.4.1.9999.1.1 is a placeholder enterprise OID.
+// Replace it with an assigned IANA PEN before publication.
 //   TC MIB:     .1
 //   Common MIB: .2   objects=.1  notifications=.3
 //   NVMe MIB:   .3   objects=.1  notifications=.2
@@ -29,7 +30,8 @@ static inline void snmp_encode_date_time(time_t t, uint8_t out[8]) {
 }
 
 // ---------------------------------------------------------------------------
-// Enterprise root  (enterprises.9999.1.1)
+// Enterprise root (placeholder: enterprises.9999.1.1)
+// TODO: replace with an assigned IANA PEN before publication.
 // ---------------------------------------------------------------------------
 #define SMARTMON_ENT  1, 3, 6, 1, 4, 1, 9999, 1, 1
 

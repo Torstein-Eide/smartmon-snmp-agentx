@@ -122,7 +122,7 @@ sas_info_handler(netsnmp_mib_handler *,
 // ---------------------------------------------------------------------------
 // SAS background scan table
 // INDEX { smartmonDeviceIndex, smartmonSasBgScanIndex(col 6, NOT-ACCESSIBLE) }
-// col 1  = bgScanStatus (INTEGER)
+// col 1  = bgScanStatus (DisplayString)
 // col 2  = bgScanProgressPercent
 // col 3  = bgScanScansPerformed
 // col 4  = bgScanMediumScansPerformed
@@ -161,9 +161,9 @@ sas_bgscan_handler(netsnmp_mib_handler *,
         if (!row || !tinfo) continue;
 
         switch (tinfo->colnum) {
-        case 1:  { long v = (long)row->status_value;
-                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
-                       (u_char*)&v, sizeof(v)); break; }
+        case 1:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                     (u_char*)row->status_string.c_str(),
+                     row->status_string.size()); break;
         case 2:  { u_long v = row->progress_percent;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }

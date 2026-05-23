@@ -1895,6 +1895,9 @@ static void scan_state_dir() {
 
 bool agentxd_datasrc_init(const std::string &state_dir) {
     s_state_dir = state_dir;
+    s_initial_scan_done = false;
+    s_file_device_index.clear();
+
     // Ensure trailing slash is absent for consistent path concatenation
     while (!s_state_dir.empty() && s_state_dir.back() == '/')
         s_state_dir.pop_back();

@@ -26,7 +26,7 @@ smartd --jsonstate /run/smartmontools/json/
 
 ## MIB structure
 
-Enterprise OID: `1.3.6.1.4.1.9999.1.1`
+Enterprise OID: `1.3.6.1.4.1.9999.1.1` (placeholder; TODO: replace with an assigned IANA PEN before publication)
 
 | Sub-tree | MIB | Contents |
 |----------|-----|----------|

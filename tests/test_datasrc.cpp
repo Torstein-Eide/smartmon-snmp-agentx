@@ -484,6 +484,23 @@ static void test_notify_no_discovered_during_startup(const char *path) {
     CHECK(find_call("discovered") == nullptr);
 }
 
+static void test_notify_no_discovered_on_datasrc_init_rescan(const char *path) {
+    SECTION("notify: no device_discovered during datasource init rescan");
+    std::string dir = path;
+    size_t slash = dir.rfind('/');
+    CHECK(slash != std::string::npos);
+    if (slash == std::string::npos)
+        return;
+    dir.resize(slash);
+
+    s_initial_scan_done = true;
+    g_cache.clear();
+    clear_notify_calls();
+    CHECK(agentxd_datasrc_init(dir));
+    agentxd_datasrc_shutdown();
+    CHECK(find_call("discovered") == nullptr);
+}
+
 static void test_notify_discovered(const char *path) {
     SECTION("notify: device_discovered on first load after startup");
     g_cache.clear();
@@ -659,6 +676,8 @@ int main(int argc, char *argv[]) {
     test_notify_device_removed();
     if (nvme_st_path)
         test_notify_no_discovered_during_startup(nvme_st_path);
+    if (nvme_st_path)
+        test_notify_no_discovered_on_datasrc_init_rescan(nvme_st_path);
     s_initial_scan_done = true;
     if (nvme_st_path)
         test_notify_discovered(nvme_st_path);

@@ -17,6 +17,8 @@ from typing import Optional
 
 import yaml
 
+SNMP_STABLE_OUTPUT_ARGS = ["-OenU", "-Ih"]
+
 # ---------------------------------------------------------------------------
 # Colour helpers (disabled when not a tty or NOCOLOR is set)
 # ---------------------------------------------------------------------------
@@ -71,6 +73,21 @@ def require_cmd(name: str) -> None:
         die(f"required command not found: {name}")
 
 
+def build_snmp_env(repo_root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    mib_dirs = [Path("/var/lib/mibs/iana"), Path("/var/lib/mibs/ietf"), repo_root / "doc"]
+    existing = env.get("MIBDIRS", "")
+    available = [str(p) for p in mib_dirs if p.is_dir()]
+    if available:
+        if existing:
+            env["MIBDIRS"] = ":".join([existing, *available])
+        else:
+            # Leading '+' keeps Net-SNMP's built-in default MIB search path.
+            env["MIBDIRS"] = "+" + ":".join(available)
+    env["MIBS"] = "ALL"
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Error / exit
 # ---------------------------------------------------------------------------
@@ -104,8 +121,8 @@ class DaemonSet:
     def __init__(self):
         self.pids: list[int] = []
 
-    def start(self, *args, stdout=None, stderr=None) -> int:
-        proc = subprocess.Popen(list(args), stdout=stdout, stderr=stderr)
+    def start(self, *args, stdout=None, stderr=None, env=None) -> int:
+        proc = subprocess.Popen(list(args), stdout=stdout, stderr=stderr, env=env)
         self.pids.append(proc.pid)
         return proc.pid
 
@@ -118,22 +135,24 @@ class DaemonSet:
         self.pids.clear()
 
 
-def start_snmptrapd(run_dir: Path, trap_port: int, trap_log: Path, daemons: DaemonSet) -> Optional[int]:
+def start_snmptrapd(run_dir: Path, trap_port: int, trap_log: Path,
+                    daemons: DaemonSet, snmp_env: dict[str, str]) -> Optional[int]:
     if not shutil.which("snmptrapd"):
         return None
     conf = run_dir / "snmptrapd.conf"
     conf.write_text("disableAuthorization yes\n")
     pid = daemons.start(
-        "snmptrapd", "-f", "-Lo", "-C", "-c", str(conf),
+        "snmptrapd", "-f", "-Lo", *SNMP_STABLE_OUTPUT_ARGS, "-C", "-c", str(conf),
         f"udp:127.0.0.1:{trap_port}",
         stdout=open(trap_log, "w"), stderr=subprocess.STDOUT,
+        env=snmp_env,
     )
     return pid
 
 
 def start_snmpd(run_dir: Path, socket_path: Path, snmp_port: int,
                 trap_port: int, community: str, snmpd_log: Path,
-                daemons: DaemonSet) -> int:
+                daemons: DaemonSet, snmp_env: dict[str, str]) -> int:
     conf = run_dir / "snmpd.conf"
     conf.write_text(
         f"master agentx\n"
@@ -146,6 +165,7 @@ def start_snmpd(run_dir: Path, socket_path: Path, snmp_port: int,
     pid = daemons.start(
         "snmpd", "-f", "-C", "-c", str(conf), "-Lo", *extra,
         stdout=open(snmpd_log, "w"), stderr=subprocess.STDOUT,
+        env=snmp_env,
     )
     # Wait for AgentX socket
     for _ in range(20):
@@ -174,15 +194,15 @@ def start_agentxd(binary: str, run_dir: Path, socket_path: Path,
 
 def wait_for_registration(snmp_port: int, ent_oid: str, community: str,
                            attempts: int, interval: float,
-                           register_log: Path,
+                           register_log: Path, snmp_env: dict[str, str],
                            agentxd_log: Path, snmpd_log: Path) -> None:
     with open(register_log, "w") as rlog:
         for i in range(1, attempts + 1):
             rlog.write(f"--- attempt {i} ---\n")
             result = subprocess.run(
-                ["snmpget", "-v2c", "-c", community, "-On",
+                ["snmpget", "-v2c", "-c", community, *SNMP_STABLE_OUTPUT_ARGS,
                  f"127.0.0.1:{snmp_port}", f"{ent_oid}.2.1.1.0"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=snmp_env,
             )
             out = result.stdout + result.stderr
             rlog.write(out + "\n")
@@ -204,15 +224,16 @@ def wait_for_registration(snmp_port: int, ent_oid: str, community: str,
 # ---------------------------------------------------------------------------
 
 def run_walks(ent_oid: str, snmp_port: int, community: str,
-              walk_defs: dict, output_dir: Path) -> dict[str, Path]:
+              walk_defs: dict, output_dir: Path,
+              snmp_env: dict[str, str]) -> dict[str, Path]:
     files: dict[str, Path] = {}
     for label, suffix in walk_defs.items():
         oid = f"{ent_oid}{suffix}"
         outfile = output_dir / f"snmpwalk-{label}.txt"
         result = subprocess.run(
-            ["snmpwalk", "-v2c", "-c", community, "-On",
+            ["snmpwalk", "-v2c", "-c", community, *SNMP_STABLE_OUTPUT_ARGS,
              f"127.0.0.1:{snmp_port}", oid],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=snmp_env,
         )
         outfile.write_text(result.stdout + result.stderr)
         files[label] = outfile
@@ -554,6 +575,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     binary = find_binary(cfg, repo_root, args.binary or None)
+    snmp_env = build_snmp_env(repo_root)
 
     require_cmd("snmpd")
     require_cmd("snmpwalk")
@@ -610,16 +632,18 @@ def main() -> int:
             f"agentxd_bin={binary}\n"
             f"snmp_host=127.0.0.1:{snmp_port}\n"
             f"trap_port={trap_port}\n"
+            f"mibs={snmp_env.get('MIBS', '')}\n"
+            f"mibdirs={snmp_env.get('MIBDIRS', '')}\n"
         )
 
         # Start daemons
-        trapd_pid = start_snmptrapd(run_dir, trap_port, trap_log, daemons)
+        trapd_pid = start_snmptrapd(run_dir, trap_port, trap_log, daemons, snmp_env)
         if trapd_pid:
             print(f"  snmptrapd pid={trapd_pid} port={trap_port}")
 
         print("  starting snmpd ...")
         snmpd_pid = start_snmpd(
-            run_dir, socket_path, snmp_port, trap_port, community, snmpd_log, daemons
+            run_dir, socket_path, snmp_port, trap_port, community, snmpd_log, daemons, snmp_env
         )
         print(f"  snmpd ready (pid={snmpd_pid})")
 
@@ -629,7 +653,7 @@ def main() -> int:
         wait_for_registration(
             snmp_port, ent_oid, community,
             poll_attempts, poll_interval,
-            register_log, agentxd_log, snmpd_log,
+            register_log, snmp_env, agentxd_log, snmpd_log,
         )
         print(f"  agentxd registered (pid={agentxd_pid})")
 
@@ -639,7 +663,7 @@ def main() -> int:
         # Walks
         print()
         walk_defs = cfg.get("walks", {})
-        walk_files = run_walks(ent_oid, snmp_port, community, walk_defs, output_dir)
+        walk_files = run_walks(ent_oid, snmp_port, community, walk_defs, output_dir, snmp_env)
         for label, wfile in walk_files.items():
             lines = len(wfile.read_text().splitlines())
             print(f"  walked {label}: {lines} lines -> snmpwalk-{label}.txt")
