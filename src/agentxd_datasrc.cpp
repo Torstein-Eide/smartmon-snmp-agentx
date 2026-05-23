@@ -75,6 +75,7 @@ static int         s_watch_wd          { -1 };
 static std::string s_state_dir;
 // Suppress device-discovered notifications during the startup scan.
 static bool        s_initial_scan_done { false };
+static std::unordered_map<std::string, uint32_t> s_file_device_index;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1729,6 +1730,17 @@ static void process_json_file(const std::string &filepath) {
     JVal root = json_load_file(filepath, err);
     if (!err.empty()) {
         syslog(LOG_WARNING, "%s: JSON parse error: %s", filepath.c_str(), err.c_str());
+        auto it = s_file_device_index.find(filepath);
+        if (it != s_file_device_index.end()) {
+            for (auto &row : g_cache.devices) {
+                if (row.index != it->second)
+                    continue;
+                row.poll_result = POLL_FAILED;
+                row.poll_exit_status = 1;
+                notify_device_polling_failed(row.index, (int)row.poll_result);
+                break;
+            }
+        }
         return;
     }
 
@@ -1760,6 +1772,7 @@ static void process_json_file(const std::string &filepath) {
     }
 
     uint32_t dev_idx = g_cache.upsert_device(dev_path, proto);
+    s_file_device_index[filepath] = dev_idx;
     if (g_verbosity >= 2)
         syslog(LOG_DEBUG, "datasrc: dev_idx=%u for '%s'", dev_idx, dev_path.c_str());
 
@@ -1911,7 +1924,7 @@ bool agentxd_datasrc_init(const std::string &state_dir) {
     }
 
     s_watch_wd = inotify_add_watch(s_inotify_fd, s_state_dir.c_str(),
-                                   IN_CLOSE_WRITE | IN_MOVED_TO);
+                                   IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM);
     if (s_watch_wd < 0) {
         syslog(LOG_ERR, "inotify_add_watch(%s): %s",
                s_state_dir.c_str(), strerror(errno));
@@ -1947,7 +1960,17 @@ void agentxd_datasrc_handle_events() {
             DeviceProto proto;
             if (!identify_state_file_proto(name, proto)) continue;
 
-            process_json_file(s_state_dir + "/" + name);
+            std::string filepath = s_state_dir + "/" + name;
+            if (ev->mask & (IN_DELETE | IN_MOVED_FROM)) {
+                auto it = s_file_device_index.find(filepath);
+                if (it != s_file_device_index.end()) {
+                    agentxd_datasrc_remove_device(it->second);
+                    s_file_device_index.erase(it);
+                }
+                continue;
+            }
+
+            process_json_file(filepath);
         }
     }
 }

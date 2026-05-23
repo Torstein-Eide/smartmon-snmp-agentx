@@ -1,0 +1,11 @@
+{
+  "device": {
+    "name": "/dev/nvme1",
+    "protocol": "NVMe"
+  },
+  "local_time": {
+    "time_t": 1779134001
+  },
+  "smart_status": {
+    "passed": true
+  }

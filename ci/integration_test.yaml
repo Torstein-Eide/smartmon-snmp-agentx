@@ -28,6 +28,8 @@ fixture_variants:
     - "*.sensor-high-warn.nvme.json"
     - "*.sensor-low-warn.nvme.json"
     - "*.sensor-low-crit.nvme.json"
+    - "*.discover.nvme.json"
+    - "*.poll-failed.nvme.json"
 
 # Each device entry describes how to discover the device's index from the walk
 # output.  The runner greps the walk file for a line matching value_pattern and
@@ -493,17 +495,25 @@ notifications:
 
   # ── Common (smartmonCommonMIB = ent_oid.2; notifications at .2.3.x) ──
   - name: "common DeviceDiscovered"
-    skip: "no fixture (requires adding a new device file at runtime)"
+    action: add
+    trigger_fixture: "smartd-json.Integration_Discovered_NVMe-DISCOVER01.discover.nvme.json"
+    target_fixture:  "smartd-json.Integration_Discovered_NVMe-DISCOVER01.nvme.json"
+    wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".2.3.1", value_pattern: ".*"}
 
   - name: "common DeviceRemoved"
-    skip: "no fixture (requires removing a device file at runtime)"
+    action: remove
+    setup_fixture: "smartd-json.Integration_Discovered_NVMe-DISCOVER01.discover.nvme.json"
+    target_fixture: "smartd-json.Integration_Discovered_NVMe-DISCOVER01.nvme.json"
+    wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".2.3.2", value_pattern: ".*"}
 
   - name: "common DevicePollFailed"
-    skip: "no fixture (poll_result is always POLL_OK for valid JSON files)"
+    trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.poll-failed.nvme.json"
+    replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
+    wait_seconds: 3
     expected_traps:
       - {oid_suffix: ".2.3.3", value_pattern: ".*"}
 

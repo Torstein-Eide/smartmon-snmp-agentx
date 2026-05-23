@@ -407,27 +407,58 @@ def print_section_result(name: str, passed: int, failed: int, skipped: int,
 
 def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Path,
                           trap_log: Path, ent_oid: str) -> tuple[int, int, list[str]]:
-    """Copy trigger fixture over live fixture, wait, verify traps received."""
+    """Apply a fixture action, wait, verify traps received."""
     passed = failed = 0
     failures: list[str] = []
 
+    action = notif.get("action", "replace")
     trigger_name = notif.get("trigger_fixture", "")
     replace_name = notif.get("replace_fixture", "")
+    target_name = notif.get("target_fixture", "")
+    setup_name = notif.get("setup_fixture", "")
     wait_sec = float(notif.get("wait_seconds", 3.0))
     expected_traps = notif.get("expected_traps", [])
 
-    trigger_path = fixture_variants / trigger_name
-    replace_path = live_fixtures / replace_name
-
-    if not trigger_path.exists():
-        failures.append(f"FAIL: trigger fixture not found: {trigger_path}")
+    if action == "replace":
+        trigger_path = fixture_variants / trigger_name
+        replace_path = live_fixtures / replace_name
+        if not trigger_path.exists():
+            failures.append(f"FAIL: trigger fixture not found: {trigger_path}")
+            return 0, 1, failures
+        if not replace_path.exists():
+            failures.append(f"FAIL: live fixture not found: {replace_path}")
+            return 0, 1, failures
+        trap_before = trap_log.read_text() if trap_log.exists() else ""
+        shutil.copy2(trigger_path, replace_path)
+    elif action == "add":
+        trigger_path = fixture_variants / trigger_name
+        target_path = live_fixtures / (target_name or trigger_name)
+        if not trigger_path.exists():
+            failures.append(f"FAIL: trigger fixture not found: {trigger_path}")
+            return 0, 1, failures
+        if target_path.exists():
+            failures.append(f"FAIL: live fixture already exists: {target_path}")
+            return 0, 1, failures
+        trap_before = trap_log.read_text() if trap_log.exists() else ""
+        shutil.copy2(trigger_path, target_path)
+    elif action == "remove":
+        target_path = live_fixtures / (target_name or replace_name)
+        if not target_path.exists() and setup_name:
+            setup_path = fixture_variants / setup_name
+            if not setup_path.exists():
+                failures.append(f"FAIL: setup fixture not found: {setup_path}")
+                return 0, 1, failures
+            shutil.copy2(setup_path, target_path)
+            time.sleep(wait_sec)
+        if not target_path.exists():
+            failures.append(f"FAIL: live fixture not found: {target_path}")
+            return 0, 1, failures
+        trap_before = trap_log.read_text() if trap_log.exists() else ""
+        target_path.unlink()
+    else:
+        failures.append(f"FAIL: unsupported notification action: {action}")
         return 0, 1, failures
-    if not replace_path.exists():
-        failures.append(f"FAIL: live fixture not found: {replace_path}")
-        return 0, 1, failures
 
-    trap_before = trap_log.read_text() if trap_log.exists() else ""
-    shutil.copy2(trigger_path, replace_path)
     time.sleep(wait_sec)
     trap_after = trap_log.read_text() if trap_log.exists() else ""
     new_trap_text = trap_after[len(trap_before):]
