@@ -474,21 +474,108 @@ sections:
 # ---------------------------------------------------------------------------
 # Notification tests (SNMP trap delivery)
 # ---------------------------------------------------------------------------
-# Each entry swaps a "failing" fixture into the live fixture directory,
+# Each enabled entry swaps a "failing" fixture into the live fixture directory,
 # waits for inotify -> re-parse -> trap delivery, then checks snmptrapd output.
 #
-# Fields:
-#   trigger_fixture:  filename (from fixture-variants/) to copy over replace_fixture
-#   replace_fixture:  filename (in live fixtures/) to be overwritten
-#   wait_seconds:     how long to wait for trap delivery (inotify + parse + send)
-#   expected_traps:   list of {oid_suffix, value_pattern} to match in trapd.log
-#   skip:             skip reason string (omit to enable the test)
+# skip: "no fixture"            — no variant fixture exists yet for this trap
+# skip: "not yet implemented"   — fixture exists; trap path not verified end-to-end
+# (no skip field)               — test is active
 
 notifications:
-  - name: "NVMe health fail trap"
+
+  # ── Common (smartmonCommonMIB = ent_oid.2; notifications at .2.3.x) ──
+  - name: "common DeviceDiscovered"
+    skip: "no fixture (requires adding a new device file at runtime)"
+    expected_traps:
+      - {oid_suffix: ".2.3.1", value_pattern: ".*"}
+
+  - name: "common DeviceRemoved"
+    skip: "no fixture (requires removing a device file at runtime)"
+    expected_traps:
+      - {oid_suffix: ".2.3.2", value_pattern: ".*"}
+
+  - name: "common DevicePollFailed"
+    skip: "no fixture (requires an unreadable or corrupt JSON file)"
+    expected_traps:
+      - {oid_suffix: ".2.3.3", value_pattern: ".*"}
+
+  # ── NVMe (smartmonNvmeMIB = ent_oid.3; notifications at .3.2.x) ──────
+  - name: "nvme HealthFailed"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.failing.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
     wait_seconds: 3
     skip: "not yet implemented"
     expected_traps:
+      - {oid_suffix: ".3.2.1", value_pattern: ".*"}
+
+  - name: "nvme SelfTestFailed"
+    trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.selftest-fail.json"
+    replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
+    expected_traps:
       - {oid_suffix: ".3.2.2", value_pattern: ".*"}
+
+  # ── SATA (smartmonSataMIB = ent_oid.4; notifications at .4.2.x) ──────
+  - name: "sata HealthFailed"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".4.2.1", value_pattern: ".*"}
+
+  - name: "sata AttrFailing"
+    trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.attr-fail.ata.json"
+    replace_fixture:  "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
+    expected_traps:
+      - {oid_suffix: ".4.2.2", value_pattern: ".*"}
+
+  - name: "sata SelfTestFailed"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".4.2.3", value_pattern: ".*"}
+
+  # ── SAS (smartmonSasMIB = ent_oid.5; notifications at .5.2.x) ────────
+  - name: "sas HealthFailed"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".5.2.1", value_pattern: ".*"}
+
+  - name: "sas SelfTestFailed"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".5.2.2", value_pattern: ".*"}
+
+  - name: "sas UncorrectedErrorsIncreased"
+    trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.uncorrected.scsi.json"
+    replace_fixture:  "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.scsi.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
+    expected_traps:
+      - {oid_suffix: ".5.2.3", value_pattern: ".*"}
+
+  # ── Sensor (smartmonSensorMIB = ent_oid.6; notifications at .6.2.x) ──
+  - name: "sensor HighCriticalExceeded"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".6.2.1", value_pattern: ".*"}
+
+  - name: "sensor HighWarningExceeded"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".6.2.2", value_pattern: ".*"}
+
+  - name: "sensor LowWarningExceeded"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".6.2.3", value_pattern: ".*"}
+
+  - name: "sensor LowCriticalExceeded"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".6.2.4", value_pattern: ".*"}
+
+  - name: "sensor NonOperational"
+    skip: "no fixture"
+    expected_traps:
+      - {oid_suffix: ".6.2.5", value_pattern: ".*"}
