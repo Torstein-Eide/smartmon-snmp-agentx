@@ -1140,8 +1140,8 @@ smartmonSataErrorCmdRegError OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Features register value for this previous command
-         (previous_commands[].registers.features)."
+        "Completion Error register value for the parent error entry
+         (ata_smart_error_log.extended.table[].completion_registers.error)."
     ::= { smartmonSataErrorCmdEntry 5 }
 
 smartmonSataErrorCmdRegFeature OBJECT-TYPE
@@ -1149,8 +1149,8 @@ smartmonSataErrorCmdRegFeature OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Device control register value for this previous command
-         (previous_commands[].registers.device_control)."
+        "Features register value for this previous command
+         (ata_smart_error_log.extended.table[].previous_commands[].registers.features)."
     ::= { smartmonSataErrorCmdEntry 6 }
 
 smartmonSataErrorCmdRegLba OBJECT-TYPE
