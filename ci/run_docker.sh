@@ -1,94 +1,109 @@
 #!/bin/bash
-# ci/run_docker.sh — build the agentxd Docker image and run the integration test
-#
-# Usage (from repo root):
-#   ci/run_docker.sh [--no-cache] [--tag TAG]
-#
-# Mounts:
-#   .tmp/source/  → /fixtures  (read-only fixture JSON files)
-#   .tmp/test/    → /output    (snmpwalk output written here)
-#
-# After a successful run, check .tmp/test/ for:
-#   snmpwalk-common.txt, snmpwalk-nvme.txt, snmpwalk-sata.txt, snmpwalk-sas.txt
-#   integration-test-summary.txt
+# ci/run_docker.sh - build the AgentX test image and run integration tests.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+usage() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+Options:
+  --no-cache          Build the Docker image without cache
+  --tag TAG           Docker image tag (default: smartmon-agentxd-test:local)
+  --fixtures DIR      Mount committed-style fixture JSON files from DIR
+  --output DIR        Write test output to DIR (default: .tmp/test)
+  --debug             Run agentxd with -v
+  --debug-full        Run agentxd with -vv and net-snmp AgentX debug logs
+  --debug-net-snmp    Enable net-snmp AgentX/callback debug logs
+  -h, --help          Show this help
+EOF
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 IMAGE_TAG="smartmon-agentxd-test:local"
 DOCKERFILE="$REPO_ROOT/ci/Dockerfile.agentxd"
-FIXTURES_DIR="$REPO_ROOT/.tmp/source"
+FIXTURES_DIR=""
 OUTPUT_DIR="$REPO_ROOT/.tmp/test"
 BUILD_ARGS=()
-EXTRA_ARGS=""
+RUN_ARGS=(--rm --cap-add NET_BIND_SERVICE)
 
-# ---------------------------------------------------------------------------
-# Parse arguments
-# ---------------------------------------------------------------------------
 while [ $# -gt 0 ]; do
     case "$1" in
-        --no-cache)   BUILD_ARGS+=("--no-cache"); shift ;;
+        --no-cache)
+            BUILD_ARGS+=(--no-cache)
+            shift
+            ;;
         --tag)
-            if [ -z "${2-}" ] || [[ "$2" == -* ]]; then
-                echo "Error: --tag requires an argument" >&2; exit 1
-            fi
-            IMAGE_TAG="$2"; shift 2 ;;
-        --debug)      EXTRA_ARGS="-v"; shift ;;
-        --debug-full) EXTRA_ARGS="-vv"; shift ;;
+            [ -n "${2-}" ] && [[ "$2" != -* ]] || { echo "ERROR: --tag requires a value" >&2; exit 2; }
+            IMAGE_TAG="$2"
+            shift 2
+            ;;
+        --fixtures)
+            [ -n "${2-}" ] && [[ "$2" != -* ]] || { echo "ERROR: --fixtures requires a directory" >&2; exit 2; }
+            FIXTURES_DIR="$2"
+            shift 2
+            ;;
+        --output)
+            [ -n "${2-}" ] && [[ "$2" != -* ]] || { echo "ERROR: --output requires a directory" >&2; exit 2; }
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --debug)
+            RUN_ARGS+=(-e AGENTXD_EXTRA_ARGS=-v)
+            shift
+            ;;
+        --debug-full)
+            RUN_ARGS+=(
+                -e AGENTXD_EXTRA_ARGS=-vv
+                -e AGENTXD_NETSNMP_LOG=1
+                -e AGENTXD_NETSNMP_DEBUG=agentx,callback,transport,snmp_agent
+                -e SNMPD_EXTRA_ARGS=-Dagentx,callback,transport,snmp_agent
+            )
+            shift
+            ;;
+        --debug-net-snmp)
+            RUN_ARGS+=(
+                -e AGENTXD_NETSNMP_LOG=1
+                -e AGENTXD_NETSNMP_DEBUG=agentx,callback,transport,snmp_agent
+                -e SNMPD_EXTRA_ARGS=-Dagentx,callback,transport,snmp_agent
+            )
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [--no-cache] [--tag IMAGE_TAG] [--debug] [--debug-full]"
+            usage
             exit 0
             ;;
-        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
     esac
 done
 
 mkdir -p "$OUTPUT_DIR"
 
-# ---------------------------------------------------------------------------
-# Build
-# ---------------------------------------------------------------------------
-echo "=== Building Docker image: $IMAGE_TAG ==="
-docker build \
-    "${BUILD_ARGS[@]}" \
-    -f "$DOCKERFILE" \
-    -t "$IMAGE_TAG" \
-    "$REPO_ROOT"
+echo "=== Building Docker image ==="
+echo "  tag       : $IMAGE_TAG"
+echo "  dockerfile: $DOCKERFILE"
+docker build "${BUILD_ARGS[@]}" -f "$DOCKERFILE" -t "$IMAGE_TAG" "$REPO_ROOT"
 
-# ---------------------------------------------------------------------------
-# Run integration test
-# If .tmp/source/ has JSON files, mount them to override the committed fixtures.
-# Otherwise the image uses tests/fixtures/ baked in at build time.
-# ---------------------------------------------------------------------------
-echo ""
-echo "=== Running integration test ==="
+RUN_ARGS+=(-v "$OUTPUT_DIR:/output")
 
-DOCKER_OPTS=(--rm --cap-add NET_BIND_SERVICE -v "$OUTPUT_DIR:/output")
-
-if [ -d "$FIXTURES_DIR" ] && [ -n "$(ls "$FIXTURES_DIR"/*.json 2>/dev/null)" ]; then
-    echo "  fixtures : $FIXTURES_DIR (host mount)"
-    DOCKER_OPTS+=(-v "$FIXTURES_DIR:/fixtures:ro" -e "FIXTURES=/fixtures")
+if [ -n "$FIXTURES_DIR" ] && [ -d "$FIXTURES_DIR" ] && compgen -G "$FIXTURES_DIR/*.json" >/dev/null; then
+    echo "  fixtures  : $FIXTURES_DIR"
+    RUN_ARGS+=(-v "$FIXTURES_DIR:/fixtures:ro" -e FIXTURES=/fixtures)
 else
-    echo "  fixtures : committed test fixtures (inside image)"
+    echo "  fixtures  : image defaults"
 fi
-if [ -n "$EXTRA_ARGS" ]; then
-    echo "  debug    : AGENTXD_EXTRA_ARGS=$EXTRA_ARGS"
-    DOCKER_OPTS+=(-e "AGENTXD_EXTRA_ARGS=$EXTRA_ARGS")
-fi
-echo "  output   : $OUTPUT_DIR"
 
-docker run "${DOCKER_OPTS[@]}" "$IMAGE_TAG"
+echo "  output    : $OUTPUT_DIR"
+echo "=== Running integration test ==="
+docker run "${RUN_ARGS[@]}" "$IMAGE_TAG"
 
-# ---------------------------------------------------------------------------
-# Print summary
-# ---------------------------------------------------------------------------
-echo ""
-echo "=== Output files in $OUTPUT_DIR ==="
-ls -lh "$OUTPUT_DIR/" 2>/dev/null || true
-
-SUMMARY="$OUTPUT_DIR/integration-test-summary.txt"
-if [ -f "$SUMMARY" ]; then
-    echo ""
-    echo "--- integration-test-summary.txt (last 20 lines) ---"
-    tail -20 "$SUMMARY"
-fi
+echo "=== Output ==="
+ls -lh "$OUTPUT_DIR" 2>/dev/null || true
+RUN_INFO="$OUTPUT_DIR/run-info.txt"
+[ -f "$RUN_INFO" ] && { echo "--- run-info.txt ---"; cat "$RUN_INFO"; }

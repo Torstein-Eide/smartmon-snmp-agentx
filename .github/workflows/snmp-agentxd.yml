@@ -11,7 +11,8 @@ on:
       - 'man/**'
       - 'systemd/**'
       - 'ci/Dockerfile.agentxd'
-      - 'ci/run_integration_test.sh'
+      - 'ci/run_integration_test.py'
+      - 'ci/integration_test.yaml'
       - '.github/workflows/snmp-agentxd.yml'
       - 'Makefile'
   pull_request:
@@ -24,7 +25,8 @@ on:
       - 'man/**'
       - 'systemd/**'
       - 'ci/Dockerfile.agentxd'
-      - 'ci/run_integration_test.sh'
+      - 'ci/run_integration_test.py'
+      - 'ci/integration_test.yaml'
       - '.github/workflows/snmp-agentxd.yml'
       - 'Makefile'
   workflow_dispatch:

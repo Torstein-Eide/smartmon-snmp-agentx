@@ -31,7 +31,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libsnmp-dev \
         snmpd \
+        snmptrapd \
         snmp \
+        python3-yaml \
         procps \
         rsync \
     && rm -rf /var/lib/apt/lists/*
@@ -69,13 +71,10 @@ RUN /build/smartmon-snmp-agentxd -h 2>&1 | grep -q "usage\|Usage\|Options\|-c\|c
     && echo "Binary smoke-test PASSED"
 
 # ---------------------------------------------------------------------------
-# Install integration test script
+# Integration test defaults
 # Default FIXTURES points to the committed test fixtures baked into the image.
 # Override at runtime: docker run -v /your/data:/fixtures:ro ...
 # ---------------------------------------------------------------------------
-RUN cp /src/ci/run_integration_test.sh /usr/local/bin/run_integration_test.sh \
-    && chmod +x /usr/local/bin/run_integration_test.sh
-
 ENV AGENTXD_BIN=/build/smartmon-snmp-agentxd
 ENV FIXTURES=/src/tests/fixtures
 ENV OUTPUT=/output
@@ -87,4 +86,4 @@ RUN mkdir -p /output \
 # Run integration test as root so snmpd can create the AgentX socket and
 # agentxd can connect to it.  The agentxd user above is provided for
 # production deployments that want to run the binary as a non-root service.
-CMD ["/usr/local/bin/run_integration_test.sh"]
+CMD ["python3", "/src/ci/run_integration_test.py"]

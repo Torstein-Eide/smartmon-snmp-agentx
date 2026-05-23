@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ci/run_integration_test_v3.py — live SNMP integration test for smartmon-snmp-agentxd."""
+"""ci/run_integration_test.py - live SNMP integration test for smartmon-snmp-agentxd."""
 
 import argparse
 import fnmatch
@@ -494,7 +494,7 @@ def run_notifications(cfg: dict, live_fixtures: Path, fixture_variants: Path,
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="smartmon-snmp-agentxd integration test v3")
+    p = argparse.ArgumentParser(description="smartmon-snmp-agentxd integration test")
     script_dir = Path(__file__).parent
     p.add_argument("--config",   default=str(script_dir / "integration_test.yaml"))
     p.add_argument("--fixtures", default=os.environ.get("FIXTURES", ""))
@@ -545,7 +545,7 @@ def main() -> int:
     for f in (agentxd_log, snmpd_log, trap_log, register_log):
         f.write_text("")
 
-    run_dir = Path(tempfile.mkdtemp(prefix="agentx-test-v3-"))
+    run_dir = Path(tempfile.mkdtemp(prefix="agentx-test-"))
     socket_path = run_dir / "master"
 
     daemons = DaemonSet()
@@ -566,7 +566,7 @@ def main() -> int:
 
         fixture_count = len(list(live_fixtures.glob("*.json")))
 
-        print(_bold(f"=== Integration test v3: smartmon-snmp-agentxd ==="))
+        print(_bold(f"=== Integration test: smartmon-snmp-agentxd ==="))
         print(f"  binary  : {binary}")
         print(f"  fixtures: {live_fixtures} ({fixture_count} JSON files)")
         print(f"  output  : {output_dir}")
