@@ -2,7 +2,7 @@ name: snmp-agentxd build and test
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "master" ]
     paths:
       - 'src/**'
       - 'tests/**'
@@ -16,7 +16,7 @@ on:
       - '.github/workflows/snmp-agentxd.yml'
       - 'Makefile'
   pull_request:
-    branches: [ "main" ]
+    branches: [ "master" ]
     paths:
       - 'src/**'
       - 'tests/**'
