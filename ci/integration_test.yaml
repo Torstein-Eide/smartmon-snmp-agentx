@@ -430,7 +430,43 @@ sections:
       - {label: "col3 scansPerformed = 3",         col: 3, expected: "Counter64: 3"}
       - {label: "col4 mediumScansPerformed = 12",  col: 4, expected: "Counter64: 12"}
 
-  - name: "Sensor MIB"
+  # ---------------------------------------------------------------------------
+  # Sensor MIB  (.6)
+  # OID: .6.1.3.1.{col}.{D}.{sensorIdx}
+  # ---------------------------------------------------------------------------
+
+  - name: "Sensor MIB Scalars"
     walk: "sensor"
-    skip: "not yet implemented"
-    tests: []
+    # Scalars sit outside the table, so use explicit oid: rather than a template.
+    tests:
+      - {label: "rowCount = 18",        oid: ".6.1.1.0", expected: "Gauge32: 18"}
+      - {label: "lastChange timestamp", oid: ".6.1.2.0", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
+
+  - name: "Sensor MIB NVMe"
+    walk: "sensor"
+    oid_template: ".6.1.3.1.{col}.{nvme}.{inst}"
+    # Uses {nvme} device index (no device: key needed — substitute_oid resolves it).
+    tests:
+      - {label: "table >= 18 rows",                        type: rows, oid_regex: '\.6\.1\.3\.1\.2\.', min: 18}
+      - {label: "s[1] col2  type = 3 (celsius)",           col: 2,  inst: 1,  expected: "INTEGER: 3"}
+      - {label: "s[1] col3  name = Composite",             col: 3,  inst: 1,  expected: 'STRING: "Composite"'}
+      - {label: "s[1] col4  source (composite temp)",      col: 4,  inst: 1,  expected: 'STRING: "nvme_smart_health_information_log.temperature"'}
+      - {label: "s[1] col5  scale = 9 (units)",            col: 5,  inst: 1,  expected: "INTEGER: 9"}
+      - {label: "s[1] col6  precision = 0",                col: 6,  inst: 1,  expected: "INTEGER: 0"}
+      - {label: "s[1] col7  value = 38°C",                 col: 7,  inst: 1,  expected: "INTEGER: 38"}
+      - {label: "s[1] col8  operStatus = 1 (ok)",          col: 8,  inst: 1,  expected: "INTEGER: 1"}
+      - {label: "s[1] col9  units = Celsius",              col: 9,  inst: 1,  expected: 'STRING: "Celsius"'}
+      - {label: "s[1] col11 updateRate = 0",               col: 11, inst: 1,  expected: "Gauge32: 0"}
+      - {label: "s[2] col2  type = 10 (percent)",          col: 2,  inst: 2,  expected: "INTEGER: 10"}
+      - {label: "s[2] col3  name = Available Spare",       col: 3,  inst: 2,  expected: 'STRING: "Available Spare"'}
+      - {label: "s[2] col7  value = 100%",                 col: 7,  inst: 2,  expected: "INTEGER: 100"}
+      - {label: "s[2] col9  units = percent",              col: 9,  inst: 2,  expected: 'STRING: "percent"'}
+      - {label: "s[2] col14 lowWarning = 20%",             col: 14, inst: 2,  expected: "INTEGER: 20"}
+      - {label: "s[2] col15 lowCritical = 10%",            col: 15, inst: 2,  expected: "INTEGER: 10"}
+      - {label: "s[3] col2  type = 10 (percent)",          col: 2,  inst: 3,  expected: "INTEGER: 10"}
+      - {label: "s[3] col3  name = Percentage Used",       col: 3,  inst: 3,  expected: 'STRING: "Percentage Used"'}
+      - {label: "s[3] col7  value = 2%",                   col: 7,  inst: 3,  expected: "INTEGER: 2"}
+      - {label: "s[10] col3 name = Sensor 1",              col: 3,  inst: 10, expected: 'STRING: "Sensor 1"'}
+      - {label: "s[10] col7 value = 38°C",                 col: 7,  inst: 10, expected: "INTEGER: 38"}
+      - {label: "s[11] col3 name = Sensor 2",              col: 3,  inst: 11, expected: 'STRING: "Sensor 2"'}
+      - {label: "s[11] col7 value = 41°C",                 col: 7,  inst: 11, expected: "INTEGER: 41"}
