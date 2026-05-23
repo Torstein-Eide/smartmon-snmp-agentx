@@ -26,7 +26,7 @@ smartd --jsonstate /run/smartmontools/json/
 
 ## MIB structure
 
-Enterprise OID: `1.3.6.1.4.1.99999`
+Enterprise OID: `1.3.6.1.4.1.9999.1.1`
 
 | Sub-tree | MIB | Contents |
 |----------|-----|----------|
@@ -164,16 +164,16 @@ systemctl status smartmon-snmp-agentxd
 
 ```bash
 # List all monitored devices
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.99999.2
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2
 
 # NVMe health
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.99999.3
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.3
 
 # SATA attributes
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.99999.4
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.4
 
 # SAS health and error counters
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.99999.5
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.5
 
 # Human-readable output (requires MIBs in /usr/share/snmp/mibs/):
 snmpwalk -v2c -c public -m ALL localhost \
@@ -238,18 +238,18 @@ Requires `snmpd` and the built binary:
 
 ```bash
 # Auto-detects binary in .build/
-ci/run_integration_test.sh
+ci/run_integration_test.py
 
 # Or specify explicitly:
 AGENTXD_BIN=.build/smartmon-snmp-agentxd \
-    ci/run_integration_test.sh
+    ci/run_integration_test.py
 ```
 
 The integration test:
 1. Starts `snmpd` on `127.0.0.1:10161` with a temp AgentX socket (no root needed)
 2. Starts `smartmon-snmp-agentxd` against fixture JSON files
 3. Runs `snmpwalk` over all MIB subtrees
-4. Validates 113 specific OID values across all device types and table columns
+4. Validates MIB values and trap notifications across all device types
 
 ### Docker (full build + integration test)
 
@@ -317,7 +317,7 @@ Common causes: `state_dir` not set, no JSON files in `state_dir`, or
 **snmpwalk returns "No Such Object":**
 The agent may not have registered yet.  Check:
 ```bash
-snmpget -v2c -c public localhost 1.3.6.1.4.1.99999.2.1.2.0
+snmpget -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2.1.1.0
 ```
 Should return `Gauge32: N` (number of devices).
 
@@ -328,5 +328,5 @@ Ensure smartd is using `-x` (extended monitoring), not just `-a`.
 Install MIBs to `/usr/share/snmp/mibs/` and use `-m ALL`:
 ```bash
 export MIBS=ALL
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.99999
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1
 ```

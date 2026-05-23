@@ -398,7 +398,7 @@ echo "  enabled and (re)started: smartmon-snmp-agentxd.service"
 
 echo ""
 echo "  Deployment complete.  Verify with:"
-echo "    snmpwalk -v2c -c public localhost 1.3.6.1.4.1.99999.2"
+echo "    snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2"
 REMOTE_SCRIPT
 
 echo ""

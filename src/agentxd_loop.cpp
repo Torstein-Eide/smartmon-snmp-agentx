@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <syslog.h>
@@ -38,8 +39,19 @@ bool agentxd_loop_init(const AgentxConfig &cfg) {
                           NETSNMP_DS_AGENT_X_SOCKET,
                           cfg.agentx_socket.c_str());
 
-    // Suppress net-snmp's own logging (we use syslog directly)
-    snmp_disable_log();
+    // Suppress net-snmp's own logging unless explicitly requested for
+    // AgentX registration/debugging runs.
+    const char *netsnmp_log = getenv("AGENTXD_NETSNMP_LOG");
+    if (netsnmp_log && strcmp(netsnmp_log, "0") != 0) {
+        snmp_enable_stderrlog();
+        const char *tokens = getenv("AGENTXD_NETSNMP_DEBUG");
+        if (tokens && *tokens) {
+            snmp_set_do_debugging(1);
+            debug_register_tokens(tokens);
+        }
+    } else {
+        snmp_disable_log();
+    }
 
     if (init_agent("smartmon-snmp-agentxd") != 0) {
         syslog(LOG_ERR, "init_agent failed — cannot connect to snmpd AgentX socket %s",
