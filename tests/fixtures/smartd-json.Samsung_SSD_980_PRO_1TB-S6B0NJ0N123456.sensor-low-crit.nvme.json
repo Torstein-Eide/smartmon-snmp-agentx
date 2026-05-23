@@ -25,7 +25,7 @@
     "nsid": -1,
     "critical_warning": 0,
     "temperature": 38,
-    "available_spare": 100,
+    "available_spare": 8,
     "available_spare_threshold": 10,
     "percentage_used": 2,
     "data_units_read": 12004521,
@@ -64,7 +64,10 @@
   "nvme_power_states": [
     {
       "non_operational_state": false,
-      "max_power": { "value": 7, "units_per_watt": 1 },
+      "max_power": {
+        "value": 7,
+        "units_per_watt": 1
+      },
       "entry_latency_us": 0,
       "exit_latency_us": 0,
       "relative_read_latency": 0,
@@ -74,7 +77,10 @@
     },
     {
       "non_operational_state": true,
-      "max_power": { "value": 10, "units_per_watt": 1000 },
+      "max_power": {
+        "value": 10,
+        "units_per_watt": 1000
+      },
       "entry_latency_us": 5000,
       "exit_latency_us": 10000,
       "relative_read_latency": 3,

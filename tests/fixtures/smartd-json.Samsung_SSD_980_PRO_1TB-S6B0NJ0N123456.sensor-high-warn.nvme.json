@@ -17,14 +17,14 @@
     "passed": true
   },
   "temperature": {
-    "current": 38,
+    "current": 73,
     "lifetime_min": 22,
     "lifetime_max": 55
   },
   "nvme_smart_health_information_log": {
     "nsid": -1,
     "critical_warning": 0,
-    "temperature": 38,
+    "temperature": 73,
     "available_spare": 100,
     "available_spare_threshold": 10,
     "percentage_used": 2,
@@ -41,8 +41,8 @@
     "warning_temp_time": 0,
     "critical_comp_time": 0,
     "temperature_sensors": [
-      38,
-      41
+      73,
+      75
     ]
   },
   "model_name": "Samsung SSD 980 PRO 1TB",
@@ -64,7 +64,10 @@
   "nvme_power_states": [
     {
       "non_operational_state": false,
-      "max_power": { "value": 7, "units_per_watt": 1 },
+      "max_power": {
+        "value": 7,
+        "units_per_watt": 1
+      },
       "entry_latency_us": 0,
       "exit_latency_us": 0,
       "relative_read_latency": 0,
@@ -74,7 +77,10 @@
     },
     {
       "non_operational_state": true,
-      "max_power": { "value": 10, "units_per_watt": 1000 },
+      "max_power": {
+        "value": 10,
+        "units_per_watt": 1000
+      },
       "entry_latency_us": 5000,
       "exit_latency_us": 10000,
       "relative_read_latency": 3,
@@ -176,5 +182,9 @@
         "segment_number": 0
       }
     ]
+  },
+  "nvme_composite_temperature_threshold": {
+    "warning": 70,
+    "critical": 80
   }
 }

@@ -17,9 +17,17 @@ fixture_variants:
   patterns:
     - "*.failing.json"
     - "*.selftest-fail.json"
+    - "*.selftest-fail.ata.json"
+    - "*.selftest-fail.scsi.json"
     - "*.attr-fail.ata.json"
+    - "*.health-fail.ata.json"
+    - "*.health-fail.scsi.json"
     - "*.nofail.ata.json"
     - "*.uncorrected.scsi.json"
+    - "*.sensor-high-crit.nvme.json"
+    - "*.sensor-high-warn.nvme.json"
+    - "*.sensor-low-warn.nvme.json"
+    - "*.sensor-low-crit.nvme.json"
 
 # Each device entry describes how to discover the device's index from the walk
 # output.  The runner greps the walk file for a line matching value_pattern and
@@ -495,7 +503,7 @@ notifications:
       - {oid_suffix: ".2.3.2", value_pattern: ".*"}
 
   - name: "common DevicePollFailed"
-    skip: "no fixture (requires an unreadable or corrupt JSON file)"
+    skip: "no fixture (poll_result is always POLL_OK for valid JSON files)"
     expected_traps:
       - {oid_suffix: ".2.3.3", value_pattern: ".*"}
 
@@ -518,7 +526,10 @@ notifications:
 
   # ── SATA (smartmonSataMIB = ent_oid.4; notifications at .4.2.x) ──────
   - name: "sata HealthFailed"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.health-fail.ata.json"
+    replace_fixture:  "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".4.2.1", value_pattern: ".*"}
 
@@ -531,18 +542,27 @@ notifications:
       - {oid_suffix: ".4.2.2", value_pattern: ".*"}
 
   - name: "sata SelfTestFailed"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.selftest-fail.ata.json"
+    replace_fixture:  "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".4.2.3", value_pattern: ".*"}
 
   # ── SAS (smartmonSasMIB = ent_oid.5; notifications at .5.2.x) ────────
   - name: "sas HealthFailed"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.health-fail.scsi.json"
+    replace_fixture:  "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.scsi.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".5.2.1", value_pattern: ".*"}
 
   - name: "sas SelfTestFailed"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.selftest-fail.scsi.json"
+    replace_fixture:  "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.scsi.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".5.2.2", value_pattern: ".*"}
 
@@ -555,27 +575,42 @@ notifications:
       - {oid_suffix: ".5.2.3", value_pattern: ".*"}
 
   # ── Sensor (smartmonSensorMIB = ent_oid.6; notifications at .6.2.x) ──
+  # Sensor threshold fixtures add nvme_composite_temperature_threshold to
+  # the NVMe JSON so the daemon populates has_high_warning/has_high_critical.
+  # LowWarning/LowCritical use the available_spare field (threshold = spare_threshold * 2 / spare_threshold).
   - name: "sensor HighCriticalExceeded"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-high-crit.nvme.json"
+    replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".6.2.1", value_pattern: ".*"}
 
   - name: "sensor HighWarningExceeded"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-high-warn.nvme.json"
+    replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".6.2.2", value_pattern: ".*"}
 
   - name: "sensor LowWarningExceeded"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-low-warn.nvme.json"
+    replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".6.2.3", value_pattern: ".*"}
 
   - name: "sensor LowCriticalExceeded"
-    skip: "no fixture"
+    trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-low-crit.nvme.json"
+    replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
+    wait_seconds: 3
+    skip: "not yet implemented"
     expected_traps:
       - {oid_suffix: ".6.2.4", value_pattern: ".*"}
 
   - name: "sensor NonOperational"
-    skip: "no fixture"
+    skip: "no fixture (oper_status is always ok for well-formed JSON)"
     expected_traps:
       - {oid_suffix: ".6.2.5", value_pattern: ".*"}
