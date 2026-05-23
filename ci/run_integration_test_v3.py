@@ -443,7 +443,10 @@ def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Pa
             oid_suffix = et.get("oid_suffix", "")
             value_pat = et.get("value_pattern", ".*")
             oid_full = f"{ent_oid}{oid_suffix}"
-            pattern = re.compile(rf"{re.escape(oid_full)}.*{value_pat}")
+            oid_forms = [re.escape(oid_full)]
+            if oid_full.startswith("1.3.6.1.4.1."):
+                oid_forms.append(re.escape("enterprises." + oid_full[len("1.3.6.1.4.1."):]))
+            pattern = re.compile(rf"(?:{'|'.join(oid_forms)}).*{value_pat}")
             if pattern.search(new_trap_text):
                 passed += 1
             else:

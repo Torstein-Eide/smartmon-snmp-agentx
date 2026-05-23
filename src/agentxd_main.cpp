@@ -98,7 +98,11 @@ int main(int argc, char *argv[])
         }
     }
 
-    openlog("smartmon-snmp-agentxd", LOG_PID | LOG_CONS, LOG_DAEMON);
+    // LOG_PERROR mirrors syslog() to stderr when no syslogd is available.
+    int log_opts = LOG_PID | LOG_CONS;
+    if (foreground)
+        log_opts |= LOG_PERROR;
+    openlog("smartmon-snmp-agentxd", log_opts, LOG_DAEMON);
 
     AgentxConfig cfg;
     cfg.foreground = foreground;

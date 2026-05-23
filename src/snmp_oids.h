@@ -116,12 +116,19 @@ static const oid oid_nvme_capability_row_count[]   = { SMARTMON_ENT, 3, 1, 22 };
 static const oid oid_nvme_capability_last_change[] = { SMARTMON_ENT, 3, 1, 23 };
 static const oid oid_nvme_capability_table[]       = { SMARTMON_ENT, 3, 1, 24 };
 
-// NVMe health scalar for trap varbinds (column 1 in health table)
+// NVMe health table column OIDs (table = .3.1.15; col 1 = overallStatus, col 2 = criticalWarning)
 static const oid oid_nvme_health_status[]          = { SMARTMON_ENT, 3, 1, 15, 1, 1 };
+static const oid oid_nvme_critical_warning[]       = { SMARTMON_ENT, 3, 1, 15, 1, 2 };
+
+// NVMe self-test table column OIDs (table = .3.1.18; col 1 = NOT-ACCESSIBLE index)
+static const oid oid_nvme_selftest_number[]        = { SMARTMON_ENT, 3, 1, 18, 1, 2 };
+static const oid oid_nvme_selftest_type[]          = { SMARTMON_ENT, 3, 1, 18, 1, 3 };
+static const oid oid_nvme_selftest_result[]        = { SMARTMON_ENT, 3, 1, 18, 1, 4 };
+static const oid oid_nvme_selftest_result_text[]   = { SMARTMON_ENT, 3, 1, 18, 1, 5 };
 
 // NVMe notifications
-static const oid oid_notif_nvme_selftest_failed[]  = { SMARTMON_ENT, 3, 2, 1 };
-static const oid oid_notif_nvme_health_changed[]   = { SMARTMON_ENT, 3, 2, 2 };
+static const oid oid_notif_nvme_health_changed[]   = { SMARTMON_ENT, 3, 2, 1 };
+static const oid oid_notif_nvme_selftest_failed[]  = { SMARTMON_ENT, 3, 2, 2 };
 
 // ---------------------------------------------------------------------------
 // SATA MIB (.4.1.X)
@@ -193,10 +200,23 @@ static const oid oid_sata_pending_def_row_count[]  = { SMARTMON_ENT, 4, 1, 41 };
 static const oid oid_sata_pending_def_last_change[]= { SMARTMON_ENT, 4, 1, 42 };
 static const oid oid_sata_pending_def_table[]      = { SMARTMON_ENT, 4, 1, 43 };
 
+// SATA health table column OIDs (table = .4.1.6; col 1 = overallStatus)
+static const oid oid_sata_health_status[]          = { SMARTMON_ENT, 4, 1, 6, 1, 1 };
+
+// SATA attr table column OIDs (table = .4.1.9; col 1=id, col 2=name, col 6=value, col 8=threshold)
+static const oid oid_sata_attr_id[]                = { SMARTMON_ENT, 4, 1, 9, 1, 1 };
+static const oid oid_sata_attr_name[]              = { SMARTMON_ENT, 4, 1, 9, 1, 2 };
+static const oid oid_sata_attr_value[]             = { SMARTMON_ENT, 4, 1, 9, 1, 6 };
+static const oid oid_sata_attr_threshold[]         = { SMARTMON_ENT, 4, 1, 9, 1, 8 };
+
+// SATA self-test table column OIDs (table = .4.1.18; col 1 = NOT-ACCESSIBLE index)
+static const oid oid_sata_selftest_type[]          = { SMARTMON_ENT, 4, 1, 18, 1, 2 };
+static const oid oid_sata_selftest_result[]        = { SMARTMON_ENT, 4, 1, 18, 1, 3 };
+
 // SATA notifications
-static const oid oid_notif_sata_selftest_failed[]    = { SMARTMON_ENT, 4, 2, 1 };
-static const oid oid_notif_sata_health_degraded[]    = { SMARTMON_ENT, 4, 2, 2 };
-static const oid oid_notif_sata_attr_threshold_met[] = { SMARTMON_ENT, 4, 2, 3 };
+static const oid oid_notif_sata_health_degraded[]    = { SMARTMON_ENT, 4, 2, 1 };
+static const oid oid_notif_sata_attr_threshold_met[] = { SMARTMON_ENT, 4, 2, 2 };
+static const oid oid_notif_sata_selftest_failed[]    = { SMARTMON_ENT, 4, 2, 3 };
 
 // ---------------------------------------------------------------------------
 // SAS MIB (.5.1.X)
@@ -233,9 +253,21 @@ static const oid oid_sas_bgscan_row_count[]         = { SMARTMON_ENT, 5, 1, 13 }
 static const oid oid_sas_bgscan_last_change[]       = { SMARTMON_ENT, 5, 1, 14 };
 static const oid oid_sas_bgscan_table[]             = { SMARTMON_ENT, 5, 1, 15 };
 
+// SAS health table column OIDs (table = .5.1.6; col 1 = overallStatus)
+static const oid oid_sas_health_status[]            = { SMARTMON_ENT, 5, 1, 6, 1, 1 };
+
+// SAS self-test table column OIDs (table = .5.1.12; col 1 = NOT-ACCESSIBLE index)
+static const oid oid_sas_selftest_type[]            = { SMARTMON_ENT, 5, 1, 12, 1, 2 };
+static const oid oid_sas_selftest_result[]          = { SMARTMON_ENT, 5, 1, 12, 1, 4 };
+static const oid oid_sas_selftest_result_str[]      = { SMARTMON_ENT, 5, 1, 12, 1, 5 };
+
+// SAS error counter table column OIDs (table = .5.1.9; col 1 = direction NOT-ACCESSIBLE)
+static const oid oid_sas_uncorrected_errors[]       = { SMARTMON_ENT, 5, 1, 9, 1, 8 };
+
 // SAS notifications
-static const oid oid_notif_sas_selftest_failed[] = { SMARTMON_ENT, 5, 2, 1 };
-static const oid oid_notif_sas_health_changed[]  = { SMARTMON_ENT, 5, 2, 2 };
+static const oid oid_notif_sas_health_changed[]         = { SMARTMON_ENT, 5, 2, 1 };
+static const oid oid_notif_sas_selftest_failed[]        = { SMARTMON_ENT, 5, 2, 2 };
+static const oid oid_notif_sas_uncorrected_errors[]     = { SMARTMON_ENT, 5, 2, 3 };
 
 // ---------------------------------------------------------------------------
 // SENSOR MIB (.6.1.X)
@@ -254,6 +286,7 @@ static const oid oid_sensor_name[]         = { SMARTMON_ENT, 6, 1, 3, 1, 3 };
 static const oid oid_sensor_value[]        = { SMARTMON_ENT, 6, 1, 3, 1, 7 };
 static const oid oid_sensor_oper_status[]  = { SMARTMON_ENT, 6, 1, 3, 1, 8 };
 static const oid oid_sensor_units[]        = { SMARTMON_ENT, 6, 1, 3, 1, 9 };
+static const oid oid_sensor_timestamp[]    = { SMARTMON_ENT, 6, 1, 3, 1, 10 };
 static const oid oid_sensor_high_critical[]= { SMARTMON_ENT, 6, 1, 3, 1, 12 };
 static const oid oid_sensor_high_warning[] = { SMARTMON_ENT, 6, 1, 3, 1, 13 };
 static const oid oid_sensor_low_warning[]  = { SMARTMON_ENT, 6, 1, 3, 1, 14 };

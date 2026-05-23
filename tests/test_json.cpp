@@ -283,7 +283,9 @@ int main(int argc, char *argv[]) {
         std::string p = argv[i];
         if (p.find(".nvme.json") != std::string::npos && !nvme_path)
             nvme_path = argv[i];
-        else if (p.find("SELFTESTS") != std::string::npos && !ata_st_path)
+        else if (p.find("SELFTESTS") != std::string::npos && !ata_st_path
+                 && p.find(".nofail.") == std::string::npos
+                 && p.find(".attr-fail.") == std::string::npos)
             ata_st_path = argv[i];
         else if (p.find(".ata.json") != std::string::npos && !ata_path)
             ata_path = argv[i];

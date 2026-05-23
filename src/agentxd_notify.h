@@ -2,17 +2,37 @@
 
 #pragma once
 
-#include <cstdint>
+#include "agentxd_cache.h"
 
-// Send smartmonDeviceHealthChanged notification.
-// new_status: SmartmonHealthStatus value (1=passed, 2=failed, 0=unknown)
+#include <cstdint>
+#include <string>
+
+// Health-change notifications (Common + per-protocol)
 void notify_device_health_changed(uint32_t dev_idx, int new_status);
 
-// Send smartmonDevicePollingFailed notification.
-// poll_result: SmartmonPollResult value
+// Poll-failure notification (Common MIB)
 void notify_device_polling_failed(uint32_t dev_idx, int poll_result);
 
-// Send *SelfTestFailed notification appropriate for the device protocol.
-// type_str: human-readable self-test type, e.g. "Short" or "Extended"
-void notify_selftest_failed(uint32_t dev_idx, const char *type_str,
-                            int result_code);
+// Self-test failure notifications (per-protocol, MIB-correct varbinds)
+void notify_nvme_selftest_failed(uint32_t dev_idx, const CacheNvmeSelfTestRow &st);
+void notify_sata_selftest_failed(uint32_t dev_idx, const CacheSataSelfTestRow &st);
+void notify_sas_selftest_failed(uint32_t dev_idx, const CacheSasSelfTestRow &st);
+
+// Device lifecycle notifications (Common MIB)
+void notify_device_discovered(uint32_t dev_idx);
+// name/path passed explicitly because the cache row may already be erased
+void notify_device_removed(uint32_t dev_idx, const std::string &name,
+                           const std::string &path, int dev_type);
+
+// SATA prefailure attribute threshold crossed
+void notify_sata_attr_failing(uint32_t dev_idx, const CacheSataAttrRow &attr);
+
+// SAS uncorrected error count increased
+void notify_sas_uncorrected_errors_increased(uint32_t dev_idx,
+                                             const CacheSasErrorCounterRow &row);
+
+// Sensor threshold/state notifications (Sensor MIB)
+void notify_sensor_high_critical(uint32_t dev_idx, const CacheSensorRow &sensor);
+void notify_sensor_high_warning(uint32_t dev_idx, const CacheSensorRow &sensor);
+void notify_sensor_low_warning(uint32_t dev_idx, const CacheSensorRow &sensor);
+void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor);

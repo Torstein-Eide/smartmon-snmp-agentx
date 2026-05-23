@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 // Stub syslog so we can link without the full daemon infrastructure.
 // Must use C linkage because agentxd_datasrc.cpp includes <syslog.h> inside
@@ -24,6 +25,81 @@ extern "C" void syslog_stub(int, const char *fmt, ...) {
 int g_verbosity = 0;
 #include "../src/agentxd_cache.cpp"
 #include "../src/agentxd_json.cpp"
+
+#include "../src/agentxd_notify.h"
+
+struct NotifyCall {
+    std::string type;
+    uint32_t    dev_idx { 0 };
+    int         int_arg { 0 };
+    uint32_t    uint_arg { 0 };
+    std::string str1;
+    uint64_t    u64_arg { 0 };
+};
+
+static std::vector<NotifyCall> g_notify_calls;
+static void clear_notify_calls() { g_notify_calls.clear(); }
+
+static const NotifyCall *find_call(const std::string &type) {
+    for (auto &c : g_notify_calls)
+        if (c.type == type) return &c;
+    return nullptr;
+}
+
+void notify_device_health_changed(uint32_t dev_idx, int new_status) {
+    g_notify_calls.push_back({"health_changed", dev_idx, new_status, 0, {}, 0});
+}
+void notify_device_polling_failed(uint32_t dev_idx, int poll_result) {
+    g_notify_calls.push_back({"poll_failed", dev_idx, poll_result, 0, {}, 0});
+}
+void notify_nvme_selftest_failed(uint32_t dev_idx, const CacheNvmeSelfTestRow &st) {
+    NotifyCall c; c.type = "nvme_selftest_failed"; c.dev_idx = dev_idx;
+    c.int_arg = st.result; c.uint_arg = st.number; c.str1 = st.result_text;
+    g_notify_calls.push_back(c);
+}
+void notify_sata_selftest_failed(uint32_t dev_idx, const CacheSataSelfTestRow &st) {
+    NotifyCall c; c.type = "sata_selftest_failed"; c.dev_idx = dev_idx;
+    c.int_arg = st.result; c.uint_arg = st.entry_index;
+    g_notify_calls.push_back(c);
+}
+void notify_sas_selftest_failed(uint32_t dev_idx, const CacheSasSelfTestRow &st) {
+    NotifyCall c; c.type = "sas_selftest_failed"; c.dev_idx = dev_idx;
+    c.int_arg = st.result; c.uint_arg = st.entry_index;
+    g_notify_calls.push_back(c);
+}
+void notify_device_discovered(uint32_t dev_idx) {
+    g_notify_calls.push_back({"discovered", dev_idx, 0, 0, {}, 0});
+}
+void notify_device_removed(uint32_t dev_idx, const std::string &name,
+                           const std::string &, int dev_type) {
+    NotifyCall c; c.type = "removed"; c.dev_idx = dev_idx;
+    c.int_arg = dev_type; c.str1 = name;
+    g_notify_calls.push_back(c);
+}
+void notify_sata_attr_failing(uint32_t dev_idx, const CacheSataAttrRow &attr) {
+    NotifyCall c; c.type = "sata_attr_failing"; c.dev_idx = dev_idx;
+    c.uint_arg = attr.attr_id; c.str1 = attr.name;
+    g_notify_calls.push_back(c);
+}
+void notify_sas_uncorrected_errors_increased(uint32_t dev_idx,
+                                             const CacheSasErrorCounterRow &ec) {
+    NotifyCall c; c.type = "sas_uncorrected"; c.dev_idx = dev_idx;
+    c.int_arg = ec.direction; c.u64_arg = ec.uncorrected;
+    g_notify_calls.push_back(c);
+}
+void notify_sensor_high_critical(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    g_notify_calls.push_back({"sensor_high_critical", dev_idx, sensor.value, sensor.sensor_index, sensor.name, 0});
+}
+void notify_sensor_high_warning(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    g_notify_calls.push_back({"sensor_high_warning", dev_idx, sensor.value, sensor.sensor_index, sensor.name, 0});
+}
+void notify_sensor_low_warning(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    g_notify_calls.push_back({"sensor_low_warning", dev_idx, sensor.value, sensor.sensor_index, sensor.name, 0});
+}
+void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    g_notify_calls.push_back({"sensor_low_critical", dev_idx, sensor.value, sensor.sensor_index, sensor.name, 0});
+}
+
 #include "../src/agentxd_datasrc.cpp"
 #undef syslog
 
@@ -399,33 +475,175 @@ static void test_cache_upsert() {
     g_cache.remove_device(idx1);
 }
 
+static void test_notify_no_discovered_during_startup(const char *path) {
+    SECTION("notify: no device_discovered during initial startup scan");
+    s_initial_scan_done = false;
+    g_cache.clear();
+    clear_notify_calls();
+    load_fixture(path);
+    CHECK(find_call("discovered") == nullptr);
+}
+
+static void test_notify_discovered(const char *path) {
+    SECTION("notify: device_discovered on first load after startup");
+    g_cache.clear();
+    clear_notify_calls();
+    uint32_t idx = load_fixture(path);
+    CHECK(idx > 0);
+    const NotifyCall *c = find_call("discovered");
+    CHECK(c != nullptr);
+    if (c) CHECK_EQ(c->dev_idx, idx);
+    CHECK(find_call("health_changed") == nullptr);
+}
+
+static void test_notify_health_changed(const char *healthy_path,
+                                       const char *failing_path) {
+    SECTION("notify: health_changed on status transition");
+    g_cache.clear();
+    load_fixture(healthy_path);
+    clear_notify_calls();
+    uint32_t idx = load_fixture(failing_path);
+    CHECK(idx > 0);
+    const NotifyCall *c = find_call("health_changed");
+    CHECK(c != nullptr);
+    if (c) {
+        CHECK_EQ(c->dev_idx, idx);
+        CHECK_EQ(c->int_arg, 2);
+    }
+    CHECK(find_call("discovered") == nullptr);
+}
+
+static void test_notify_sata_selftest_failed(const char *nofail_path,
+                                             const char *fail_path) {
+    SECTION("notify: sata_selftest_failed on new failure entry");
+    g_cache.clear();
+    load_fixture(nofail_path);
+    clear_notify_calls();
+    uint32_t idx = load_fixture(fail_path);
+    CHECK(idx > 0);
+    const NotifyCall *c = find_call("sata_selftest_failed");
+    CHECK(c != nullptr);
+    if (c) CHECK_EQ(c->dev_idx, idx);
+}
+
+static void test_notify_sata_attr_failing(const char *ok_path,
+                                          const char *fail_path) {
+    SECTION("notify: sata_attr_failing when attr crosses threshold");
+    g_cache.clear();
+    load_fixture(ok_path);
+    clear_notify_calls();
+    uint32_t idx = load_fixture(fail_path);
+    CHECK(idx > 0);
+    const NotifyCall *c = find_call("sata_attr_failing");
+    CHECK(c != nullptr);
+    if (c) {
+        CHECK_EQ(c->dev_idx, idx);
+        CHECK_EQ(c->uint_arg, 1u);
+    }
+}
+
+static void test_notify_nvme_selftest_failed(const char *ok_path,
+                                             const char *fail_path) {
+    SECTION("notify: nvme_selftest_failed on new failure");
+    g_cache.clear();
+    load_fixture(ok_path);
+    clear_notify_calls();
+    uint32_t idx = load_fixture(fail_path);
+    CHECK(idx > 0);
+    const NotifyCall *c = find_call("nvme_selftest_failed");
+    CHECK(c != nullptr);
+    if (c) {
+        CHECK_EQ(c->dev_idx, idx);
+        CHECK(c->int_arg != 0);
+        CHECK(!c->str1.empty());
+    }
+}
+
+static void test_notify_sas_uncorrected(const char *ok_path,
+                                        const char *fail_path) {
+    SECTION("notify: sas_uncorrected_errors_increased");
+    g_cache.clear();
+    load_fixture(ok_path);
+    clear_notify_calls();
+    uint32_t idx = load_fixture(fail_path);
+    CHECK(idx > 0);
+    const NotifyCall *c = find_call("sas_uncorrected");
+    CHECK(c != nullptr);
+    if (c) {
+        CHECK_EQ(c->dev_idx, idx);
+        CHECK_EQ(c->int_arg, 1);
+        CHECK_EQ(c->u64_arg, 5u);
+    }
+}
+
+static void test_notify_device_removed() {
+    SECTION("notify: device_removed via agentxd_datasrc_remove_device");
+    g_cache.clear();
+    uint32_t idx = g_cache.upsert_device("/dev/test_notify_remove", PROTO_ATA);
+    for (auto &d : g_cache.devices)
+        if (d.index == idx) { d.name = "test_notify_remove"; break; }
+    clear_notify_calls();
+    agentxd_datasrc_remove_device(idx);
+    const NotifyCall *c = find_call("removed");
+    CHECK(c != nullptr);
+    if (c) {
+        CHECK_EQ(c->dev_idx, idx);
+        CHECK_STR(c->str1, "test_notify_remove");
+    }
+    CHECK(g_cache.find_device(idx) == nullptr);
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
 int main(int argc, char *argv[]) {
     // argv[1..] = fixture file paths
-    const char *nvme_path    = nullptr;
-    const char *nvme_st_path = nullptr;  // NVMe with self-test log
-    const char *ata_path     = nullptr;
-    const char *ata_st_path  = nullptr;
-    const char *scsi_path    = nullptr;
-    const char *wdc_path     = nullptr;  // WDC fixture with new SATA tables
+    const char *nvme_path         = nullptr;
+    const char *nvme_st_path      = nullptr;  // NVMe 980 PRO healthy
+    const char *nvme_failing_path = nullptr;
+    const char *nvme_stfail_path  = nullptr;
+    const char *ata_path          = nullptr;
+    const char *ata_st_path       = nullptr;
+    const char *ata_stfail_path   = nullptr;
+    const char *ata_nofail_path   = nullptr;
+    const char *ata_attrfail_path = nullptr;
+    const char *scsi_path         = nullptr;
+    const char *scsi_uncorr_path  = nullptr;
+    const char *wdc_path          = nullptr;  // WDC fixture with new SATA tables
 
     for (int i = 1; i < argc; ++i) {
         std::string p = argv[i];
-        if (p.find("980_PRO") != std::string::npos && !nvme_st_path)
-            nvme_st_path = argv[i];
-        else if (p.find(".nvme.json") != std::string::npos && !nvme_path)
+        if (p.find("980_PRO") != std::string::npos) {
+            if (p.find(".failing.") != std::string::npos)
+                nvme_failing_path = argv[i];
+            else if (p.find(".selftest-fail.") != std::string::npos)
+                nvme_stfail_path = argv[i];
+            else if (!nvme_st_path)
+                nvme_st_path = argv[i];
+        } else if (p.find(".nvme.json") != std::string::npos && !nvme_path) {
             nvme_path = argv[i];
-        else if (p.find("SELFTESTS") != std::string::npos && !ata_st_path)
-            ata_st_path = argv[i];
-        else if (p.find("WDC_WD140EFGX_68B0GN0-81GDJW2V") != std::string::npos)
+        } else if (p.find("SELFTESTS") != std::string::npos) {
+            if (p.find(".nofail.") != std::string::npos)
+                ata_nofail_path = argv[i];
+            else if (p.find(".attr-fail.") != std::string::npos)
+                ata_attrfail_path = argv[i];
+            else if (p.find(".selftest-fail.") != std::string::npos)
+                ata_stfail_path = argv[i];
+            else if (p.find(".health-fail.") == std::string::npos && !ata_st_path)
+                ata_st_path = argv[i];
+        } else if (p.find("WDC_WD140EFGX_68B0GN0-81GDJW2V") != std::string::npos) {
             wdc_path = argv[i];
-        else if (p.find(".ata.json") != std::string::npos && !ata_path)
+        } else if (p.find(".ata.json") != std::string::npos && !ata_path) {
             ata_path = argv[i];
-        else if (p.find(".scsi.json") != std::string::npos && !scsi_path)
-            scsi_path = argv[i];
+        } else if (p.find(".scsi.json") != std::string::npos) {
+            if (p.find(".uncorrected.") != std::string::npos)
+                scsi_uncorr_path = argv[i];
+            else if (p.find(".health-fail.") == std::string::npos
+                     && p.find(".selftest-fail.") == std::string::npos
+                     && !scsi_path)
+                scsi_path = argv[i];
+        }
     }
 
     test_cache_remove();
@@ -437,6 +655,23 @@ int main(int argc, char *argv[]) {
     if (ata_path)     test_ata_attrs(ata_path);
     if (ata_st_path)  test_ata_selftest(ata_st_path);
     if (scsi_path)    test_scsi_health(scsi_path);
+
+    test_notify_device_removed();
+    if (nvme_st_path)
+        test_notify_no_discovered_during_startup(nvme_st_path);
+    s_initial_scan_done = true;
+    if (nvme_st_path)
+        test_notify_discovered(nvme_st_path);
+    if (nvme_st_path && nvme_failing_path)
+        test_notify_health_changed(nvme_st_path, nvme_failing_path);
+    if (nvme_st_path && nvme_stfail_path)
+        test_notify_nvme_selftest_failed(nvme_st_path, nvme_stfail_path);
+    if (ata_nofail_path && ata_stfail_path)
+        test_notify_sata_selftest_failed(ata_nofail_path, ata_stfail_path);
+    if (ata_st_path && ata_attrfail_path)
+        test_notify_sata_attr_failing(ata_st_path, ata_attrfail_path);
+    if (scsi_path && scsi_uncorr_path)
+        test_notify_sas_uncorrected(scsi_path, scsi_uncorr_path);
 
     return test_summary();
 }

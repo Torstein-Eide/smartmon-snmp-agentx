@@ -4,6 +4,7 @@
 #include "agentxd_cache.h"
 #include "agentxd_config.h"
 #include "agentxd_json.h"
+#include "agentxd_notify.h"
 
 #include <algorithm>
 #include <cctype>
@@ -69,9 +70,11 @@ static const std::string& pci_vendor_name(uint32_t vid)
 // Module state
 // ---------------------------------------------------------------------------
 
-static int         s_inotify_fd  { -1 };
-static int         s_watch_wd    { -1 };
+static int         s_inotify_fd        { -1 };
+static int         s_watch_wd          { -1 };
 static std::string s_state_dir;
+// Suppress device-discovered notifications during the startup scan.
+static bool        s_initial_scan_done { false };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -233,9 +236,9 @@ static void populate_device_uris(CacheDeviceRow &row, DeviceProto proto) {
     row.uris = std::move(uris);
 }
 
-// Identify whether basename is a recognized smartd JSON state file and, if so,
-// set proto to the matching DeviceProto.  Device path is not decoded here — it
-// is read directly from the JSON content by process_json_file.
+// Identify whether basename is a recognized smartd JSON state file.  The
+// protocol is read from the JSON content by process_json_file; suffixes are only
+// used as a cheap filter for smartd's conventional names plus generic exports.
 static bool identify_state_file_proto(const std::string &basename,
                                       DeviceProto &proto) {
     // Determine type suffix and strip it
@@ -245,6 +248,7 @@ static bool identify_state_file_proto(const std::string &basename,
         { ".scsi.json", PROTO_SCSI },
         { ".sat.json",  PROTO_SAT  },
         { ".sas.json",  PROTO_SAS  },
+        { ".json",      PROTO_UNKNOWN },
     };
 
     const char *type_suffix = nullptr;
@@ -290,9 +294,7 @@ static bool state_dir_has_json(const std::string &dir) {
     bool found = false;
     while ((ent = readdir(d)) != nullptr) {
         std::string name = ent->d_name;
-        if (ends_with(name, ".ata.json") || ends_with(name, ".nvme.json") ||
-            ends_with(name, ".scsi.json") || ends_with(name, ".sat.json")  ||
-            ends_with(name, ".sas.json")) {
+        if (ends_with(name, ".json")) {
             found = true;
             break;
         }
@@ -1289,15 +1291,32 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
                 r.error_number      = static_cast<uint32_t>(e["error_number"].as_uint64());
                 r.lifetime_hours    = e["lifetime_hours"].as_uint64();
                 r.description       = e["error_description"].as_string();
+                if (r.description.empty())
+                    r.description   = e["description"].as_string();
+
                 const JVal &cr      = e["completion_registers"];
-                r.comp_reg_error    = static_cast<uint32_t>(cr["error"].as_uint64());
-                r.comp_reg_status   = static_cast<uint32_t>(cr["status"].as_uint64());
-                r.lba               = cr["lba"].as_uint64();
-                r.reg_command       = static_cast<uint32_t>(cr["command"].as_uint64());
-                r.reg_count         = static_cast<uint32_t>(cr["count"].as_uint64());
-                r.reg_device        = static_cast<uint32_t>(cr["device"].as_uint64());
-                r.reg_feature       = static_cast<uint32_t>(cr["features"].as_uint64());
-                r.state_value       = static_cast<uint32_t>(e["device_state"]["value"].as_uint64()) & 0x0fu;
+                if (cr.is_object()) {
+                    r.comp_reg_error  = static_cast<uint32_t>(cr["error"].as_uint64());
+                    r.comp_reg_status = static_cast<uint32_t>(cr["status"].as_uint64());
+                    r.lba             = cr["lba"].as_uint64();
+                    r.reg_command     = static_cast<uint32_t>(cr["command"].as_uint64());
+                    r.reg_count       = static_cast<uint32_t>(cr["count"].as_uint64());
+                    r.reg_device      = static_cast<uint32_t>(cr["device"].as_uint64());
+                    r.reg_feature     = static_cast<uint32_t>(cr["features"].as_uint64());
+                } else {
+                    r.comp_reg_error  = static_cast<uint32_t>(e["completion_register_error"].as_uint64());
+                    r.comp_reg_status = static_cast<uint32_t>(e["completion_register_status"].as_uint64());
+                    r.lba             = e["lba"].as_uint64();
+                    r.reg_command     = static_cast<uint32_t>(e["register_command"].as_uint64());
+                    r.reg_count       = static_cast<uint32_t>(e["register_count"].as_uint64());
+                    r.reg_device      = static_cast<uint32_t>(e["register_device"].as_uint64());
+                    r.reg_feature     = static_cast<uint32_t>(e["register_feature"].as_uint64());
+                }
+
+                uint64_t state_value = e["device_state"]["value"].as_uint64();
+                if (state_value == 0)
+                    state_value = e["state"]["value"].as_uint64();
+                r.state_value       = static_cast<uint32_t>(state_value) & 0x0fu;
                 g_cache.sata_error_log.push_back(r);
 
                 // Error cmd sub-table (previous commands leading to this error)
@@ -1544,6 +1563,153 @@ static void log_cache_summary() {
 }
 
 // ---------------------------------------------------------------------------
+// State snapshot for change detection and trap dispatch
+// ---------------------------------------------------------------------------
+
+struct DeviceSnapshot {
+    int      health_status              { -1 };
+    uint32_t last_failed_selftest_entry { 0 };
+    uint32_t last_failed_nvme_number    { 0 };
+    std::vector<uint32_t>             failing_attr_ids;
+    std::unordered_map<int, uint64_t> uncorrected_before;
+};
+
+static DeviceSnapshot capture_snapshot(uint32_t dev_idx, DeviceProto proto) {
+    DeviceSnapshot snap;
+
+    if (proto == PROTO_NVME) {
+        for (const auto &h : g_cache.nvme_health)
+            if (h.device_index == dev_idx) { snap.health_status = h.overall_status; break; }
+        for (const auto &st : g_cache.nvme_selftests)
+            if (st.device_index == dev_idx && st.result != 0)
+                snap.last_failed_nvme_number =
+                    std::max(snap.last_failed_nvme_number, st.number);
+    } else if (proto == PROTO_ATA || proto == PROTO_SAT) {
+        for (const auto &h : g_cache.sata_health)
+            if (h.device_index == dev_idx) { snap.health_status = h.overall_status; break; }
+        for (const auto &st : g_cache.sata_selftests)
+            if (st.device_index == dev_idx && !st.passed)
+                snap.last_failed_selftest_entry =
+                    std::max(snap.last_failed_selftest_entry, st.entry_index);
+        for (const auto &a : g_cache.sata_attrs)
+            if (a.device_index == dev_idx && a.threshold > 0 && a.value <= a.threshold)
+                snap.failing_attr_ids.push_back(a.attr_id);
+    } else if (proto == PROTO_SCSI || proto == PROTO_SAS) {
+        for (const auto &h : g_cache.sas_health)
+            if (h.device_index == dev_idx) { snap.health_status = h.overall_status; break; }
+        for (const auto &st : g_cache.sas_selftests)
+            if (st.device_index == dev_idx && !st.passed)
+                snap.last_failed_selftest_entry =
+                    std::max(snap.last_failed_selftest_entry, st.entry_index);
+        for (const auto &ec : g_cache.sas_error_counters)
+            if (ec.device_index == dev_idx)
+                snap.uncorrected_before[ec.direction] = ec.uncorrected;
+    }
+
+    return snap;
+}
+
+void agentxd_datasrc_remove_device(uint32_t dev_idx) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    if (dev)
+        notify_device_removed(dev_idx, dev->name, dev->path, (int)dev->proto);
+    g_cache.remove_device(dev_idx);
+}
+
+static void dispatch_notifications(uint32_t dev_idx, DeviceProto proto,
+                                   const DeviceSnapshot &snap, bool is_new) {
+    if (is_new) {
+        if (s_initial_scan_done)
+            notify_device_discovered(dev_idx);
+        return;
+    }
+
+    int new_health = -1;
+    if (proto == PROTO_NVME) {
+        for (const auto &h : g_cache.nvme_health)
+            if (h.device_index == dev_idx) { new_health = h.overall_status; break; }
+    } else if (proto == PROTO_ATA || proto == PROTO_SAT) {
+        for (const auto &h : g_cache.sata_health)
+            if (h.device_index == dev_idx) { new_health = h.overall_status; break; }
+    } else if (proto == PROTO_SCSI || proto == PROTO_SAS) {
+        for (const auto &h : g_cache.sas_health)
+            if (h.device_index == dev_idx) { new_health = h.overall_status; break; }
+    }
+    if (snap.health_status != -1 && new_health != -1 && snap.health_status != new_health)
+        notify_device_health_changed(dev_idx, new_health);
+
+    if (proto == PROTO_NVME) {
+        uint32_t new_failed = 0;
+        const CacheNvmeSelfTestRow *worst = nullptr;
+        for (const auto &st : g_cache.nvme_selftests) {
+            if (st.device_index != dev_idx || st.result == 0)
+                continue;
+            if (st.number > new_failed) { new_failed = st.number; worst = &st; }
+        }
+        if (worst && new_failed > snap.last_failed_nvme_number)
+            notify_nvme_selftest_failed(dev_idx, *worst);
+    } else if (proto == PROTO_ATA || proto == PROTO_SAT) {
+        uint32_t new_failed = 0;
+        const CacheSataSelfTestRow *worst = nullptr;
+        for (const auto &st : g_cache.sata_selftests) {
+            if (st.device_index != dev_idx || st.passed)
+                continue;
+            if (st.entry_index > new_failed) { new_failed = st.entry_index; worst = &st; }
+        }
+        if (worst && new_failed > snap.last_failed_selftest_entry)
+            notify_sata_selftest_failed(dev_idx, *worst);
+    } else if (proto == PROTO_SCSI || proto == PROTO_SAS) {
+        uint32_t new_failed = 0;
+        const CacheSasSelfTestRow *worst = nullptr;
+        for (const auto &st : g_cache.sas_selftests) {
+            if (st.device_index != dev_idx || st.passed)
+                continue;
+            if (st.entry_index > new_failed) { new_failed = st.entry_index; worst = &st; }
+        }
+        if (worst && new_failed > snap.last_failed_selftest_entry)
+            notify_sas_selftest_failed(dev_idx, *worst);
+    }
+
+    if (proto == PROTO_ATA || proto == PROTO_SAT) {
+        for (const auto &a : g_cache.sata_attrs) {
+            if (a.device_index != dev_idx)
+                continue;
+            if (a.threshold == 0 || a.value > a.threshold)
+                continue;
+            bool was_failing = std::find(snap.failing_attr_ids.begin(),
+                                         snap.failing_attr_ids.end(),
+                                         a.attr_id) != snap.failing_attr_ids.end();
+            if (!was_failing)
+                notify_sata_attr_failing(dev_idx, a);
+        }
+    }
+
+    if (proto == PROTO_SCSI || proto == PROTO_SAS) {
+        for (const auto &ec : g_cache.sas_error_counters) {
+            if (ec.device_index != dev_idx)
+                continue;
+            auto it = snap.uncorrected_before.find(ec.direction);
+            if (it != snap.uncorrected_before.end() && ec.uncorrected > it->second)
+                notify_sas_uncorrected_errors_increased(dev_idx, ec);
+        }
+    }
+
+    for (const auto &sensor : g_cache.sensors) {
+        if (sensor.device_index != dev_idx)
+            continue;
+        if (sensor.has_high_critical && sensor.value >= sensor.high_critical)
+            notify_sensor_high_critical(dev_idx, sensor);
+        else if (sensor.has_high_warning && sensor.value >= sensor.high_warning)
+            notify_sensor_high_warning(dev_idx, sensor);
+
+        if (sensor.has_low_critical && sensor.value <= sensor.low_critical)
+            notify_sensor_low_critical(dev_idx, sensor);
+        else if (sensor.has_low_warning && sensor.value <= sensor.low_warning)
+            notify_sensor_low_warning(dev_idx, sensor);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Parse one JSON state file into the cache
 // ---------------------------------------------------------------------------
 
@@ -1597,31 +1763,61 @@ static void process_json_file(const std::string &filepath) {
     if (g_verbosity >= 2)
         syslog(LOG_DEBUG, "datasrc: dev_idx=%u for '%s'", dev_idx, dev_path.c_str());
 
-    // Update device row metadata
-    for (auto &row : g_cache.devices) {
-        if (row.index != dev_idx) continue;
-        // Derive short name from last path component (e.g. "sda" from "/dev/sda")
-        {
-            const std::string &p = dev_path;
-            size_t slash = p.rfind('/');
-            row.name = (slash != std::string::npos) ? p.substr(slash + 1) : p;
+    bool is_new_device = false;
+    for (const auto &row : g_cache.devices) {
+        if (row.index == dev_idx) {
+            is_new_device = (row.last_json_mtime == 0);
+            break;
         }
-        populate_device_uris(row, proto);
-        row.last_poll_time = root["local_time"]["time_t"].as_int64();
-        row.last_json_mtime= mtime;
-        row.poll_result    = POLL_OK;
-        break;
+    }
+    DeviceSnapshot snap = capture_snapshot(dev_idx, proto);
+
+    // Update device row metadata
+    {
+        struct timespec t_uris;
+        clock_gettime(CLOCK_MONOTONIC, &t_uris);
+        for (auto &row : g_cache.devices) {
+            if (row.index != dev_idx) continue;
+            {
+                const std::string &p = dev_path;
+                size_t slash = p.rfind('/');
+                row.name = (slash != std::string::npos) ? p.substr(slash + 1) : p;
+            }
+            populate_device_uris(row, proto);
+            row.last_poll_time = root["local_time"]["time_t"].as_int64();
+            row.last_json_mtime= mtime;
+            row.poll_result    = POLL_OK;
+            break;
+        }
+        long uris_ms = elapsed_ms(t_uris);
+        if (uris_ms >= 10)
+            syslog(LOG_WARNING, "datasrc: populate_device_uris '%s' took %ldms",
+                   dev_path.c_str(), uris_ms);
+        else if (g_verbosity >= 1)
+            syslog(LOG_DEBUG, "datasrc: populate_device_uris '%s' took %ldms",
+                   dev_path.c_str(), uris_ms);
     }
 
     size_t sensors_before = g_cache.sensors.size();
 
     // Parse protocol-specific data
-    if (proto == PROTO_NVME)
-        parse_nvme(dev_idx, root);
-    else if (proto == PROTO_ATA || proto == PROTO_SAT)
-        parse_ata(dev_idx, root);
-    else if (proto == PROTO_SCSI || proto == PROTO_SAS)
-        parse_scsi(dev_idx, root);
+    {
+        struct timespec t_parse;
+        clock_gettime(CLOCK_MONOTONIC, &t_parse);
+        if (proto == PROTO_NVME)
+            parse_nvme(dev_idx, root);
+        else if (proto == PROTO_ATA || proto == PROTO_SAT)
+            parse_ata(dev_idx, root);
+        else if (proto == PROTO_SCSI || proto == PROTO_SAS)
+            parse_scsi(dev_idx, root);
+        long parse_ms = elapsed_ms(t_parse);
+        if (parse_ms >= 10)
+            syslog(LOG_WARNING, "datasrc: parse '%s' took %ldms",
+                   dev_path.c_str(), parse_ms);
+        else if (g_verbosity >= 1)
+            syslog(LOG_DEBUG, "datasrc: parse '%s' took %ldms",
+                   dev_path.c_str(), parse_ms);
+    }
 
     size_t sensors_added = g_cache.sensors.size() - sensors_before;
     if (g_verbosity >= 1)
@@ -1629,9 +1825,21 @@ static void process_json_file(const std::string &filepath) {
                dev_path.c_str(), sensors_added, g_cache.sensors.size());
 
     log_device_loaded(dev_idx, proto, dev_path);
-    if (g_verbosity >= 1)
-        syslog(LOG_DEBUG, "datasrc: process_json_file '%s' done in %ldms",
-               filepath.c_str(), elapsed_ms(t0));
+    {
+        struct timespec t_notif;
+        clock_gettime(CLOCK_MONOTONIC, &t_notif);
+        dispatch_notifications(dev_idx, proto, snap, is_new_device);
+        long notif_ms = elapsed_ms(t_notif);
+        if (notif_ms >= 10)
+            syslog(LOG_WARNING, "datasrc: dispatch_notifications '%s' took %ldms",
+                   dev_path.c_str(), notif_ms);
+        else if (g_verbosity >= 1)
+            syslog(LOG_DEBUG, "datasrc: dispatch_notifications '%s' took %ldms",
+                   dev_path.c_str(), notif_ms);
+    }
+
+    syslog(LOG_DEBUG, "datasrc: process_json_file '%s' done in %ldms",
+           filepath.c_str(), elapsed_ms(t0));
 }
 
 // ---------------------------------------------------------------------------
@@ -1660,6 +1868,7 @@ static void scan_state_dir() {
         process_json_file(s_state_dir + "/" + name);
     }
     closedir(d);
+    s_initial_scan_done = true;
     if (g_verbosity >= 1)
         syslog(LOG_DEBUG, "datasrc: scan done: %d file(s) found, %d accepted — sensors=%zu ts_sensor=%ld elapsed=%ldms",
                n_total, n_accepted,

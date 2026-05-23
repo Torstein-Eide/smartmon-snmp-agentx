@@ -1,10 +1,12 @@
-// agentxd_notify.cpp — SNMP v2 trap sender
+// agentxd_notify.cpp - SNMP v2 trap sender
 
 #include "agentxd_notify.h"
 #include "agentxd_cache.h"
 #include "snmp_oids.h"
 
 #include <cstring>
+#include <ctime>
+#include <syslog.h>
 #include <vector>
 
 #include <net-snmp/net-snmp-config.h>
@@ -15,12 +17,22 @@
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// Build the snmpTrapOID.0 varbind that starts every v2 trap, plus the
-// enterprise OID in snmpTrapEnterprise.0.  Returns the head of the list.
+static void send_v2trap_timed(netsnmp_variable_list *vars, const char *trap_name) {
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    send_v2trap(vars);
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+    if (ms >= 10)
+        syslog(LOG_WARNING, "notify: send_v2trap(%s) took %ldms", trap_name, ms);
+    else
+        syslog(LOG_DEBUG, "notify: send_v2trap(%s) took %ldms", trap_name, ms);
+}
+
 static netsnmp_variable_list *
 make_trap_header(const oid *trap_oid, size_t trap_oid_len) {
     netsnmp_variable_list *vars = nullptr;
-    // snmpTrapOID.0
     oid snmptrapoid[] = { 1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0 };
     size_t snmptrapoid_len = sizeof(snmptrapoid) / sizeof(snmptrapoid[0]);
     snmp_varlist_add_variable(&vars,
@@ -53,14 +65,91 @@ static void append_string(netsnmp_variable_list **vars,
                               (u_char*)str, strlen(str));
 }
 
+static void append_uint32_2idx(netsnmp_variable_list **vars,
+                               const oid *col_oid, size_t col_len,
+                               uint32_t idx1, uint32_t idx2,
+                               u_char asn_type, u_long value) {
+    std::vector<oid> inst(col_len + 2);
+    memcpy(inst.data(), col_oid, col_len * sizeof(oid));
+    inst[col_len] = (oid)idx1;
+    inst[col_len + 1] = (oid)idx2;
+    snmp_varlist_add_variable(vars, inst.data(), inst.size(),
+                              asn_type, (u_char*)&value, sizeof(value));
+}
+
+static void append_int32_2idx(netsnmp_variable_list **vars,
+                              const oid *col_oid, size_t col_len,
+                              uint32_t idx1, uint32_t idx2,
+                              int32_t value) {
+    long v = value;
+    std::vector<oid> inst(col_len + 2);
+    memcpy(inst.data(), col_oid, col_len * sizeof(oid));
+    inst[col_len] = (oid)idx1;
+    inst[col_len + 1] = (oid)idx2;
+    snmp_varlist_add_variable(vars, inst.data(), inst.size(),
+                              ASN_INTEGER, (u_char*)&v, sizeof(v));
+}
+
+static void append_string_2idx(netsnmp_variable_list **vars,
+                               const oid *col_oid, size_t col_len,
+                               uint32_t idx1, uint32_t idx2,
+                               const char *str) {
+    std::vector<oid> inst(col_len + 2);
+    memcpy(inst.data(), col_oid, col_len * sizeof(oid));
+    inst[col_len] = (oid)idx1;
+    inst[col_len + 1] = (oid)idx2;
+    snmp_varlist_add_variable(vars, inst.data(), inst.size(),
+                              ASN_OCTET_STR,
+                              (u_char*)str, strlen(str));
+}
+
+static void append_date_time(netsnmp_variable_list **vars,
+                             const oid *col_oid, size_t col_len,
+                             uint32_t instance_idx, time_t t) {
+    uint8_t dt[8];
+    snmp_encode_date_time(t, dt);
+    std::vector<oid> inst(col_len + 1);
+    memcpy(inst.data(), col_oid, col_len * sizeof(oid));
+    inst[col_len] = (oid)instance_idx;
+    snmp_varlist_add_variable(vars, inst.data(), inst.size(),
+                              ASN_OCTET_STR, dt, sizeof(dt));
+}
+
+static void append_counter64_2idx(netsnmp_variable_list **vars,
+                                  const oid *col_oid, size_t col_len,
+                                  uint32_t idx1, uint32_t idx2,
+                                  uint64_t value) {
+    struct counter64 c64;
+    c64.high = (u_long)(value >> 32);
+    c64.low = (u_long)(value & 0xffffffffULL);
+    std::vector<oid> inst(col_len + 2);
+    memcpy(inst.data(), col_oid, col_len * sizeof(oid));
+    inst[col_len] = (oid)idx1;
+    inst[col_len + 1] = (oid)idx2;
+    snmp_varlist_add_variable(vars, inst.data(), inst.size(),
+                              ASN_COUNTER64, (u_char*)&c64, sizeof(c64));
+}
+
+static void append_device_identity(netsnmp_variable_list **vars,
+                                   uint32_t dev_idx,
+                                   const CacheDeviceRow *dev) {
+    if (!dev)
+        return;
+    append_string(vars, oid_device_name, OID_LEN(oid_device_name),
+                  dev_idx, dev->name.c_str());
+    append_string(vars, oid_device_path, OID_LEN(oid_device_path),
+                  dev_idx, dev->path.c_str());
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 void notify_device_health_changed(uint32_t dev_idx, int new_status) {
-    const oid *notif_oid = oid_notif_nvme_health_changed;
-    size_t notif_len     = OID_LEN(oid_notif_nvme_health_changed);
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+
+    const oid *notif_oid = oid_notif_nvme_health_changed;
+    size_t notif_len = OID_LEN(oid_notif_nvme_health_changed);
     if (dev) {
         if (dev->proto == PROTO_ATA || dev->proto == PROTO_SAT) {
             notif_oid = oid_notif_sata_health_degraded;
@@ -70,18 +159,42 @@ void notify_device_health_changed(uint32_t dev_idx, int new_status) {
             notif_len = OID_LEN(oid_notif_sas_health_changed);
         }
     }
+
     netsnmp_variable_list *vars = make_trap_header(notif_oid, notif_len);
+    append_device_identity(&vars, dev_idx, dev);
 
     if (dev) {
-        append_string(&vars, oid_device_path, OID_LEN(oid_device_path),
-                      dev_idx, dev->path.c_str());
+        if (dev->proto == PROTO_NVME) {
+            append_uint32_2idx(&vars,
+                oid_nvme_health_status, OID_LEN(oid_nvme_health_status),
+                dev_idx, 1, ASN_INTEGER, (u_long)new_status);
+            for (const auto &h : g_cache.nvme_health) {
+                if (h.device_index != dev_idx)
+                    continue;
+                std::vector<oid> inst(OID_LEN(oid_nvme_critical_warning) + 2);
+                memcpy(inst.data(), oid_nvme_critical_warning,
+                       OID_LEN(oid_nvme_critical_warning) * sizeof(oid));
+                inst[OID_LEN(oid_nvme_critical_warning)] = (oid)dev_idx;
+                inst[OID_LEN(oid_nvme_critical_warning) + 1] = (oid)1;
+                snmp_varlist_add_variable(&vars, inst.data(), inst.size(),
+                    ASN_OCTET_STR, &h.critical_warning, 1);
+                break;
+            }
+        } else if (dev->proto == PROTO_ATA || dev->proto == PROTO_SAT) {
+            append_uint32_2idx(&vars,
+                oid_sata_health_status, OID_LEN(oid_sata_health_status),
+                dev_idx, 1, ASN_INTEGER, (u_long)new_status);
+        } else if (dev->proto == PROTO_SCSI || dev->proto == PROTO_SAS) {
+            append_uint32_2idx(&vars,
+                oid_sas_health_status, OID_LEN(oid_sas_health_status),
+                dev_idx, 1, ASN_INTEGER, (u_long)new_status);
+        }
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
     }
-    // smartmonDeviceLastPollResult.dev_idx
-    append_uint32(&vars, oid_device_last_poll_result,
-                  OID_LEN(oid_device_last_poll_result),
-                  dev_idx, ASN_INTEGER, (u_long)new_status);
 
-    send_v2trap(vars);
+    send_v2trap_timed(vars, "health_changed");
     snmp_free_varbind(vars);
 }
 
@@ -91,56 +204,246 @@ void notify_device_polling_failed(uint32_t dev_idx, int poll_result) {
                          OID_LEN(oid_notif_device_poll_failed));
 
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
-    if (dev) {
-        append_string(&vars, oid_device_name, OID_LEN(oid_device_name),
-                      dev_idx, dev->name.c_str());
-        append_string(&vars, oid_device_path, OID_LEN(oid_device_path),
-                      dev_idx, dev->path.c_str());
-    }
+    append_device_identity(&vars, dev_idx, dev);
     append_uint32(&vars, oid_device_last_poll_result,
                   OID_LEN(oid_device_last_poll_result),
                   dev_idx, ASN_INTEGER, (u_long)poll_result);
+    if (dev) {
+        append_uint32(&vars, oid_device_poll_exit_status,
+                      OID_LEN(oid_device_poll_exit_status),
+                      dev_idx, ASN_UNSIGNED, (u_long)dev->poll_exit_status);
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
+    }
 
-    send_v2trap(vars);
+    send_v2trap_timed(vars, "polling_failed");
     snmp_free_varbind(vars);
 }
 
-void notify_selftest_failed(uint32_t dev_idx, const char *type_str,
-                            int result_code) {
-    // Determine protocol from cache to choose the right notification OID
-    const oid *notif_oid = oid_notif_sata_selftest_failed;
-    size_t notif_len     = OID_LEN(oid_notif_sata_selftest_failed);
+void notify_nvme_selftest_failed(uint32_t dev_idx, const CacheNvmeSelfTestRow &st) {
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_nvme_selftest_failed,
+                         OID_LEN(oid_notif_nvme_selftest_failed));
 
-    for (const auto &d : g_cache.devices) {
-        if (d.index != dev_idx) continue;
-        if (d.proto == PROTO_NVME) {
-            notif_oid = oid_notif_nvme_selftest_failed;
-            notif_len = OID_LEN(oid_notif_nvme_selftest_failed);
-        } else if (d.proto == PROTO_SCSI || d.proto == PROTO_SAS) {
-            notif_oid = oid_notif_sas_selftest_failed;
-            notif_len = OID_LEN(oid_notif_sas_selftest_failed);
-        }
-        break;
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    append_device_identity(&vars, dev_idx, dev);
+
+    uint32_t entry = st.entry_index;
+    append_uint32_2idx(&vars, oid_nvme_selftest_number,
+                       OID_LEN(oid_nvme_selftest_number),
+                       dev_idx, entry, ASN_UNSIGNED, (u_long)st.number);
+    append_uint32_2idx(&vars, oid_nvme_selftest_type,
+                       OID_LEN(oid_nvme_selftest_type),
+                       dev_idx, entry, ASN_INTEGER, (u_long)st.type);
+    append_uint32_2idx(&vars, oid_nvme_selftest_result,
+                       OID_LEN(oid_nvme_selftest_result),
+                       dev_idx, entry, ASN_INTEGER, (u_long)st.result);
+    append_string_2idx(&vars, oid_nvme_selftest_result_text,
+                       OID_LEN(oid_nvme_selftest_result_text),
+                       dev_idx, entry, st.result_text.c_str());
+    if (dev)
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
+
+    send_v2trap_timed(vars, "nvme_selftest_failed");
+    snmp_free_varbind(vars);
+}
+
+void notify_sata_selftest_failed(uint32_t dev_idx, const CacheSataSelfTestRow &st) {
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_sata_selftest_failed,
+                         OID_LEN(oid_notif_sata_selftest_failed));
+
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    append_device_identity(&vars, dev_idx, dev);
+
+    uint32_t entry = st.entry_index;
+    append_uint32_2idx(&vars, oid_sata_selftest_type,
+                       OID_LEN(oid_sata_selftest_type),
+                       dev_idx, entry, ASN_INTEGER, (u_long)st.type);
+    append_uint32_2idx(&vars, oid_sata_selftest_result,
+                       OID_LEN(oid_sata_selftest_result),
+                       dev_idx, entry, ASN_INTEGER, (u_long)st.result);
+    if (dev)
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
+
+    send_v2trap_timed(vars, "sata_selftest_failed");
+    snmp_free_varbind(vars);
+}
+
+void notify_sas_selftest_failed(uint32_t dev_idx, const CacheSasSelfTestRow &st) {
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_sas_selftest_failed,
+                         OID_LEN(oid_notif_sas_selftest_failed));
+
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    append_device_identity(&vars, dev_idx, dev);
+
+    uint32_t entry = st.entry_index;
+    append_uint32_2idx(&vars, oid_sas_selftest_type,
+                       OID_LEN(oid_sas_selftest_type),
+                       dev_idx, entry, ASN_INTEGER, (u_long)st.type);
+    append_uint32_2idx(&vars, oid_sas_selftest_result,
+                       OID_LEN(oid_sas_selftest_result),
+                       dev_idx, entry, ASN_INTEGER, (u_long)st.result);
+    append_string_2idx(&vars, oid_sas_selftest_result_str,
+                       OID_LEN(oid_sas_selftest_result_str),
+                       dev_idx, entry, st.result_str.c_str());
+    if (dev)
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
+
+    send_v2trap_timed(vars, "sas_selftest_failed");
+    snmp_free_varbind(vars);
+}
+
+void notify_device_discovered(uint32_t dev_idx) {
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_device_discovered,
+                         OID_LEN(oid_notif_device_discovered));
+
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    append_device_identity(&vars, dev_idx, dev);
+    if (dev) {
+        append_uint32(&vars, oid_device_type, OID_LEN(oid_device_type),
+                      dev_idx, ASN_INTEGER, (u_long)dev->proto);
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
     }
 
+    send_v2trap_timed(vars, "device_discovered");
+    snmp_free_varbind(vars);
+}
+
+void notify_device_removed(uint32_t dev_idx, const std::string &name,
+                           const std::string &path, int dev_type) {
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_device_removed,
+                         OID_LEN(oid_notif_device_removed));
+
+    append_string(&vars, oid_device_name, OID_LEN(oid_device_name),
+                  dev_idx, name.c_str());
+    append_string(&vars, oid_device_path, OID_LEN(oid_device_path),
+                  dev_idx, path.c_str());
+    append_uint32(&vars, oid_device_type, OID_LEN(oid_device_type),
+                  dev_idx, ASN_INTEGER, (u_long)dev_type);
+
+    send_v2trap_timed(vars, "device_removed");
+    snmp_free_varbind(vars);
+}
+
+void notify_sata_attr_failing(uint32_t dev_idx, const CacheSataAttrRow &attr) {
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_sata_attr_threshold_met,
+                         OID_LEN(oid_notif_sata_attr_threshold_met));
+
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    append_device_identity(&vars, dev_idx, dev);
+
+    uint32_t attr_id = attr.attr_id;
+    append_uint32_2idx(&vars, oid_sata_attr_id,
+                       OID_LEN(oid_sata_attr_id),
+                       dev_idx, attr_id, ASN_UNSIGNED, (u_long)attr_id);
+    append_string_2idx(&vars, oid_sata_attr_name,
+                       OID_LEN(oid_sata_attr_name),
+                       dev_idx, attr_id, attr.name.c_str());
+    append_uint32_2idx(&vars, oid_sata_attr_value,
+                       OID_LEN(oid_sata_attr_value),
+                       dev_idx, attr_id, ASN_GAUGE, (u_long)attr.value);
+    append_uint32_2idx(&vars, oid_sata_attr_threshold,
+                       OID_LEN(oid_sata_attr_threshold),
+                       dev_idx, attr_id, ASN_GAUGE, (u_long)attr.threshold);
+    if (dev)
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
+
+    send_v2trap_timed(vars, "sata_attr_failing");
+    snmp_free_varbind(vars);
+}
+
+void notify_sas_uncorrected_errors_increased(uint32_t dev_idx,
+                                             const CacheSasErrorCounterRow &ec) {
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_sas_uncorrected_errors,
+                         OID_LEN(oid_notif_sas_uncorrected_errors));
+
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    append_device_identity(&vars, dev_idx, dev);
+
+    uint32_t dir = (uint32_t)ec.direction;
+    append_counter64_2idx(&vars, oid_sas_uncorrected_errors,
+                          OID_LEN(oid_sas_uncorrected_errors),
+                          dev_idx, dir, ec.uncorrected);
+    if (dev)
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
+
+    send_v2trap_timed(vars, "sas_uncorrected_errors");
+    snmp_free_varbind(vars);
+}
+
+static void notify_sensor_threshold(uint32_t dev_idx, const CacheSensorRow &sensor,
+                                    const oid *notif_oid, size_t notif_len,
+                                    const oid *threshold_oid, size_t threshold_len,
+                                    int32_t threshold_value,
+                                    const char *trap_name) {
     netsnmp_variable_list *vars = make_trap_header(notif_oid, notif_len);
 
-    // Include device path and result code as varbinds
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    append_device_identity(&vars, dev_idx, dev);
 
-    if (dev) {
-        append_string(&vars, oid_device_path, OID_LEN(oid_device_path),
-                      dev_idx, dev->path.c_str());
-    }
-    if (type_str && *type_str) {
-        // Use device_name OID as a convenient DisplayString slot for type
-        append_string(&vars, oid_device_name, OID_LEN(oid_device_name),
-                      dev_idx, type_str);
-    }
-    append_uint32(&vars, oid_device_last_poll_result,
-                  OID_LEN(oid_device_last_poll_result),
-                  dev_idx, ASN_INTEGER, (u_long)result_code);
+    uint32_t sensor_idx = sensor.sensor_index;
+    append_string_2idx(&vars, oid_sensor_name, OID_LEN(oid_sensor_name),
+                       dev_idx, sensor_idx, sensor.name.c_str());
+    append_uint32_2idx(&vars, oid_sensor_type, OID_LEN(oid_sensor_type),
+                       dev_idx, sensor_idx, ASN_INTEGER, (u_long)sensor.type);
+    append_int32_2idx(&vars, oid_sensor_value, OID_LEN(oid_sensor_value),
+                      dev_idx, sensor_idx, sensor.value);
+    append_int32_2idx(&vars, threshold_oid, threshold_len,
+                      dev_idx, sensor_idx, threshold_value);
+    append_string_2idx(&vars, oid_sensor_units, OID_LEN(oid_sensor_units),
+                       dev_idx, sensor_idx, sensor.units_display.c_str());
+    if (dev)
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
 
-    send_v2trap(vars);
+    send_v2trap_timed(vars, trap_name);
     snmp_free_varbind(vars);
+}
+
+void notify_sensor_high_critical(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    notify_sensor_threshold(dev_idx, sensor,
+        oid_notif_sensor_high_critical, OID_LEN(oid_notif_sensor_high_critical),
+        oid_sensor_high_critical, OID_LEN(oid_sensor_high_critical),
+        sensor.high_critical, "sensor_high_critical");
+}
+
+void notify_sensor_high_warning(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    notify_sensor_threshold(dev_idx, sensor,
+        oid_notif_sensor_high_warning, OID_LEN(oid_notif_sensor_high_warning),
+        oid_sensor_high_warning, OID_LEN(oid_sensor_high_warning),
+        sensor.high_warning, "sensor_high_warning");
+}
+
+void notify_sensor_low_warning(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    notify_sensor_threshold(dev_idx, sensor,
+        oid_notif_sensor_low_warning, OID_LEN(oid_notif_sensor_low_warning),
+        oid_sensor_low_warning, OID_LEN(oid_sensor_low_warning),
+        sensor.low_warning, "sensor_low_warning");
+}
+
+void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    notify_sensor_threshold(dev_idx, sensor,
+        oid_notif_sensor_low_critical, OID_LEN(oid_notif_sensor_low_critical),
+        oid_sensor_low_critical, OID_LEN(oid_sensor_low_critical),
+        sensor.low_critical, "sensor_low_critical");
 }
