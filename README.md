@@ -1,9 +1,9 @@
 # smartmon-snmp-agentxd
 
 An SNMP AgentX subagent (RFC 2741) that exposes SMART drive health data
-collected by `smartd` via the SMARTMON-* MIBs.
+from smartmontools JSON state files via the SMARTMON-* MIBs.
 
-Supports **NVMe**, **SATA/ATA**, and **SAS/SCSI** drives.
+Supports **NVMe**, **SATA/ATA**, and partial **SAS/SCSI** drive data.
 
 ---
 
@@ -14,13 +14,32 @@ Unix domain socket, registers the SMARTMON-* OID subtrees, and responds to
 SNMP GET/GETNEXT/GETBULK requests.  It also sends SNMP v2 traps when drive
 health changes or self-tests fail.
 
-Data is read exclusively from JSON state files written by `smartd --jsonstate`.
-The agent never invokes `smartctl` directly.
+The agent reads JSON state files from a configured `state_dir`. Those files are
+written by the included `smartmon-collect` timer. The agent process itself never
+invokes `smartctl` directly.
 
 ```text
-smartd --jsonstate /run/smartmontools/json/
+smartmon-collect timer
       └── writes *.json  ──>  smartmon-snmp-agentxd  ──>  snmpd  ──>  SNMP manager
 ```
+
+## Sequence Diagram(s)
+
+```mermaid
+sequenceDiagram
+  participant Collect as smartmon-collect
+  participant Agent as smartmon-snmp-agentxd
+  participant SNMPD as snmpd
+  participant Client as SNMP client
+
+  Collect->>Agent: write SMART JSON files into state_dir
+  Agent->>SNMPD: connect as AgentX subagent and register SMARTMON OIDs
+  Client->>SNMPD: snmpwalk/snmpset GET/GETNEXT on SMARTMON subtree
+  SNMPD->>Agent: forward GET/GETNEXT requests
+  Agent-->>SNMPD: return cached table values
+  SNMPD-->>Client: return SNMP results
+```
+
 
 ---
 
@@ -28,34 +47,20 @@ smartd --jsonstate /run/smartmontools/json/
 
 Enterprise OID: `1.3.6.1.4.1.9999.1.1` (placeholder; TODO: replace with an assigned IANA PEN before publication)
 
-| Sub-tree | MIB | Contents |
-|----------|-----|----------|
-| `.1` | SMARTMON-TC-MIB | Textual conventions |
-| `.2` | SMARTMON-COMMON-MIB | Device inventory table, device count scalar |
-| `.3` | SMARTMON-NVME-MIB | NVMe health, self-test, controller, namespace, error log |
-| `.4` | SMARTMON-SATA-MIB | SATA attributes, self-test, info, health, error log |
-| `.5` | SMARTMON-SAS-MIB | SAS health, error counters, self-test, background scan |
+| Sub-tree | MIB | Status | Contents |
+|----------|-----|--------|----------|
+| `.1` | SMARTMON-TC-MIB | Implemented | Textual conventions |
+| `.2` | SMARTMON-COMMON-MIB | Implemented | Device inventory table, device count scalar |
+| `.3` | SMARTMON-NVME-MIB | Implemented | NVMe health, self-test, controller, namespace, error log |
+| `.4` | SMARTMON-SATA-MIB | Implemented | SATA attributes, self-test, info, health, error log |
+| `.5` | SMARTMON-SAS-MIB | Partial | SAS health, error counters, self-test, background scan |
+| `.6` | SMARTMON-SENSOR-MIB | Implemented | Unified physical sensor table and threshold notifications |
 
 MIB files are installed to `/usr/share/snmp/mibs/`.
 
-### Implemented tables
-
-| Table | OID | Status |
-|-------|-----|--------|
-| `smartmonDeviceTable` | `.2.1.1` | Implemented |
-| `smartmonNvmeHealthTable` | `.3.1.5` | Implemented |
-| `smartmonNvmeSelfTestTable` | `.3.1.7` | Implemented |
-| `smartmonSataAttrTable` | `.4.1.3` | Implemented |
-| `smartmonSataSelfTestTable` | `.4.1.5` | Implemented |
-| `smartmonSasHealthTable` | `.5.1.2` | Implemented |
-| `smartmonSasErrorCounterTable` | `.5.1.3` | Implemented |
-| `smartmonSasSelfTestTable` | `.5.1.4` | Implemented |
-| `smartmonNvmeControllerTable` | `.3.1.1` | Planned |
-| `smartmonNvmeNamespaceTable` | `.3.1.3` | Planned |
-| `smartmonSataInfoTable` | `.4.1.1` | Planned |
-| `smartmonSataHealthTable` | `.4.1.2` | Planned |
-| `smartmonSasInfoTable` | `.5.1.1` | Planned |
-| `smartmonSasBackgroundScanTable` | `.5.1.5` | Planned |
+SAS/SCSI support is not complete because the project is missing enough
+representative `smartctl -x -j` SAS output references to validate and fill every
+MIB field reliably.
 
 ---
 
@@ -65,13 +70,13 @@ MIB files are installed to `/usr/share/snmp/mibs/`.
 - **`make`**
 - **`libsnmp-dev`** for net-snmp headers, libraries, and `net-snmp-config`
 - **`snmp`** and **`snmpd`** for live SNMP integration tests
-- **`smartd`** configured with `--jsonstate` to write JSON state files
-- Read access to the `state_dir` configured for smartd
+- **`smartmontools`** for `smartctl`, `smartd`, or both
+- Read access to the configured `state_dir`
 
 On Debian/Ubuntu:
 
 ```bash
-sudo apt-get install g++ make libsnmp-dev snmp snmpd
+sudo apt-get install g++ make libsnmp-dev snmp snmpd smartmontools
 ```
 
 ---
@@ -85,17 +90,29 @@ make -j$(nproc)
 sudo scripts/install-agentxd.sh
 ```
 
+The install script installs the daemon, config file, MIB files, systemd unit,
+and by default the `smartmon-collect` timer that writes JSON state files.
+
 ### Manual install
 
 ```bash
+sudo install -d /usr/sbin /etc/smartmontools /usr/share/snmp/mibs /lib/systemd/system
+id -u smartmon >/dev/null 2>&1 || \
+    sudo useradd --system --no-create-home --shell /usr/sbin/nologin smartmon
+getent group Debian-snmp >/dev/null && sudo usermod -aG Debian-snmp smartmon
+getent group snmp >/dev/null && sudo usermod -aG snmp smartmon
+sudo install -d -m 750 -o root -g smartmon /run/smartmontools/json
 sudo install -m 755 .build/smartmon-snmp-agentxd /usr/sbin/
+sudo install -m 755 bin/smartmon-collect /usr/sbin/
 sudo install -m 644 etc/smartmon-snmp-agentxd.conf \
     /etc/smartmontools/snmp-agentxd.conf
 sudo install -m 644 doc/SMARTMON-*.mib /usr/share/snmp/mibs/
 sudo sed -e 's|@sbindir@|/usr/sbin|' \
-         -e 's|@sysconfdir@|/etc|' \
+          -e 's|@sysconfdir@|/etc|' \
     systemd/smartmon-snmp-agentxd.service.in \
-    > /lib/systemd/system/smartmon-snmp-agentxd.service
+    | sudo tee /lib/systemd/system/smartmon-snmp-agentxd.service >/dev/null
+sudo install -m 644 systemd/smartmon-collect.service \
+    systemd/smartmon-collect.timer /lib/systemd/system/
 sudo systemctl daemon-reload
 ```
 
@@ -103,20 +120,14 @@ sudo systemctl daemon-reload
 
 ## Configuration
 
-### smartd
+### JSON collection
 
-Configure `smartd` to write JSON state files.  The `-x` flag (extended) is
-required for NVMe self-test logs and SAS error counters:
+The recommended local install uses `smartmon-collect.timer` to discover drives,
+run `smartctl -x -j`, and write JSON files to `/run/smartmontools/json/`:
 
-```conf
-# /etc/smartd.conf
-DEVICESCAN -x --jsonstate /run/smartmontools/json/
-```
-
-Restart smartd:
 ```bash
-systemctl restart smartd
-ls /run/smartmontools/json/   # JSON files should appear here
+systemctl enable --now smartmon-collect.timer
+ls /run/smartmontools/json/   # JSON files should appear here after the timer runs
 ```
 
 ### snmpd
@@ -126,7 +137,9 @@ Add AgentX master support to `/etc/snmp/snmpd.conf`:
 ```conf
 master agentx
 agentXSocket /var/agentx/master
-rocommunity public 127.0.0.1   # adjust as needed
+# Group is distro-dependent: Debian-snmp on Debian/Ubuntu, snmp on RHEL/Fedora.
+agentXPerms 0660 0550 root Debian-snmp
+rocommunity public 127.0.0.1 .1.3.6.1.4.1.9999
 ```
 
 Restart snmpd:
@@ -139,7 +152,7 @@ systemctl restart snmpd
 Edit `/etc/smartmontools/snmp-agentxd.conf`:
 
 ```conf
-# Directory where smartd writes --jsonstate files (required)
+# Directory where smartmon-collect or smartd writes JSON state files (required)
 state_dir       /run/smartmontools/json/
 
 # AgentX master socket — must match agentXSocket in snmpd.conf
@@ -153,7 +166,10 @@ cache_timeout   300
 
 ## Starting the service
 
+If using the recommended `smartmon-collect` timer:
+
 ```bash
+systemctl enable --now smartmon-collect.timer
 systemctl enable --now smartmon-snmp-agentxd
 systemctl status smartmon-snmp-agentxd
 ```
@@ -175,6 +191,9 @@ snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.4
 # SAS health and error counters
 snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.5
 
+# Unified sensor table
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.6
+
 # Human-readable output (requires MIBs in /usr/share/snmp/mibs/):
 snmpwalk -v2c -c public -m ALL localhost \
     SMARTMON-COMMON-MIB::smartmonDeviceTable
@@ -188,6 +207,8 @@ snmpwalk -v2c -c public -m ALL localhost \
 |--------|-------------|
 | `-c FILE` | Path to config file (default: `/etc/smartmontools/snmp-agentxd.conf`) |
 | `-f` | Run in foreground (do not daemonise; useful for debugging) |
+| `-v` | Verbose logging: scan flow and device load summaries |
+| `-vv` | Very verbose logging: per-sensor detail and SNMP iterator calls |
 | `-h` | Print usage and exit |
 
 ---
@@ -291,16 +312,24 @@ The agent sends v2 traps to the snmpd master for:
 
 | Trap | OID | Trigger |
 |------|-----|---------|
-| `smartmonDeviceHealthChanged` | `.2.3.1` | Drive overall health status changes |
-| `smartmonDevicePollingFailed` | `.2.3.2` | smartd JSON file cannot be read |
-| `smartmonDeviceAdded` | `.2.3.3` | New device discovered |
-| `smartmonNvmeSelfTestFailed` | `.3.2.1` | NVMe self-test result is non-zero |
-| `smartmonNvmeHealthChanged` | `.3.2.2` | NVMe health status changes |
-| `smartmonSataSelfTestFailed` | `.4.2.1` | SATA self-test result is failed |
-| `smartmonSataHealthDegraded` | `.4.2.2` | SATA overall health degrades |
-| `smartmonSataAttrThresholdMet` | `.4.2.3` | SATA attribute crosses threshold |
-| `smartmonSasSelfTestFailed` | `.5.2.1` | SAS self-test result is failed |
-| `smartmonSasHealthChanged` | `.5.2.2` | SAS health status changes |
+| `smartmonDeviceDiscovered` | `.2.3.1` | Device row added |
+| `smartmonDeviceRemoved` | `.2.3.2` | Device row removed |
+| `smartmonDevicePollFailed` | `.2.3.3` | Poll result is non-ok |
+| `smartmonNvmeHealthFailed` | `.3.2.1` | NVMe health indicates failure |
+| `smartmonNvmeSelfTestFailed` | `.3.2.2` | NVMe self-test result is non-zero |
+| `smartmonSataHealthFailed` | `.4.2.1` | SATA overall health reports failure |
+| `smartmonSataAttrFailing` | `.4.2.2` | SATA attribute is failing or below threshold |
+| `smartmonSataSelfTestFailed` | `.4.2.3` | SATA self-test result is failed |
+| `smartmonSasHealthFailed` | `.5.2.1` | SAS overall health reports failure |
+| `smartmonSasSelfTestFailed` | `.5.2.2` | SAS self-test result is failed |
+| `smartmonSasUncorrectedErrorsIncreased` | `.5.2.3` | SAS uncorrected error counter increases |
+| `smartmonSensorHighCriticalExceeded` | `.6.2.1` | Sensor reading reaches high critical threshold |
+| `smartmonSensorHighWarningExceeded` | `.6.2.2` | Sensor reading reaches high warning threshold |
+| `smartmonSensorLowWarningExceeded` | `.6.2.3` | Sensor reading reaches low warning threshold |
+| `smartmonSensorLowCriticalExceeded` | `.6.2.4` | Sensor reading reaches low critical threshold |
+
+`SMARTMON-SENSOR-MIB` also defines `smartmonSensorNonOperational` at `.6.2.5`;
+the current agent emits the threshold notifications listed above.
 
 ---
 
@@ -312,7 +341,9 @@ Check syslog for config errors:
 journalctl -u smartmon-snmp-agentxd -n 50
 ```
 Common causes: `state_dir` not set, no JSON files in `state_dir`, or
-`agentx_socket` path does not exist (snmpd not running).
+`agentx_socket` path does not exist (snmpd not running or AgentX disabled).
+If using `smartmon-collect`, check `systemctl status smartmon-collect.timer`
+and `journalctl -u smartmon-collect.service -n 50`.
 
 **snmpwalk returns "No Such Object":**
 The agent may not have registered yet.  Check:
@@ -322,7 +353,8 @@ snmpget -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2.1.1.0
 Should return `Gauge32: N` (number of devices).
 
 **Empty NVMe self-test or SAS error counter tables:**
-Ensure smartd is using `-x` (extended monitoring), not just `-a`.
+`smartmon-collect` uses `smartctl -x -j` by default. If using `smartd`, ensure
+it is configured with `-x` (extended monitoring), not just `-a`.
 
 **snmpwalk shows numeric OIDs instead of names:**
 Install MIBs to `/usr/share/snmp/mibs/` and use `-m ALL`:
