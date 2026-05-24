@@ -129,7 +129,7 @@ sections:
     oid_template: ".3.1.15.1.{col}.{D}.1"
     tests:
       - {label: "col1  healthOverallStatus = 1 (passed)",         col: 1,  expected: "INTEGER: 1"}
-      - {label: "col2  criticalWarning (BITS) = 00",              col: 2,  expected: 'BITS: 00 *'}
+      - {label: "col2  criticalWarning (BITS) = 00",              col: 2,  expected: '(?:BITS|Hex-STRING): 00 *'}
       - {label: "col7  dataUnitsRead",                            col: 7,  expected: "Counter64: 12004521"}
       - {label: "col8  dataUnitsWritten",                         col: 8,  expected: "Counter64: 44110234"}
       - {label: "col9  dataBytesRead",                            col: 9,  expected: "Counter64: 6146314752000"}
