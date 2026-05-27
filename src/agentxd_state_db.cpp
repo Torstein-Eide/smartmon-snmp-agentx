@@ -7,9 +7,13 @@
 #include <syslog.h>
 
 static sqlite3 *g_db = nullptr;
+static std::string g_db_path;
 
 bool state_db_open(const std::string &path) {
-    if (path.empty()) return true;
+    if (path.empty()) {
+        syslog(LOG_INFO, "state_db: disabled");
+        return true;
+    }
 
     if (sqlite3_open(path.c_str(), &g_db) != SQLITE_OK) {
         syslog(LOG_WARNING, "state_db: cannot open '%s': %s",
@@ -18,6 +22,7 @@ bool state_db_open(const std::string &path) {
         g_db = nullptr;
         return false;
     }
+    g_db_path = path;
 
     const char *sql =
         "CREATE TABLE IF NOT EXISTS table_state ("
@@ -31,8 +36,10 @@ bool state_db_open(const std::string &path) {
         sqlite3_free(errmsg);
         sqlite3_close(g_db);
         g_db = nullptr;
+        g_db_path.clear();
         return false;
     }
+    syslog(LOG_INFO, "state_db: opened '%s'", g_db_path.c_str());
     return true;
 }
 
@@ -41,8 +48,12 @@ void state_db_load() {
 
     const char *sql = "SELECT table_id, hash, last_change FROM table_state;";
     sqlite3_stmt *stmt = nullptr;
-    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        syslog(LOG_WARNING, "state_db: load failed: %s", sqlite3_errmsg(g_db));
+        return;
+    }
 
+    unsigned loaded = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         int      id = sqlite3_column_int(stmt, 0);
         uint64_t h  = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
@@ -80,8 +91,10 @@ void state_db_load() {
         case TABLE_SAS_BGSCAN:    g_cache.ts_sas_bgscan          = ts; break;
         case TABLE_SENSOR:        g_cache.ts_sensor              = ts; break;
         }
+        ++loaded;
     }
     sqlite3_finalize(stmt);
+    syslog(LOG_INFO, "state_db: loaded %u table timestamp(s)", loaded);
 }
 
 void state_db_update(int table_id, uint64_t hash, time_t ts) {
@@ -101,7 +114,9 @@ void state_db_update(int table_id, uint64_t hash, time_t ts) {
 
 void state_db_close() {
     if (g_db) {
+        syslog(LOG_INFO, "state_db: closing '%s'", g_db_path.c_str());
         sqlite3_close(g_db);
         g_db = nullptr;
+        g_db_path.clear();
     }
 }

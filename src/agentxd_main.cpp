@@ -138,6 +138,7 @@ int main(int argc, char *argv[])
     if (!agentxd_loop_init(cfg)) {
         syslog(LOG_ERR, "AgentX initialisation failed — exiting.");
         agentxd_datasrc_shutdown();
+        state_db_close();
         return EXIT_FAILURE;
     }
 
