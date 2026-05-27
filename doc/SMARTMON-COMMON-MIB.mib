@@ -15,7 +15,7 @@ IMPORTS
         FROM SMARTMON-TC-MIB;
 
 smartmonCommonMIB MODULE-IDENTITY
-    LAST-UPDATED "202605200000Z"
+    LAST-UPDATED "202605270000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl output.
@@ -135,10 +135,27 @@ smartmonDeviceTable OBJECT-TYPE
          prefer smartmonDevicePhysicalIndex for cross-MIB correlation when
          it is non-zero.
 
-         Protocol-specific MIBs (SMARTMON-NVME-MIB, SMARTMON-SATA-MIB,
-         SMARTMON-SAS-MIB) extend this table by using smartmonDeviceIndex
-         as the first component of their own table indices."
+          Managers that need stable disk identity SHOULD join from this index
+          to protocol-specific identity columns and derive a persistent key
+          from the strongest available hardware identifier, preferring WWN,
+          NAA, EUI-64, NGUID, or namespace identifiers where available and
+          otherwise using a deterministic normalized model plus serial key.
+
+          Protocol-specific MIBs (SMARTMON-NVME-MIB, SMARTMON-SATA-MIB,
+          SMARTMON-SAS-MIB) extend this table by using smartmonDeviceIndex
+          as the first component of their own table indices."
     ::= { smartmonCommonObjects 3 }
+
+smartmonPollFailureThreshold OBJECT-TYPE
+    SYNTAX      Unsigned32 (1..4294967295)
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Number of consecutive non-ok smartctl poll results required before
+         the agent emits smartmonDevicePollFailed for a device.  Managers can
+         display this value alongside poll-failure notifications to explain
+         the configured hysteresis."
+    ::= { smartmonCommonObjects 7 }
 
 smartmonDeviceEntry OBJECT-TYPE
     SYNTAX      SmartmonDeviceEntry
@@ -183,10 +200,11 @@ smartmonDeviceIndex OBJECT-TYPE
          restarted, after device rediscovery, or after configuration
          changes.
 
-         Managers MUST NOT treat this value as a persistent device
-         identity. Stable identification should instead use properties
-         such as device path, serial number, WWN, NAA, EUI-64, NGUID, or
-         namespace identifier where available.
+         Managers MUST NOT treat this value as a persistent device identity.
+         Stable identification should instead use protocol-specific identity
+         columns joined through this index, preferring WWN, NAA, EUI-64,
+         NGUID, or namespace identifiers where available and otherwise using a
+         deterministic normalized model plus serial key.
 
          If the monitored device can be associated with an ENTITY-MIB
          physical entity, the agent should expose the corresponding
@@ -340,14 +358,17 @@ smartmonDevicePollFailed NOTIFICATION-TYPE
         smartmonDevicePath,
         smartmonDeviceLastPollResult,
         smartmonDeviceLastPollExitStatus,
-        smartmonDeviceLastPollTime
+        smartmonDeviceLastPollTime,
+        smartmonPollFailureThreshold
     }
     STATUS      current
     DESCRIPTION
         "Generated when a smartctl poll attempt returns a non-ok result.
          Repeated poll failures may indicate a device or driver problem.
          Implementations SHOULD apply hysteresis to avoid notification
-         storms when a device is intermittently unreachable."
+         storms when a device is intermittently unreachable.  The configured
+         consecutive-failure threshold is exposed by
+         smartmonPollFailureThreshold."
     ::= { smartmonCommonNotifications 3 }
 
 -- --------------------------------------------------------------------------
@@ -377,7 +398,8 @@ smartmonDeviceScalarGroup OBJECT-GROUP
         smartmonDeviceTableLastChange,
         smartmonDeviceCountNvme,
         smartmonDeviceCountAta,
-        smartmonDeviceCountSas
+        smartmonDeviceCountSas,
+        smartmonPollFailureThreshold
     }
     STATUS current
     DESCRIPTION

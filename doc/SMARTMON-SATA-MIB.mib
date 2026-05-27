@@ -23,7 +23,7 @@ IMPORTS
         FROM SMARTMON-COMMON-MIB;
 
 smartmonSataMIB MODULE-IDENTITY
-    LAST-UPDATED "202605210200Z"
+    LAST-UPDATED "202605270000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl ATA/SATA output.
@@ -40,11 +40,13 @@ smartmonSataMIB MODULE-IDENTITY
          available.
 
 
-         - Temperature sensor readings (temperature.current, op_limit_min/max)
-         - Spare capacity thresholds (spare_available.threshold_percent)
-         are intentionally absent from this MIB.  They are expected to
-         be exposed via a sensor MIB that consolidates readings across
-         device types.
+          - Temperature sensor readings (temperature.current, op_limit_min/max)
+          - Spare capacity thresholds (spare_available.threshold_percent)
+          are intentionally absent from this MIB.  They are expected to
+          be exposed via SMARTMON-SENSOR-MIB, which consolidates temperature
+          and other physical sensor readings across ATA/SATA, NVMe, and SAS
+          device types.  Managers requiring ATA/SATA temperature information
+          MUST consult SMARTMON-SENSOR-MIB.
 
          SCT status metadata (ata_sct_status.format_version,
          ata_sct_status.sct_version, ata_sct_status.device_state) is
@@ -82,14 +84,208 @@ smartmonSataInfoTableRowCount OBJECT-TYPE
     DESCRIPTION "Current number of rows in smartmonSataInfoTable."
     ::= { smartmonSataObjects 1 }
 
-smartmonSataInfoTableLastChange OBJECT-TYPE
+smartSATAChanges OBJECT IDENTIFIER ::= { smartmonSataObjects 2 }
+
+smartSATAChangeMetadataTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF SmartSATAChangeMetadataEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Metadata for SATA tables tracked by smartSATAChanges.  The table ID
+         values used by this subtree are:
+           1  smartmonSataInfoTable
+           2  smartmonSataHealthTable
+           3  smartmonSataAttrTable
+           4  smartmonSataErrorLogTable
+           5  smartmonSataErrorCmdTable
+           6  smartmonSataSelfTestTable
+           7  smartmonSataErcTable
+           8  smartmonSataPhyEventTable
+           9  smartmonSataSelectiveTestTable
+           10 smartmonSataLogDirTable
+           11 smartmonSataDevStatTable
+           12 smartmonSataPendingDefectsTable."
+    ::= { smartSATAChanges 1 }
+
+smartSATAChangeMetadataEntry OBJECT-TYPE
+    SYNTAX      SmartSATAChangeMetadataEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Metadata for one tracked SATA table."
+    INDEX { smartSATAChangeTableId }
+    ::= { smartSATAChangeMetadataTable 1 }
+
+SmartSATAChangeMetadataEntry ::= SEQUENCE {
+    smartSATAChangeTableId          Unsigned32,
+    smartSATAChangeTableName        DisplayString,
+    smartSATAChangeTableRowCount    Unsigned32,
+    smartSATAChangeTableLastChange  DateAndTime
+}
+
+smartSATAChangeTableId OBJECT-TYPE
+    SYNTAX      Unsigned32 (1..12)
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Tracked SATA table identifier."
+    ::= { smartSATAChangeMetadataEntry 1 }
+
+smartSATAChangeTableName OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Name of the tracked SATA table."
+    ::= { smartSATAChangeMetadataEntry 2 }
+
+smartSATAChangeTableRowCount OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Current total row count for the tracked SATA table."
+    ::= { smartSATAChangeMetadataEntry 3 }
+
+smartSATAChangeTableLastChange OBJECT-TYPE
     SYNTAX      DateAndTime
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Timestamp of the most recent row addition or removal in
-         smartmonSataInfoTable."
-    ::= { smartmonSataObjects 2 }
+        "Timestamp of the most recent row addition, removal, or material row
+         content change for the tracked SATA table."
+    ::= { smartSATAChangeMetadataEntry 4 }
+
+smartSATAChangeByDeviceTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF SmartSATAChangeByDeviceEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Per-device change tracking for each SATA table.  Instances are
+         indexed by smartmonDeviceIndex and table ID, giving managers a
+         compact per-device view of row count and last-change time."
+    ::= { smartSATAChanges 2 }
+
+smartSATAChangeByDeviceEntry OBJECT-TYPE
+    SYNTAX      SmartSATAChangeByDeviceEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Per-device change state for one tracked SATA table."
+    INDEX { smartmonDeviceIndex, smartSATAChangeByDeviceTableId }
+    ::= { smartSATAChangeByDeviceTable 1 }
+
+SmartSATAChangeByDeviceEntry ::= SEQUENCE {
+    smartSATAChangeByDeviceTableId      Unsigned32,
+    smartSATAChangeByDeviceRowCount     Unsigned32,
+    smartSATAChangeByDeviceLastChange   DateAndTime
+}
+
+smartSATAChangeByDeviceTableId OBJECT-TYPE
+    SYNTAX      INTEGER {
+                    unknown(0),
+                    sataInfo(1),
+                    sataHealth(2),
+                    sataAttr(3),
+                    sataErrorLog(4),
+                    sataErrorCmd(5),
+                    sataSelfTest(6),
+                    sataErc(7),
+                    sataPhyEvent(8),
+                    sataSelectiveTest(9),
+                    sataLogDir(10),
+                    sataDevStat(11),
+                    sataPendingDefects(12)
+                }
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Tracked SATA table identifier."
+    ::= { smartSATAChangeByDeviceEntry 1 }
+
+smartSATAChangeByDeviceRowCount OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Number of rows for the indexed device in the indexed SATA table."
+    ::= { smartSATAChangeByDeviceEntry 2 }
+
+smartSATAChangeByDeviceLastChange OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Timestamp of the most recent row addition, removal, or material row
+         content change for the indexed device in the indexed SATA table."
+    ::= { smartSATAChangeByDeviceEntry 3 }
+
+smartSATAChangeBySubindexTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF SmartSATAChangeBySubindexEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Change tracking for SATA tables with two table-specific index
+         components below smartmonDeviceIndex.  This table is used for
+         smartmonSataErrorCmdTable (table ID 5: error index, command index)
+         and smartmonSataDevStatTable (table ID 11: page number, offset)."
+    ::= { smartSATAChanges 3 }
+
+smartSATAChangeBySubindexEntry OBJECT-TYPE
+    SYNTAX      SmartSATAChangeBySubindexEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Change state for one two-dimensional child row."
+    INDEX {
+        smartmonDeviceIndex,
+        smartSATAChangeBySubindexTableId,
+        smartSATAChangeSubindex1,
+        smartSATAChangeSubindex2
+    }
+    ::= { smartSATAChangeBySubindexTable 1 }
+
+SmartSATAChangeBySubindexEntry ::= SEQUENCE {
+    smartSATAChangeBySubindexTableId    Unsigned32,
+    smartSATAChangeSubindex1            Unsigned32,
+    smartSATAChangeSubindex2            Unsigned32,
+    smartSATAChangeBySubindexLastChange DateAndTime
+}
+
+smartSATAChangeBySubindexTableId OBJECT-TYPE
+    SYNTAX      INTEGER {
+                    unknown(0),
+                    sataErrorCmd(5),
+                    sataDevStat(11)
+                }
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Tracked SATA table identifier.  Only smartmonSataErrorCmdTable (5)
+         and smartmonSataDevStatTable (11) use this change table."
+    ::= { smartSATAChangeBySubindexEntry 1 }
+
+smartSATAChangeSubindex1 OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "First table-specific subindex.  For table ID 5 this is
+         smartmonSataErrorIndex.  For table ID 11 this is
+         smartmonSataDevStatPageNum."
+    ::= { smartSATAChangeBySubindexEntry 2 }
+
+smartSATAChangeSubindex2 OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Second table-specific subindex.  For table ID 5 this is
+         smartmonSataErrorCmdIndex.  For table ID 11 this is
+         smartmonSataDevStatOffset."
+    ::= { smartSATAChangeBySubindexEntry 3 }
+
+smartSATAChangeBySubindexLastChange OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Timestamp of the most recent material content change for the indexed
+         child row."
+    ::= { smartSATAChangeBySubindexEntry 4 }
 
 smartmonSataInfoTable OBJECT-TYPE
     SYNTAX      SEQUENCE OF SmartmonSataInfoEntry
@@ -643,7 +839,26 @@ smartmonSataHealthOverallStatus OBJECT-TYPE
     STATUS      current
     DESCRIPTION
         "Overall SMART health status as reported by smartctl
-         (smart_status.passed)."
+         (smart_status.passed).
+         
+         that is derived from three paths, tried in order:
+         1. ACS-4 RETURN STATUS (sts->smart_status, line 3129–3139) 
+            Reads the ATA SMART RETURN STATUS register (0xDA). 
+            If 0xc24f → passed, if 0x2cf4 → failed, otherwise reserved/unknown.
+         2. ataSmartStatus2 fallback (line 4077)
+            Issues the older SMART STATUS_CHECK command (ata_cmd 0xB0, feature 0xDA). 
+            The driver returns the threshold-computed result:
+            -  0 → passed
+            -  1 → failed
+            - -1 → command failed (third path below)
+         3. find_failed_attr (ataprint.cpp:1124) 
+            iterates all 30 ATA attribute slots and calls ata_get_attr_state (atacmds.cpp:1797) on each one. 
+            Attribute threshold fallback (lines 4138–4168)
+            If the STATUS_CHECK command itself fails (e.g., SAT layer bug), 
+            smartctl falls back to checking whether any attribute value is ≤ its threshold (find_failed_attr). 
+            If any attribute is failed → false; if all pass → true (with a warning).
+         
+         "
     ::= { smartmonSataHealthEntry 1 }
 
 smartmonSataOfflineCollectionStatusValue OBJECT-TYPE
@@ -867,7 +1082,10 @@ smartmonSataAttrRawValue OBJECT-TYPE
     STATUS      current
     DESCRIPTION
         "Raw attribute value as a 64-bit integer
-         (ata_smart_attributes.table[].raw.value)."
+         (ata_smart_attributes.table[].raw.value).  Implementations MUST emit
+         the minimal numeric value reported by smartctl when one is available,
+         so managers can record numeric time-series data without parsing
+         smartmonSataAttrRawString."
     ::= { smartmonSataAttrEntry 9 }
 
 smartmonSataAttrRawString OBJECT-TYPE
@@ -875,9 +1093,12 @@ smartmonSataAttrRawString OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Raw attribute value as interpreted text from smartctl; may
-         include additional fields such as hours or counts
-         (ata_smart_attributes.table[].raw.string)."
+        "Raw attribute value as interpreted text from smartctl; may include
+         additional fields such as hours, counts, or temperature min/max
+         annotations (ata_smart_attributes.table[].raw.string).  DisplayString
+         values are limited to 255 octets, so managers MUST NOT depend on this
+         object for numeric collection when smartmonSataAttrRawValue is
+         available."
     ::= { smartmonSataAttrEntry 10 }
 
 smartmonSataAttrStatus OBJECT-TYPE
@@ -1234,7 +1455,8 @@ SmartmonSataSelfTestEntry ::= SEQUENCE {
     smartmonSataSelfTestResultPassed  TruthValue,
     smartmonSataSelfTestRemainingPct  Unsigned32,
     smartmonSataSelfTestLifetimeHours CounterBasedGauge64,
-    smartmonSataSelfTestLbaFirstError SmartmonLogicalBlockAddress
+    smartmonSataSelfTestLbaFirstError SmartmonLogicalBlockAddress,
+    smartmonSataSelfTestEstimatedCompletionTime DateAndTime
 }
 
 smartmonSataSelfTestIndex OBJECT-TYPE
@@ -1303,6 +1525,18 @@ smartmonSataSelfTestLbaFirstError OBJECT-TYPE
         "LBA of the first error, if reported
          (ata_smart_self_test_log.extended.table[].lba_first_error)."
     ::= { smartmonSataSelfTestEntry 7 }
+
+smartmonSataSelfTestEstimatedCompletionTime OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Estimated wall-clock completion time for an active ATA self-test, if
+         the agent can estimate it from reported remaining percentage and the
+         known self-test polling interval for the test type.  The object is not
+         instantiated for completed log entries or when no meaningful estimate
+         can be calculated."
+    ::= { smartmonSataSelfTestEntry 8 }
 
 -- --------------------------------------------------------------------------
 -- SATA SCT Error Recovery Control table  (.19 RowCount, .20 LastChange, .21 Table)
@@ -2116,7 +2350,8 @@ smartmonSataSelfTestGroup OBJECT-GROUP
         smartmonSataSelfTestResultPassed,
         smartmonSataSelfTestRemainingPct,
         smartmonSataSelfTestLifetimeHours,
-        smartmonSataSelfTestLbaFirstError
+        smartmonSataSelfTestLbaFirstError,
+        smartmonSataSelfTestEstimatedCompletionTime
     }
     STATUS current
     DESCRIPTION "ATA SMART self-test log objects."
@@ -2133,7 +2368,7 @@ smartmonSataErcGroup OBJECT-GROUP
 
 smartmonSataTableMetaGroup OBJECT-GROUP
     OBJECTS {
-        smartmonSataInfoTableRowCount,           smartmonSataInfoTableLastChange,
+        smartmonSataInfoTableRowCount,
         smartmonSataHealthTableRowCount,         smartmonSataHealthTableLastChange,
         smartmonSataAttrTableRowCount,           smartmonSataAttrTableLastChange,
         smartmonSataErrorLogTableRowCount,       smartmonSataErrorLogTableLastChange,
@@ -2144,10 +2379,16 @@ smartmonSataTableMetaGroup OBJECT-GROUP
         smartmonSataSelectiveTestTableRowCount,  smartmonSataSelectiveTestTableLastChange,
         smartmonSataLogDirTableRowCount,         smartmonSataLogDirTableLastChange,
         smartmonSataDevStatTableRowCount,            smartmonSataDevStatTableLastChange,
-        smartmonSataPendingDefectsTableRowCount,     smartmonSataPendingDefectsTableLastChange
+        smartmonSataPendingDefectsTableRowCount,     smartmonSataPendingDefectsTableLastChange,
+        smartSATAChangeTableName,
+        smartSATAChangeTableRowCount,
+        smartSATAChangeTableLastChange,
+        smartSATAChangeByDeviceRowCount,
+        smartSATAChangeByDeviceLastChange,
+        smartSATAChangeBySubindexLastChange
     }
     STATUS current
-    DESCRIPTION "ATA/SATA table row-count and last-change scalars."
+    DESCRIPTION "ATA/SATA table row-count and last-change objects."
     ::= { smartmonSataGroups 8 }
 
 smartmonSataPhyEventGroup OBJECT-GROUP

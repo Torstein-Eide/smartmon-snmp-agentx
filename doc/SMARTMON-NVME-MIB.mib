@@ -19,7 +19,7 @@ IMPORTS
         FROM SMARTMON-COMMON-MIB;
 
 smartmonNvmeMIB MODULE-IDENTITY
-    LAST-UPDATED "202605180000Z"
+    LAST-UPDATED "202605270000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl NVMe output.
@@ -877,7 +877,8 @@ SmartmonNvmeSelfTestEntry ::= SEQUENCE {
     smartmonNvmeSelfTestNamespaceId    Unsigned32,
     smartmonNvmeSelfTestSegmentNumber  Unsigned32,
     smartmonNvmeSelfTestStatusCodeType Unsigned32,
-    smartmonNvmeSelfTestStatusCode     Unsigned32
+    smartmonNvmeSelfTestStatusCode     Unsigned32,
+    smartmonNvmeSelfTestEstimatedCompletionTime DateAndTime
 }
 
 smartmonNvmeSelfTestIndex OBJECT-TYPE
@@ -960,6 +961,18 @@ smartmonNvmeSelfTestStatusCode OBJECT-TYPE
     DESCRIPTION "NVMe self-test Status Code value, if reported."
     ::= { smartmonNvmeSelfTestEntry 11 }
 
+smartmonNvmeSelfTestEstimatedCompletionTime OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Estimated wall-clock completion time for an active NVMe self-test,
+         if the agent can estimate it from the current self-test operation,
+         completion progress, and observed poll time.  The object is not
+         instantiated for completed log entries or when no meaningful estimate
+         can be calculated."
+    ::= { smartmonNvmeSelfTestEntry 12 }
+
 smartmonNvmeErrorLogTableRowCount OBJECT-TYPE
     SYNTAX      Unsigned32
     MAX-ACCESS  read-only
@@ -1011,7 +1024,8 @@ SmartmonNvmeErrorLogEntry ::= SEQUENCE {
     smartmonNvmeErrorStatusCodeType         Unsigned32,
     smartmonNvmeErrorDoNotRetry             TruthValue,
     smartmonNvmeErrorStatusString           DisplayString,
-    smartmonNvmeErrorPhaseTag               TruthValue
+    smartmonNvmeErrorPhaseTag               TruthValue,
+    smartmonNvmeErrorTimestamp              DateAndTime
 }
 
 smartmonNvmeErrorLogIndex OBJECT-TYPE
@@ -1126,6 +1140,19 @@ smartmonNvmeErrorPhaseTag OBJECT-TYPE
         "Phase Tag bit from the NVMe completion queue entry
          (phase_tag)."
     ::= { smartmonNvmeErrorLogEntry 14 }
+
+smartmonNvmeErrorTimestamp OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Absolute wall-clock timestamp associated with this NVMe error-log
+         entry.  When the controller or smartctl output does not provide an
+         absolute error timestamp, the agent SHOULD use the poll time at which
+         the entry was first observed.  Managers can use this object with
+         smartmonNvmeErrorCount to avoid re-inserting error-log entries that
+         have already been stored."
+    ::= { smartmonNvmeErrorLogEntry 15 }
 
 smartmonNvmeCapabilityTableRowCount OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -1423,7 +1450,8 @@ smartmonNvmeSelfTestGroup OBJECT-GROUP
         smartmonNvmeSelfTestNamespaceId,
         smartmonNvmeSelfTestSegmentNumber,
         smartmonNvmeSelfTestStatusCodeType,
-        smartmonNvmeSelfTestStatusCode
+        smartmonNvmeSelfTestStatusCode,
+        smartmonNvmeSelfTestEstimatedCompletionTime
     }
     STATUS current
     DESCRIPTION "NVMe self-test objects."
@@ -1443,7 +1471,8 @@ smartmonNvmeErrorLogGroup OBJECT-GROUP
         smartmonNvmeErrorStatusCodeType,
         smartmonNvmeErrorDoNotRetry,
         smartmonNvmeErrorStatusString,
-        smartmonNvmeErrorPhaseTag
+        smartmonNvmeErrorPhaseTag,
+        smartmonNvmeErrorTimestamp
     }
     STATUS current
     DESCRIPTION "NVMe Error Information log objects."

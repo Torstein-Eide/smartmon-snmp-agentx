@@ -19,7 +19,7 @@ IMPORTS
         FROM SMARTMON-COMMON-MIB;
 
 smartmonSasMIB MODULE-IDENTITY
-    LAST-UPDATED "202605180000Z"
+    LAST-UPDATED "202605270000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl SAS/SCSI output.
@@ -552,7 +552,8 @@ SmartmonSasBackgroundScanEntry ::= SEQUENCE {
     smartmonSasBgScanProgressPercent       Unsigned32,
     smartmonSasBgScanScansPerformed        CounterBasedGauge64,
     smartmonSasBgScanMediumScansPerformed  CounterBasedGauge64,
-    smartmonSasBgScanScanResults           Unsigned32
+    smartmonSasBgScanScanResults           Unsigned32,
+    smartmonSasBgScanEstimatedCompletionTime DateAndTime
 }
 
 smartmonSasBgScanStatus OBJECT-TYPE
@@ -597,6 +598,17 @@ smartmonSasBgScanIndex OBJECT-TYPE
     STATUS      current
     DESCRIPTION "Local index for SAS background scan entries within a device."
     ::= { smartmonSasBackgroundScanEntry 6 }
+
+smartmonSasBgScanEstimatedCompletionTime OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Estimated wall-clock completion time for the currently active
+         background scan, if the agent can estimate it from reported progress
+         and observed scan rate.  The object is not instantiated when no scan
+         is active or when the agent cannot calculate a meaningful estimate."
+    ::= { smartmonSasBackgroundScanEntry 7 }
 
 -- --------------------------------------------------------------------------
 -- Notifications
@@ -742,7 +754,8 @@ smartmonSasBackgroundScanGroup OBJECT-GROUP
         smartmonSasBgScanProgressPercent,
         smartmonSasBgScanScansPerformed,
         smartmonSasBgScanMediumScansPerformed,
-        smartmonSasBgScanScanResults
+        smartmonSasBgScanScanResults,
+        smartmonSasBgScanEstimatedCompletionTime
     }
     STATUS current
     DESCRIPTION "SAS background scan objects."
