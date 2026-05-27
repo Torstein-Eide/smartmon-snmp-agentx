@@ -69,6 +69,7 @@ MIB field reliably.
 - **`g++`** with C++14 support
 - **`make`**
 - **`libsnmp-dev`** for net-snmp headers, libraries, and `net-snmp-config`
+- **`libsqlite3-dev`** for SQLite-backed table-change timestamp support
 - **`snmp`** and **`snmpd`** for live SNMP integration tests
 - **`smartmontools`** for `smartctl`, `smartd`, or both
 - Read access to the configured `state_dir`
@@ -76,7 +77,7 @@ MIB field reliably.
 On Debian/Ubuntu:
 
 ```bash
-sudo apt-get install g++ make libsnmp-dev snmp snmpd smartmontools
+sudo apt-get install g++ make libsnmp-dev libsqlite3-dev snmp snmpd smartmontools
 ```
 
 ---
@@ -102,6 +103,7 @@ id -u smartmon >/dev/null 2>&1 || \
 getent group Debian-snmp >/dev/null && sudo usermod -aG Debian-snmp smartmon
 getent group snmp >/dev/null && sudo usermod -aG snmp smartmon
 sudo install -d -m 750 -o root -g smartmon /run/smartmontools/json
+sudo install -d -m 750 -o smartmon -g smartmon /var/lib/smartmontools
 sudo install -m 755 .build/smartmon-snmp-agentxd /usr/sbin/
 sudo install -m 755 bin/smartmon-collect /usr/sbin/
 sudo install -m 644 etc/smartmon-snmp-agentxd.conf \
@@ -160,7 +162,21 @@ agentx_socket   /var/agentx/master
 
 # Cache timeout in seconds (default: 300)
 cache_timeout   300
+
+# Optional SQLite state DB for persisting table LastChange timestamps across restarts
+# Directory must be writable by the daemon user.
+state_db        /var/lib/smartmontools/snmp-agentxd-state.db
 ```
+
+`state_db` is optional. Without it, table `LastChange` scalars remain accurate
+within a daemon run but reset to first-parse time after restart.
+When using the hardened systemd unit, make sure the selected database directory
+is writable by the service through `ReadWritePaths` or an equivalent override.
+
+Table `LastChange` timestamps are content based: the agent hashes each table
+after parsing and updates the corresponding timestamp only when that table's
+SNMP-visible contents change. This prevents ordinary polling from making SNMP
+managers see false table changes.
 
 ---
 
