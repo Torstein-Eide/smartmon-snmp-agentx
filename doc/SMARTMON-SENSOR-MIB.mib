@@ -77,8 +77,11 @@ smartmonSensorGroups        OBJECT IDENTIFIER ::= { smartmonSensorConformance 2 
 --     index 101+ nvme_power_states[current].max_power etc.
 --
 --   SATA temperature:
---     index 1  ata_sct_status.temperature.celsius
---     index 2  SMART attribute id=194 raw value (if SCT not available)
+--     index 1  SMART attribute id=194 raw value (if SCT not available)
+--     index 2  spare_available.current_percent (Mostly ID# 5, Reallocated Sector Ct, not ID# 177, Wear Leveling Count etc.)
+--       This is Guessed from the normalized value of certain SMART attributes matching the regex at src/ataprint.c>
+--       Reallocated_Sector_C.*|Retired_Block_C.*|(Remain.*_)?Spare_Blocks(_(Avail|Remain).*)?
+--       Specifically attributes ID 5, 17, or ≥100 with matching names. The value at ataprint.cpp:1204 is:
 --
 --   SAS temperature:
 --     index 1  temperature.current

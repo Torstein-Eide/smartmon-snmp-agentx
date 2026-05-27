@@ -928,7 +928,11 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
     //     }
     // }
 
-    // Sensor 2 (renumbered from 3): spare_available.current_percent
+    // Sensor 2: spare_available.current_percent
+    // This is Guessed from the normalized value of certain SMART attributes matching the regex at src/ataprint.cpp:1199-1202:
+    // Reallocated_Sector_C.*|Retired_Block_C.*|(Remain.*_)?Spare_Blocks(_(Avail|Remain).*)?
+    // Specifically attributes ID 5, 17, or ≥100 with matching names. The value at ataprint.cpp:1204 is: 
+    //
     // (low_critical = threshold_percent, low_warning = 100% higher than critical)
     {
         const JVal &spare = root["spare_available"];
@@ -938,7 +942,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             sr.device_index    = dev_idx;
             sr.sensor_index    = 2;
             sr.type            = 10;  // percent
-            sr.name            = "Spare Available";
+            sr.name            = "Normalized wear indicator";
             sr.source          = "spare_available.current_percent";
             sr.scale           = 9;
             sr.precision       = 0;
