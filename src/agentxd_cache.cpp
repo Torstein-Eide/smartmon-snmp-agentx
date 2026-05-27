@@ -87,15 +87,26 @@ const CacheDeviceRow *AgentxCache::find_device(uint32_t idx) const {
     return nullptr;
 }
 
-uint32_t AgentxCache::upsert_device(const std::string &path, DeviceProto proto) {
+uint32_t AgentxCache::upsert_device(const std::string &path, DeviceProto proto,
+                                    uint32_t hint_idx) {
     for (auto &row : devices) {
         if (row.path == path) {
             row.proto = proto;
             return row.index;
         }
     }
+    // Resolve collisions: if hint_idx is taken by a different path, increment.
+    uint32_t idx = hint_idx ? hint_idx : next_device_index++;
+    for (;;) {
+        if (idx == 0) { ++idx; continue; }
+        bool taken = false;
+        for (const auto &r : devices)
+            if (r.index == idx) { taken = true; break; }
+        if (!taken) break;
+        ++idx;
+    }
     CacheDeviceRow row;
-    row.index = next_device_index++;
+    row.index = idx;
     row.path  = path;
     row.proto = proto;
     devices.push_back(row);

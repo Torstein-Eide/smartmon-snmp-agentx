@@ -39,6 +39,17 @@ smartmonCommonMIB MODULE-IDENTITY
          polling the table continuously.
 
          This MIB requires SMARTMON-TC-MIB."
+    REVISION "202605270000Z"
+    DESCRIPTION
+        "Add smartmonDeviceModelFamily, smartmonDeviceModelName,
+         smartmonDeviceSerialNumber, smartmonDeviceFirmwareVersion,
+         smartmonDeviceWwn columns to smartmonDeviceTable (cols 10-14).
+         Model, serial, firmware, and WWN moved here from per-protocol
+         tables (NVMe controller, SATA info, SAS info).
+         smartmonDeviceIndex is now derived from a 32-bit FNV-1a hash of
+         serial_number|model_name, making it likely to be consistent across
+         agent restarts; managers must not treat it as a reliable persistent
+         identifier."
     REVISION "202605200000Z"
     DESCRIPTION
         "Add smartmonDeviceCountNvme, smartmonDeviceCountAta,
@@ -184,7 +195,12 @@ SmartmonDeviceEntry ::= SEQUENCE {
     smartmonDeviceLastPollResult     SmartmonPollResult,
     smartmonDeviceLastPollExitStatus Unsigned32,
     smartmonDevicePhysicalIndex      PhysicalIndexOrZero,
-    smartmonDeviceUris               OCTET STRING
+    smartmonDeviceUris               OCTET STRING,
+    smartmonDeviceModelFamily        DisplayString,
+    smartmonDeviceModelName          DisplayString,
+    smartmonDeviceSerialNumber       DisplayString,
+    smartmonDeviceFirmwareVersion    DisplayString,
+    smartmonDeviceWwn                DisplayString
 }
 
 smartmonDeviceIndex OBJECT-TYPE
@@ -192,24 +208,18 @@ smartmonDeviceIndex OBJECT-TYPE
     MAX-ACCESS  not-accessible
     STATUS      current
     DESCRIPTION
-        "A local index for a monitored smartctl target.
+        "A locally assigned index for a monitored smartctl target.
+         Managers MUST NOT use this value as a persistent device identity.
 
-         The value is only required to be unique within the
-         smartmonDeviceTable while the agent is running. The same index
-         value may be reused for a different device after the agent is
-         restarted, after device rediscovery, or after configuration
-         changes.
+         The agent derives the initial index as a 32-bit FNV-1a hash of
+         the concatenation serial_number|model_name, so the same device
+         tends to receive the same value after an agent restart when its
+         serial number and model name are unchanged.  This is an
+         implementation convenience, not a guarantee; hash collisions or
+         device replacements may result in a different index.
 
-         Managers MUST NOT treat this value as a persistent device identity.
-         Stable identification should instead use protocol-specific identity
-         columns joined through this index, preferring WWN, NAA, EUI-64,
-         NGUID, or namespace identifiers where available and otherwise using a
-         deterministic normalized model plus serial key.
-
-         If the monitored device can be associated with an ENTITY-MIB
-         physical entity, the agent should expose the corresponding
-         entPhysicalIndex in the device table. Managers should prefer
-         entPhysicalIndex for cross-MIB correlation when it is available."
+         For persistent device identity use smartmonDeviceSerialNumber and
+         smartmonDeviceModelName, or smartmonDeviceWwn when available."
     ::= { smartmonDeviceEntry 1 }
 
     
@@ -316,6 +326,50 @@ smartmonDeviceUris OBJECT-TYPE
          also be returned in this case."
     ::= { smartmonDeviceEntry 9 }
 
+smartmonDeviceModelFamily OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Drive model family as identified in the smartctl database
+         (model_family).  Present for ATA/SATA devices; empty for NVMe
+         and SAS/SCSI devices."
+    ::= { smartmonDeviceEntry 10 }
+
+smartmonDeviceModelName OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Drive model name as reported by the device (model_name for
+         ATA/NVMe; scsi_model_name for SAS/SCSI)."
+    ::= { smartmonDeviceEntry 11 }
+
+smartmonDeviceSerialNumber OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Drive serial number as reported by the device (serial_number)."
+    ::= { smartmonDeviceEntry 12 }
+
+smartmonDeviceFirmwareVersion OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Firmware version string as reported by the device (firmware_version)."
+    ::= { smartmonDeviceEntry 13 }
+
+smartmonDeviceWwn OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "World Wide Name as a 64-bit hex string with 0x prefix
+         (e.g. 0x5000cca2a4c5b3cb), matching the Linux
+         /dev/disk/by-id/wwn-0x... symlink format.  Present for
+         ATA/SATA and SAS/SCSI devices; empty for NVMe."
+    ::= { smartmonDeviceEntry 14 }
+
 -- --------------------------------------------------------------------------
 -- Notifications
 -- --------------------------------------------------------------------------
@@ -416,7 +470,12 @@ smartmonDeviceGroup OBJECT-GROUP
         smartmonDeviceLastPollResult,
         smartmonDeviceLastPollExitStatus,
         smartmonDevicePhysicalIndex,
-        smartmonDeviceUris
+        smartmonDeviceUris,
+        smartmonDeviceModelFamily,
+        smartmonDeviceModelName,
+        smartmonDeviceSerialNumber,
+        smartmonDeviceFirmwareVersion,
+        smartmonDeviceWwn
     }
     STATUS current
     DESCRIPTION

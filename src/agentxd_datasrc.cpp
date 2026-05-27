@@ -308,6 +308,14 @@ static bool state_dir_has_json(const std::string &dir) {
 // JSON → cache: individual protocol parsers
 // ---------------------------------------------------------------------------
 
+// FNV-1a 32-bit hash used to derive a stable smartmonDeviceIndex from serial+model.
+static uint32_t fnv1a32(const std::string &s) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : s)
+        h = (h ^ c) * 16777619u;
+    return h ? h : 1u;
+}
+
 static std::string format_wwn(const JVal &wwn) {
     char buf[32];
     uint64_t naa = wwn["naa"].as_uint64();
@@ -514,9 +522,6 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
     {
         CacheNvmeControllerRow ctrl;
         ctrl.device_index      = dev_idx;
-        ctrl.model_number      = root["model_name"].as_string();
-        ctrl.serial_number     = root["serial_number"].as_string();
-        ctrl.firmware_version  = root["firmware_version"].as_string();
         const JVal &pci = root["nvme_pci_vendor"];
         ctrl.pci_vendor_id     = pci.is_null() ? 0 : static_cast<uint32_t>(pci["id"].as_uint64());
         ctrl.pci_subsystem_id  = pci.is_null() ? 0 : static_cast<uint32_t>(pci["subsystem_id"].as_uint64());
@@ -533,7 +538,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
         }
         ctrl.namespace_count   = static_cast<uint32_t>(root["nvme_number_of_namespaces"].as_uint64());
         ctrl.max_data_transfer_pages = static_cast<uint32_t>(root["nvme_maximum_data_transfer_pages"].as_uint64());
-        if (!ctrl.model_number.empty() || ctrl.controller_id != 0)
+        if (ctrl.controller_id != 0 || ctrl.pci_vendor_id != 0)
             g_cache.nvme_controllers.push_back(ctrl);
     }
 
@@ -722,6 +727,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
                     r.lba           = e["lba"]["value"].as_uint64();
                     r.nsid          = static_cast<uint32_t>(e["nsid"].as_uint64());
                     r.parm_error_location = static_cast<uint32_t>(e["parameter_error_location"].as_uint64());
+                    r.error_timestamp = now;
                     g_cache.nvme_error_log.push_back(r);
                 }
             }
@@ -999,13 +1005,6 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
     {
         CacheSataInfoRow info;
         info.device_index        = dev_idx;
-        info.model_family        = root["model_family"].as_string();
-        info.model_name          = root["model_name"].as_string();
-        info.serial_number       = root["serial_number"].as_string();
-        info.firmware_version    = root["firmware_version"].as_string();
-        const JVal &wwn = root["wwn"];
-        if (!wwn.is_null())
-            info.wwn = format_wwn(wwn);
         {
             uint32_t sv = static_cast<uint32_t>(root["sata_version"]["value"].as_uint64()) & 0x0fffu;
             int msb = -1;
@@ -1110,7 +1109,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             info.selftest_log_sectors  = static_cast<uint32_t>(stl["sectors"].as_uint64());
         }
 
-        if (!info.model_name.empty() || info.logical_block_size > 0)
+        if (info.logical_block_size > 0 || info.ata_version > 0)
             g_cache.sata_info.push_back(info);
     }
 
@@ -1446,13 +1445,6 @@ static void parse_scsi(uint32_t dev_idx, const JVal &root) {
         info.product             = root["scsi_product"].as_string();
         info.revision            = root["scsi_revision"].as_string();
         info.compliance          = root["scsi_version"].as_string();
-        info.serial_number       = root["serial_number"].as_string();
-        const JVal &wwn2 = root["wwn"];
-        if (!wwn2.is_null())
-            info.wwn = format_wwn(wwn2);
-        info.scsi_model_name     = root["scsi_model_name"].as_string();
-        if (info.scsi_model_name.empty())
-            info.scsi_model_name = info.vendor + " " + info.product;
         info.rotation_rate       = static_cast<uint32_t>(root["rotation_rate"].as_uint64());
         info.form_factor         = root["form_factor"]["name"].as_string();
         info.logical_block_size  = static_cast<uint32_t>(root["logical_block_size"].as_uint64());
@@ -1503,9 +1495,8 @@ static void log_device_loaded(uint32_t dev_idx, DeviceProto proto,
     if (proto == PROTO_NVME) {
         for (const auto &h : g_cache.nvme_health) {
             if (h.device_index != dev_idx) continue;
-            std::string model;
-            for (const auto &c : g_cache.nvme_controllers)
-                if (c.device_index == dev_idx) { model = c.model_number; break; }
+            const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+            const std::string &model = dev ? dev->model_name : std::string{};
             snprintf(buf, sizeof(buf),
                 "loaded %s [NVMe] model=\"%s\" spare=%u%% used=%u%% "
                 "poh=%lluh media_err=%llu",
@@ -1519,9 +1510,8 @@ static void log_device_loaded(uint32_t dev_idx, DeviceProto proto,
     } else if (proto == PROTO_ATA || proto == PROTO_SAT) {
         for (const auto &h : g_cache.sata_health) {
             if (h.device_index != dev_idx) continue;
-            std::string model;
-            for (const auto &i : g_cache.sata_info)
-                if (i.device_index == dev_idx) { model = i.model_name; break; }
+            const CacheDeviceRow *dv = g_cache.find_device(dev_idx);
+            const std::string &model = dv ? dv->model_name : std::string{};
             size_t n_attrs = 0;
             for (const auto &a : g_cache.sata_attrs)
                 if (a.device_index == dev_idx) ++n_attrs;
@@ -1741,7 +1731,9 @@ static void process_json_file(const std::string &filepath) {
                     continue;
                 row.poll_result = POLL_FAILED;
                 row.poll_exit_status = 1;
-                notify_device_polling_failed(row.index, (int)row.poll_result);
+                ++row.consec_fail_count;
+                if (row.consec_fail_count >= g_poll_failure_threshold)
+                    notify_device_polling_failed(row.index, (int)row.poll_result);
                 break;
             }
         }
@@ -1775,7 +1767,12 @@ static void process_json_file(const std::string &filepath) {
         return;
     }
 
-    uint32_t dev_idx = g_cache.upsert_device(dev_path, proto);
+    std::string dev_serial = root["serial_number"].as_string();
+    std::string dev_model  = root["model_name"].as_string();
+    if (dev_model.empty())
+        dev_model = root["scsi_model_name"].as_string();
+    uint32_t hint_idx = fnv1a32(dev_serial + '|' + dev_model);
+    uint32_t dev_idx = g_cache.upsert_device(dev_path, proto, hint_idx);
     s_file_device_index[filepath] = dev_idx;
     if (g_verbosity >= 2)
         syslog(LOG_DEBUG, "datasrc: dev_idx=%u for '%s'", dev_idx, dev_path.c_str());
@@ -1801,9 +1798,16 @@ static void process_json_file(const std::string &filepath) {
                 row.name = (slash != std::string::npos) ? p.substr(slash + 1) : p;
             }
             populate_device_uris(row, proto);
-            row.last_poll_time = root["local_time"]["time_t"].as_int64();
-            row.last_json_mtime= mtime;
-            row.poll_result    = POLL_OK;
+            row.last_poll_time    = root["local_time"]["time_t"].as_int64();
+            row.last_json_mtime   = mtime;
+            row.poll_result       = POLL_OK;
+            row.consec_fail_count = 0;
+            row.serial_number     = dev_serial;
+            row.model_name        = dev_model;
+            row.model_family      = root["model_family"].as_string();
+            row.firmware_version  = root["firmware_version"].as_string();
+            { const JVal &ww = root["wwn"];
+              row.wwn = ww.is_null() ? std::string{} : format_wwn(ww); }
             break;
         }
         long uris_ms = elapsed_ms(t_uris);

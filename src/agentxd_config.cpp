@@ -9,7 +9,8 @@
 #include <limits>
 #include <syslog.h>
 
-int g_verbosity = 0;
+int      g_verbosity             = 0;
+uint32_t g_poll_failure_threshold = 1;
 
 bool agentxd_config_load(const char *path, AgentxConfig &out)
 {
@@ -59,6 +60,18 @@ bool agentxd_config_load(const char *path, AgentxConfig &out)
                 ok = false;
             } else {
                 out.cache_timeout = static_cast<unsigned>(v);
+            }
+        } else if (strcmp(key, "poll_failure_threshold") == 0) {
+            char *end;
+            errno = 0;
+            unsigned long long v = strtoull(value, &end, 10);
+            if (*end != '\0' || errno == ERANGE || v == 0
+                    || v > static_cast<unsigned long long>(std::numeric_limits<uint32_t>::max())) {
+                syslog(LOG_ERR, "%s:%d: poll_failure_threshold must be a positive integer",
+                       path, lineno);
+                ok = false;
+            } else {
+                out.poll_failure_threshold = static_cast<uint32_t>(v);
             }
         } else {
             syslog(LOG_WARNING, "%s:%d: unknown option '%s'", path, lineno, key);

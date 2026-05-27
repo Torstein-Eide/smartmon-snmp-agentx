@@ -2,6 +2,7 @@
 
 #include "agentxd_notify.h"
 #include "agentxd_cache.h"
+#include "agentxd_config.h"
 #include "snmp_oids.h"
 
 #include <cstring>
@@ -130,27 +131,6 @@ static void append_counter64_2idx(netsnmp_variable_list **vars,
                                ASN_COUNTER64, (u_char*)&c64, sizeof(c64));
 }
 
-static const CacheNvmeControllerRow *find_nvme_controller(uint32_t dev_idx) {
-    for (const auto &row : g_cache.nvme_controllers)
-        if (row.device_index == dev_idx)
-            return &row;
-    return nullptr;
-}
-
-static const CacheSataInfoRow *find_sata_info(uint32_t dev_idx) {
-    for (const auto &row : g_cache.sata_info)
-        if (row.device_index == dev_idx)
-            return &row;
-    return nullptr;
-}
-
-static const CacheSasInfoRow *find_sas_info(uint32_t dev_idx) {
-    for (const auto &row : g_cache.sas_info)
-        if (row.device_index == dev_idx)
-            return &row;
-    return nullptr;
-}
-
 static void append_device_path(netsnmp_variable_list **vars,
                                uint32_t dev_idx,
                                const CacheDeviceRow *dev) {
@@ -173,12 +153,11 @@ static void append_device_identity(netsnmp_variable_list **vars,
 static void append_nvme_identity(netsnmp_variable_list **vars,
                                  uint32_t dev_idx,
                                  const CacheDeviceRow *dev) {
-    const CacheNvmeControllerRow *ctrl = find_nvme_controller(dev_idx);
-    if (ctrl) {
-        append_string_2idx(vars, oid_nvme_model_number, OID_LEN(oid_nvme_model_number),
-                           dev_idx, 1, ctrl->model_number.c_str());
-        append_string_2idx(vars, oid_nvme_serial_number, OID_LEN(oid_nvme_serial_number),
-                           dev_idx, 1, ctrl->serial_number.c_str());
+    if (dev) {
+        append_string(vars, oid_device_model_name, OID_LEN(oid_device_model_name),
+                      dev_idx, dev->model_name.c_str());
+        append_string(vars, oid_device_serial_number, OID_LEN(oid_device_serial_number),
+                      dev_idx, dev->serial_number.c_str());
     }
     append_device_path(vars, dev_idx, dev);
 }
@@ -186,12 +165,11 @@ static void append_nvme_identity(netsnmp_variable_list **vars,
 static void append_sata_identity(netsnmp_variable_list **vars,
                                  uint32_t dev_idx,
                                  const CacheDeviceRow *dev) {
-    const CacheSataInfoRow *info = find_sata_info(dev_idx);
-    if (info) {
-        append_string(vars, oid_sata_model_name, OID_LEN(oid_sata_model_name),
-                      dev_idx, info->model_name.c_str());
-        append_string(vars, oid_sata_serial_number, OID_LEN(oid_sata_serial_number),
-                      dev_idx, info->serial_number.c_str());
+    if (dev) {
+        append_string(vars, oid_device_model_name, OID_LEN(oid_device_model_name),
+                      dev_idx, dev->model_name.c_str());
+        append_string(vars, oid_device_serial_number, OID_LEN(oid_device_serial_number),
+                      dev_idx, dev->serial_number.c_str());
     }
     append_device_path(vars, dev_idx, dev);
 }
@@ -199,12 +177,11 @@ static void append_sata_identity(netsnmp_variable_list **vars,
 static void append_sas_identity(netsnmp_variable_list **vars,
                                 uint32_t dev_idx,
                                 const CacheDeviceRow *dev) {
-    const CacheSasInfoRow *info = find_sas_info(dev_idx);
-    if (info) {
-        append_string_2idx(vars, oid_sas_scsi_model_name, OID_LEN(oid_sas_scsi_model_name),
-                           dev_idx, 1, info->scsi_model_name.c_str());
-        append_string_2idx(vars, oid_sas_serial_number, OID_LEN(oid_sas_serial_number),
-                           dev_idx, 1, info->serial_number.c_str());
+    if (dev) {
+        append_string(vars, oid_device_model_name, OID_LEN(oid_device_model_name),
+                      dev_idx, dev->model_name.c_str());
+        append_string(vars, oid_device_serial_number, OID_LEN(oid_device_serial_number),
+                      dev_idx, dev->serial_number.c_str());
     }
     append_device_path(vars, dev_idx, dev);
 }
@@ -287,6 +264,9 @@ void notify_device_polling_failed(uint32_t dev_idx, int poll_result) {
                          dev_idx, dev->last_poll_time);
     }
 
+    append_uint32(&vars, oid_poll_failure_threshold,
+                  OID_LEN(oid_poll_failure_threshold),
+                  0, ASN_UNSIGNED, (u_long)g_poll_failure_threshold);
     send_v2trap_timed(vars, "polling_failed");
     snmp_free_varbind(vars);
 }

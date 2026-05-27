@@ -156,6 +156,7 @@ nvme_health_handler(netsnmp_mib_handler *,
 // col 9  = selfTestSegmentNumber
 // col 10 = selfTestStatusCodeType
 // col 11 = selfTestStatusCode
+// col 12 = selfTestEstimatedCompletionTime (DateAndTime, not instantiated when 0)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -215,6 +216,14 @@ nvme_st_handler(netsnmp_mib_handler *,
         case 11: { u_long v = row->status_code;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
+        case 12: if (row->estimated_completion == 0) {
+                     netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
+                 } else {
+                     uint8_t dt[8];
+                     snmp_encode_date_time(row->estimated_completion, dt);
+                     snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                         dt, sizeof(dt));
+                 } break;
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }
@@ -223,22 +232,20 @@ nvme_st_handler(netsnmp_mib_handler *,
 
 // ---------------------------------------------------------------------------
 // NVMe controller table
-// INDEX { smartmonDeviceIndex, smartmonNvmeControllerIndex(col 14) }
-// col 1  = modelNumber
-// col 2  = serialNumber
-// col 3  = firmwareVersion
-// col 4  = pciVendorId
-// col 5  = ieeeOuiIdentifier
-// col 6  = totalNvmCapacityBytes
-// col 7  = unallocatedNvmCapacityBytes
-// col 8  = controllerId
-// col 9  = version
-// col 10 = namespaceCount
-// col 14 = controllerIndex (NOT-ACCESSIBLE, index)
-// col 15 = pciVendorSubsystemId
-// col 16 = versionValue
-// col 17 = pciVendorIdText
-// col 18 = pciVendorSubsystemIdText
+// INDEX { smartmonDeviceIndex, smartmonNvmeControllerIndex(col 11) }
+// col 1  = pciVendorId
+// col 2  = ieeeOuiIdentifier
+// col 3  = totalNvmCapacityBytes
+// col 4  = unallocatedNvmCapacityBytes
+// col 5  = controllerId
+// col 6  = version
+// col 7  = namespaceCount
+// col 8  = maxDataTransferPages
+// col 11 = controllerIndex (NOT-ACCESSIBLE, index)
+// col 12 = pciVendorSubsystemId
+// col 13 = versionValue
+// col 14 = pciVendorIdText
+// col 15 = pciVendorSubsystemIdText
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -272,45 +279,36 @@ nvme_ctrl_handler(netsnmp_mib_handler *,
         if (!row || !tinfo) continue;
 
         switch (tinfo->colnum) {
-        case 1:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->model_number.c_str(),
-                     row->model_number.size()); break;
-        case 2:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->serial_number.c_str(),
-                     row->serial_number.size()); break;
-        case 3:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->firmware_version.c_str(),
-                     row->firmware_version.size()); break;
-        case 4:  { u_long v = row->pci_vendor_id;
+        case 1:  { u_long v = row->pci_vendor_id;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 5:  { u_long v = row->ieee_oui;
+        case 2:  { u_long v = row->ieee_oui;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 6:  set_counter64(req, row->total_capacity); break;
-        case 7:  set_counter64(req, row->unallocated_capacity); break;
-        case 8:  { u_long v = row->controller_id;
+        case 3:  set_counter64(req, row->total_capacity); break;
+        case 4:  set_counter64(req, row->unallocated_capacity); break;
+        case 5:  { u_long v = row->controller_id;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 9:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+        case 6:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->version_string.c_str(),
                      row->version_string.size()); break;
-        case 10: { u_long v = row->namespace_count;
+        case 7:  { u_long v = row->namespace_count;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 11: { u_long v = row->max_data_transfer_pages;
+        case 8:  { u_long v = row->max_data_transfer_pages;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 15: { u_long v = row->pci_subsystem_id;
+        case 12: { u_long v = row->pci_subsystem_id;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 16: { u_long v = row->version_value;
+        case 13: { u_long v = row->version_value;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 17: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+        case 14: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->pci_vendor_id_text.c_str(),
                      row->pci_vendor_id_text.size()); break;
-        case 18: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+        case 15: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->pci_subsystem_vendor_text.c_str(),
                      row->pci_subsystem_vendor_text.size()); break;
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
@@ -404,6 +402,7 @@ nvme_ns_handler(netsnmp_mib_handler *,
 // col 12 = errorDoNotRetry (TruthValue)
 // col 13 = errorStatusString
 // col 14 = errorPhaseTag (TruthValue)
+// col 15 = errorTimestamp (DateAndTime)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -475,6 +474,10 @@ nvme_el_handler(netsnmp_mib_handler *,
         case 14: { long v = row->phase_tag ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
+        case 15: { uint8_t dt[8];
+                   snmp_encode_date_time(row->error_timestamp, dt);
+                   snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                       dt, sizeof(dt)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }
@@ -752,8 +755,8 @@ void register_nvme_mib() {
 
     // NVMe table iterator registrations
     REG_TABLE_UU("smartmonNvmeHealthTable",     nvme_health_handler, oid_nvme_health_table,       nvme_health_get_next,  1, 23);
-    REG_TABLE_UU("smartmonNvmeSelfTestTable",   nvme_st_handler,     oid_nvme_selftest_table,     nvme_st_get_next,      2, 11);
-    REG_TABLE_UU("smartmonNvmeControllerTable", nvme_ctrl_handler,   oid_nvme_controller_table,   nvme_ctrl_get_next,    1, 18);
+    REG_TABLE_UU("smartmonNvmeSelfTestTable",   nvme_st_handler,     oid_nvme_selftest_table,     nvme_st_get_next,      2, 12);
+    REG_TABLE_UU("smartmonNvmeControllerTable", nvme_ctrl_handler,   oid_nvme_controller_table,   nvme_ctrl_get_next,    1, 15);
     REG_TABLE_UU("smartmonNvmeNamespaceTable",  nvme_ns_handler,     oid_nvme_namespace_table,    nvme_ns_get_next,      1, 10);
 
     // NVMe capability table metadata scalars
@@ -787,5 +790,5 @@ void register_nvme_mib() {
     // NVMe LBA format table (3 index columns: deviceIndex + namespaceId + formatId)
     REG_TABLE_UUU("smartmonNvmeLbaFormatTable", nvme_lba_handler, oid_nvme_lbafmt_table, nvme_lba_get_next, 2, 5);
 
-    REG_TABLE_UU("smartmonNvmeErrorLogTable",   nvme_el_handler,  oid_nvme_error_log_table, nvme_el_get_next, 1, 14);
+    REG_TABLE_UU("smartmonNvmeErrorLogTable",   nvme_el_handler,  oid_nvme_error_log_table, nvme_el_get_next, 1, 15);
 }

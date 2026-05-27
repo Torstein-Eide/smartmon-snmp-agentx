@@ -37,10 +37,16 @@ struct CacheDeviceRow {
     std::string path;
     DeviceProto proto    { PROTO_UNKNOWN };
     time_t      last_poll_time  { 0 };
-    PollResult  poll_result     { POLL_UNKNOWN };
+    PollResult  poll_result      { POLL_UNKNOWN };
     uint32_t    poll_exit_status { 0 };
+    uint32_t    consec_fail_count { 0 };
     std::string uris;             // space-separated URIs (empty if none)
     time_t      last_json_mtime { 0 };  // mtime of the JSON state file
+    std::string model_family;    // ATA only; empty otherwise
+    std::string model_name;
+    std::string serial_number;
+    std::string firmware_version;
+    std::string wwn;             // empty for NVMe
 };
 
 // --------------------------------------------------------------------
@@ -87,6 +93,7 @@ struct CacheNvmeSelfTestRow {
     uint32_t    segment_number { 0 };
     uint32_t    status_code_type { 0 };
     uint32_t    status_code      { 0 };
+    time_t      estimated_completion { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -119,6 +126,7 @@ struct CacheSataSelfTestRow {
     uint32_t    remaining_pct { 0 };
     uint64_t    lifetime_hours { 0 };
     uint64_t    lba_first_error { 0 };
+    time_t      estimated_completion { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -167,9 +175,6 @@ struct CacheSasSelfTestRow {
 // --------------------------------------------------------------------
 struct CacheNvmeControllerRow {
     uint32_t    device_index { 0 };
-    std::string model_number;
-    std::string serial_number;
-    std::string firmware_version;
     uint32_t    pci_vendor_id      { 0 };
     uint32_t    pci_subsystem_id   { 0 };
     std::string pci_vendor_id_text;
@@ -295,6 +300,7 @@ struct CacheNvmeErrorLogRow {
     bool        do_not_retry  { false };
     bool        phase_tag     { false };
     std::string status_string;
+    time_t      error_timestamp { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -302,11 +308,6 @@ struct CacheNvmeErrorLogRow {
 // --------------------------------------------------------------------
 struct CacheSataInfoRow {
     uint32_t    device_index { 0 };
-    std::string model_family;
-    std::string model_name;
-    std::string serial_number;
-    std::string firmware_version;
-    std::string wwn;
     uint32_t    ata_version        { 0 };     // col 6  (SmartmonAtaVersion)
     uint32_t    sata_version       { 0 };     // col 7  (SmartmonSataVersion)
     uint32_t    form_factor        { 0 };     // col 9  (SmartmonAtaFormFactor)
@@ -524,9 +525,6 @@ struct CacheSasInfoRow {
     std::string product;
     std::string revision;
     std::string compliance;
-    std::string serial_number;
-    std::string wwn;
-    std::string scsi_model_name;
     uint32_t    rotation_rate    { 0 };
     std::string form_factor;
     uint32_t    logical_block_size  { 0 };
@@ -604,6 +602,7 @@ struct CacheSasBgScanRow {
     uint64_t    scans_performed  { 0 };
     uint64_t    medium_scans     { 0 };
     std::string scan_results;
+    time_t      estimated_completion { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -683,7 +682,7 @@ struct AgentxCache {
     const CacheDeviceRow *find_device(uint32_t device_index) const;
 
     // Find or create a device row, return its index
-    uint32_t upsert_device(const std::string &path, DeviceProto proto);
+    uint32_t upsert_device(const std::string &path, DeviceProto proto, uint32_t hint_idx);
 };
 
 extern AgentxCache g_cache;

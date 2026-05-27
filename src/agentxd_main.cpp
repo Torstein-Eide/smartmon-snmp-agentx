@@ -111,6 +111,7 @@ int main(int argc, char *argv[])
         syslog(LOG_ERR, "Configuration error — exiting.");
         return EXIT_FAILURE;
     }
+    g_poll_failure_threshold = cfg.poll_failure_threshold;
 
     if (!foreground)
         daemonise();
