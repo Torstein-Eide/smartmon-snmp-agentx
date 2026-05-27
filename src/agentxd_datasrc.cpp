@@ -279,6 +279,22 @@ static uint64_t hash_vector(const std::vector<Row> &vec) {
     return h.value();
 }
 
+template<typename Row>
+static uint64_t hash_vector_for_device(const std::vector<Row> &vec, uint32_t dev_idx) {
+    std::vector<size_t> idx;
+    for (size_t i = 0; i < vec.size(); ++i)
+        if (vec[i].device_index == dev_idx)
+            idx.push_back(i);
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+        return sort_key(vec[a]) < sort_key(vec[b]);
+    });
+    TableHasher h;
+    uint64_t sz = idx.size();
+    h.feed(&sz, sizeof(sz));
+    for (size_t i : idx) hash_row(h, vec[i]);
+    return h.value();
+}
+
 // Update a ts_* field only when the table content hash changed, and persist.
 static void update_table_ts(int tid, time_t &ts, uint64_t &prev_hash,
                              uint64_t new_hash, time_t now_ts) {
@@ -1628,6 +1644,15 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
         update_table_ts(TABLE_SATA_LOGDIR,   g_cache.ts_sata_log_dir,        hv[TABLE_SATA_LOGDIR],   hash_vector(g_cache.sata_log_dir),         now_ts);
         update_table_ts(TABLE_SATA_DEVSTAT,  g_cache.ts_sata_dev_stat,       hv[TABLE_SATA_DEVSTAT],  hash_vector(g_cache.sata_dev_stats),       now_ts);
         update_table_ts(TABLE_SENSOR,        g_cache.ts_sensor,              hv[TABLE_SENSOR],        hash_vector(g_cache.sensors),              now_ts);
+
+        // Per-device BySubindex timestamps — only advance for the reparsed device.
+        auto upd_dev = [&](auto &ts_map, auto &hash_map, const auto &vec) {
+            uint64_t new_h = hash_vector_for_device(vec, dev_idx);
+            auto &prev = hash_map[dev_idx];
+            if (new_h != prev) { prev = new_h; ts_map[dev_idx] = now_ts; }
+        };
+        upd_dev(g_cache.ts_sata_errcmd_by_device,  g_cache.hash_sata_errcmd_by_device,  g_cache.sata_error_cmds);
+        upd_dev(g_cache.ts_sata_devstat_by_device, g_cache.hash_sata_devstat_by_device, g_cache.sata_dev_stats);
     }
 }
 

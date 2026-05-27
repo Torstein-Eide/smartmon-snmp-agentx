@@ -78,6 +78,8 @@ void AgentxCache::clear() {
     ts_sata_pending_defects = ts_sata_log_dir = ts_sata_dev_stat = 0;
     ts_sas_info     = ts_sas_health      = ts_sas_error_counter = 0;
     ts_sas_selftest = ts_sas_bgscan      = ts_sensor            = 0;
+    hash_sata_errcmd_by_device.clear();  hash_sata_devstat_by_device.clear();
+    ts_sata_errcmd_by_device.clear();    ts_sata_devstat_by_device.clear();
     next_device_index = 1;
 }
 

@@ -1232,8 +1232,16 @@ sata_change_by_subidx_handler(netsnmp_mib_handler *,
         size_t idx = (size_t)(uintptr_t)netsnmp_extract_iterator_context(req);
         if (!tinfo) continue;
         size_t errcmd_size = g_cache.sata_error_cmds.size();
-        time_t ts = (idx < errcmd_size) ? g_cache.ts_sata_error_cmd
-                                        : g_cache.ts_sata_dev_stat;
+        time_t ts;
+        if (idx < errcmd_size) {
+            uint32_t dev = g_cache.sata_error_cmds[idx].device_index;
+            auto it = g_cache.ts_sata_errcmd_by_device.find(dev);
+            ts = (it != g_cache.ts_sata_errcmd_by_device.end()) ? it->second : g_cache.ts_sata_error_cmd;
+        } else {
+            uint32_t dev = g_cache.sata_dev_stats[idx - errcmd_size].device_index;
+            auto it = g_cache.ts_sata_devstat_by_device.find(dev);
+            ts = (it != g_cache.ts_sata_devstat_by_device.end()) ? it->second : g_cache.ts_sata_dev_stat;
+        }
         switch (tinfo->colnum) {
         case 4:  { uint8_t dt[8]; snmp_encode_date_time(ts, dt);
                    snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,

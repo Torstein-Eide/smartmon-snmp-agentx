@@ -5,6 +5,7 @@
 #include <ctime>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // --------------------------------------------------------------------
@@ -705,6 +706,13 @@ struct AgentxCache {
 
     // FNV-1a hashes of each table's vector content — used to gate ts_* updates
     uint64_t table_hashes[TABLE_COUNT] {};
+
+    // Per-device hashes and timestamps for BySubindex table (errcmd + devstat).
+    // Compared per-device so that reparsing device A does not advance device B's timestamp.
+    std::unordered_map<uint32_t, uint64_t> hash_sata_errcmd_by_device;
+    std::unordered_map<uint32_t, uint64_t> hash_sata_devstat_by_device;
+    std::unordered_map<uint32_t, time_t>   ts_sata_errcmd_by_device;
+    std::unordered_map<uint32_t, time_t>   ts_sata_devstat_by_device;
 
     // Remove device row and all sub-table rows for device_index
     void remove_device(uint32_t device_index);

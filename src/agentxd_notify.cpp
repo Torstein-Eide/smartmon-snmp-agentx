@@ -19,6 +19,7 @@
 // ---------------------------------------------------------------------------
 
 static void send_v2trap_timed(netsnmp_variable_list *vars, const char *trap_name) {
+    syslog(LOG_DEBUG, "notify: sending trap %s", trap_name);
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     send_v2trap(vars);
@@ -192,6 +193,8 @@ static void append_sas_identity(netsnmp_variable_list **vars,
 
 void notify_device_health_changed(uint32_t dev_idx, int new_status) {
     const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: health_changed dev_idx=%u path=%s status=%d",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)", new_status);
 
     const oid *notif_oid = oid_notif_nvme_health_changed;
     size_t notif_len = OID_LEN(oid_notif_nvme_health_changed);
@@ -246,11 +249,14 @@ void notify_device_health_changed(uint32_t dev_idx, int new_status) {
 }
 
 void notify_device_polling_failed(uint32_t dev_idx, int poll_result) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: polling_failed dev_idx=%u path=%s poll_result=%d exit_status=%u",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           poll_result, dev ? dev->poll_exit_status : 0u);
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_device_poll_failed,
                          OID_LEN(oid_notif_device_poll_failed));
-
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
     append_device_identity(&vars, dev_idx, dev);
     append_uint32(&vars, oid_device_last_poll_result,
                   OID_LEN(oid_device_last_poll_result),
@@ -272,11 +278,14 @@ void notify_device_polling_failed(uint32_t dev_idx, int poll_result) {
 }
 
 void notify_nvme_selftest_failed(uint32_t dev_idx, const CacheNvmeSelfTestRow &st) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: nvme_selftest_failed dev_idx=%u path=%s entry=%u type=%u result=%u (%s)",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           st.entry_index, st.type, st.result, st.result_text.c_str());
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_nvme_selftest_failed,
                          OID_LEN(oid_notif_nvme_selftest_failed));
-
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
     append_nvme_identity(&vars, dev_idx, dev);
 
     uint32_t entry = st.entry_index;
@@ -302,11 +311,14 @@ void notify_nvme_selftest_failed(uint32_t dev_idx, const CacheNvmeSelfTestRow &s
 }
 
 void notify_sata_selftest_failed(uint32_t dev_idx, const CacheSataSelfTestRow &st) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: sata_selftest_failed dev_idx=%u path=%s entry=%u type=%u result=%u",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           st.entry_index, st.type, st.result);
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_sata_selftest_failed,
                          OID_LEN(oid_notif_sata_selftest_failed));
-
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
     append_sata_identity(&vars, dev_idx, dev);
 
     uint32_t entry = st.entry_index;
@@ -326,11 +338,14 @@ void notify_sata_selftest_failed(uint32_t dev_idx, const CacheSataSelfTestRow &s
 }
 
 void notify_sas_selftest_failed(uint32_t dev_idx, const CacheSasSelfTestRow &st) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: sas_selftest_failed dev_idx=%u path=%s entry=%u type=%u result=%u (%s)",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           st.entry_index, st.type, st.result, st.result_str.c_str());
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_sas_selftest_failed,
                          OID_LEN(oid_notif_sas_selftest_failed));
-
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
     append_sas_identity(&vars, dev_idx, dev);
 
     uint32_t entry = st.entry_index;
@@ -353,11 +368,14 @@ void notify_sas_selftest_failed(uint32_t dev_idx, const CacheSasSelfTestRow &st)
 }
 
 void notify_device_discovered(uint32_t dev_idx) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: device_discovered dev_idx=%u path=%s name=%s type=%d",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           dev ? dev->name.c_str() : "(unknown)", dev ? (int)dev->proto : -1);
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_device_discovered,
                          OID_LEN(oid_notif_device_discovered));
-
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
     append_device_identity(&vars, dev_idx, dev);
     if (dev) {
         append_uint32(&vars, oid_device_type, OID_LEN(oid_device_type),
@@ -373,6 +391,9 @@ void notify_device_discovered(uint32_t dev_idx) {
 
 void notify_device_removed(uint32_t dev_idx, const std::string &name,
                            const std::string &path, int dev_type) {
+    syslog(LOG_INFO, "notify: device_removed dev_idx=%u path=%s name=%s type=%d",
+           dev_idx, path.c_str(), name.c_str(), dev_type);
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_device_removed,
                          OID_LEN(oid_notif_device_removed));
@@ -389,11 +410,14 @@ void notify_device_removed(uint32_t dev_idx, const std::string &name,
 }
 
 void notify_sata_attr_failing(uint32_t dev_idx, const CacheSataAttrRow &attr) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: sata_attr_failing dev_idx=%u path=%s attr_id=%u name=%s value=%u threshold=%u",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           attr.attr_id, attr.name.c_str(), attr.value, attr.threshold);
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_sata_attr_threshold_met,
                          OID_LEN(oid_notif_sata_attr_threshold_met));
-
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
     append_sata_identity(&vars, dev_idx, dev);
 
     uint32_t attr_id = attr.attr_id;
@@ -420,11 +444,14 @@ void notify_sata_attr_failing(uint32_t dev_idx, const CacheSataAttrRow &attr) {
 
 void notify_sas_uncorrected_errors_increased(uint32_t dev_idx,
                                              const CacheSasErrorCounterRow &ec) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: sas_uncorrected_errors dev_idx=%u path=%s direction=%d uncorrected=%llu",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           ec.direction, (unsigned long long)ec.uncorrected);
+
     netsnmp_variable_list *vars =
         make_trap_header(oid_notif_sas_uncorrected_errors,
                          OID_LEN(oid_notif_sas_uncorrected_errors));
-
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
     append_sas_identity(&vars, dev_idx, dev);
 
     uint32_t dir = (uint32_t)ec.direction;
@@ -445,10 +472,14 @@ static void notify_sensor_threshold(uint32_t dev_idx, const CacheSensorRow &sens
                                     const oid *threshold_oid, size_t threshold_len,
                                     int32_t threshold_value,
                                     const char *trap_name) {
+    const CacheDeviceRow *dev_log = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: %s dev_idx=%u path=%s sensor=%s value=%d threshold=%d",
+           trap_name, dev_idx, dev_log ? dev_log->path.c_str() : "(unknown)",
+           sensor.name.c_str(), sensor.value, threshold_value);
+
     netsnmp_variable_list *vars = make_trap_header(notif_oid, notif_len);
 
-    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
-    append_device_identity(&vars, dev_idx, dev);
+    append_device_identity(&vars, dev_idx, dev_log);
 
     uint32_t sensor_idx = sensor.sensor_index;
     append_string_2idx(&vars, oid_sensor_name, OID_LEN(oid_sensor_name),
@@ -461,10 +492,10 @@ static void notify_sensor_threshold(uint32_t dev_idx, const CacheSensorRow &sens
                       dev_idx, sensor_idx, threshold_value);
     append_string_2idx(&vars, oid_sensor_units, OID_LEN(oid_sensor_units),
                        dev_idx, sensor_idx, sensor.units_display.c_str());
-    if (dev)
+    if (dev_log)
         append_date_time(&vars, oid_device_last_poll_time,
                          OID_LEN(oid_device_last_poll_time),
-                         dev_idx, dev->last_poll_time);
+                         dev_idx, dev_log->last_poll_time);
 
     send_v2trap_timed(vars, trap_name);
     snmp_free_varbind(vars);
