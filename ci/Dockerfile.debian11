@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         file \
         g++ \
         libsnmp-dev \
+        libsqlite3-dev \
         make \
         snmp \
         snmpd \

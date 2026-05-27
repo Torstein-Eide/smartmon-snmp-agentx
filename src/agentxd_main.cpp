@@ -3,6 +3,7 @@
 #include "agentxd_config.h"
 #include "agentxd_datasrc.h"
 #include "agentxd_loop.h"
+#include "agentxd_state_db.h"
 
 #include <csignal>
 #include <cstdio>
@@ -122,9 +123,14 @@ int main(int argc, char *argv[])
            "agentx_socket='%s', cache_timeout=%us",
            cfg.state_dir.c_str(), cfg.agentx_socket.c_str(), cfg.cache_timeout);
 
+    // Open and restore persisted table-change timestamps (optional)
+    state_db_open(cfg.state_db_path);
+    state_db_load();
+
     // Validate smartd configuration and set up inotify watcher
     if (!agentxd_datasrc_init(cfg.state_dir)) {
         syslog(LOG_ERR, "Data source initialisation failed — exiting.");
+        state_db_close();
         return EXIT_FAILURE;
     }
 
@@ -143,6 +149,7 @@ int main(int argc, char *argv[])
     syslog(LOG_INFO, "Shutting down.");
     agentxd_loop_shutdown();
     agentxd_datasrc_shutdown();
+    state_db_close();
     closelog();
     return clean_exit ? EXIT_SUCCESS : EXIT_FAILURE;
 }

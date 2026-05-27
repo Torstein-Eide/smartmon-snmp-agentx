@@ -73,6 +73,8 @@ bool agentxd_config_load(const char *path, AgentxConfig &out)
             } else {
                 out.poll_failure_threshold = static_cast<uint32_t>(v);
             }
+        } else if (strcmp(key, "state_db") == 0) {
+            out.state_db_path = value;
         } else {
             syslog(LOG_WARNING, "%s:%d: unknown option '%s'", path, lineno, key);
         }

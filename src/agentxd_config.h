@@ -21,6 +21,10 @@ struct AgentxConfig {
     // Consecutive non-ok poll results required before emitting the
     // smartmonDevicePollFailed trap (default 1 = fire on first failure)
     uint32_t poll_failure_threshold { 1 };
+
+    // Path to SQLite DB for persisting table-change timestamps across restarts.
+    // Empty (default) disables persistence; timestamps still work within a run.
+    std::string state_db_path;
 };
 
 // Verbosity level: 0=off, 1=-v (flow), 2=-vv (per-sensor/iterator detail)

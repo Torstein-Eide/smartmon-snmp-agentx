@@ -606,6 +606,40 @@ struct CacheSasBgScanRow {
 };
 
 // --------------------------------------------------------------------
+// Table IDs — index into AgentxCache::table_hashes[] and SQLite state DB
+// --------------------------------------------------------------------
+enum CacheTableId : int {
+    TABLE_DEVICE        =  0,
+    TABLE_NVME_CTRL     =  1,
+    TABLE_NVME_NS       =  2,
+    TABLE_NVME_HEALTH   =  3,
+    TABLE_NVME_SELFTEST =  4,
+    TABLE_NVME_ERRLOG   =  5,
+    TABLE_NVME_CAP      =  6,
+    TABLE_NVME_PS       =  7,
+    TABLE_NVME_LBA      =  8,
+    TABLE_SATA_INFO     =  9,
+    TABLE_SATA_HEALTH   = 10,
+    TABLE_SATA_ATTR     = 11,
+    TABLE_SATA_ERRLOG   = 12,
+    TABLE_SATA_ERRCMD   = 13,
+    TABLE_SATA_SELFTEST = 14,
+    TABLE_SATA_ERC      = 15,
+    TABLE_SATA_PHY      = 16,
+    TABLE_SATA_SELTEST  = 17,
+    TABLE_SATA_PENDING  = 18,
+    TABLE_SATA_LOGDIR   = 19,
+    TABLE_SATA_DEVSTAT  = 20,
+    TABLE_SAS_INFO      = 21,
+    TABLE_SAS_HEALTH    = 22,
+    TABLE_SAS_ERRCNT    = 23,
+    TABLE_SAS_SELFTEST  = 24,
+    TABLE_SAS_BGSCAN    = 25,
+    TABLE_SENSOR        = 26,
+    TABLE_COUNT         = 27
+};
+
+// --------------------------------------------------------------------
 // Main cache — one global instance, owned by agentxd_cache.cpp
 // All access serialised by the single-threaded AgentX select loop.
 // --------------------------------------------------------------------
@@ -668,6 +702,9 @@ struct AgentxCache {
     time_t  ts_sas_selftest       { 0 };
     time_t  ts_sas_bgscan         { 0 };
     time_t  ts_sensor             { 0 };
+
+    // FNV-1a hashes of each table's vector content — used to gate ts_* updates
+    uint64_t table_hashes[TABLE_COUNT] {};
 
     // Remove device row and all sub-table rows for device_index
     void remove_device(uint32_t device_index);

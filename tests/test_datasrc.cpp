@@ -102,6 +102,13 @@ void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor) 
     g_notify_calls.push_back({"sensor_low_critical", dev_idx, sensor.value, sensor.sensor_index, sensor.name, 0});
 }
 
+// Stub state_db — no SQLite in the unit test binary
+#include "../src/agentxd_state_db.h"
+bool  state_db_open(const std::string &) { return true; }
+void  state_db_load()                    {}
+void  state_db_update(int, uint64_t, time_t) {}
+void  state_db_close()                   {}
+
 #include "../src/agentxd_datasrc.cpp"
 #undef syslog
 

@@ -32,7 +32,7 @@ check-deps:
 
 $(TARGET): $(SOURCES) $(HEADERS) | check-deps
 	mkdir -p $(BINDIR)
-	$(CXX) $(CPPFLAGS) $(AGENTXD_CPPFLAGS) $(CXXFLAGS) $(SOURCES) -o $@ $(LDFLAGS) $(SNMP_AGENT_LIBS)
+	$(CXX) $(CPPFLAGS) $(AGENTXD_CPPFLAGS) $(CXXFLAGS) $(SOURCES) -o $@ $(LDFLAGS) $(SNMP_AGENT_LIBS) -lsqlite3
 
 test:
 	$(MAKE) -C tests test

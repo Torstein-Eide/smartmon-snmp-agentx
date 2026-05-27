@@ -5,6 +5,7 @@
 #include "agentxd_config.h"
 #include "agentxd_json.h"
 #include "agentxd_notify.h"
+#include "agentxd_state_db.h"
 
 #include <algorithm>
 #include <cctype>
@@ -29,6 +30,226 @@ static inline long elapsed_ms(struct timespec start) {
     return (now.tv_sec - start.tv_sec) * 1000L
          + (now.tv_nsec - start.tv_nsec) / 1000000L;
 }
+
+// ---------------------------------------------------------------------------
+// FNV-1a hasher — used to detect content changes in cache vectors
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct TableHasher {
+    uint64_t h = 14695981039346656037ULL;
+    void feed(const void *p, size_t n) {
+        const uint8_t *b = static_cast<const uint8_t *>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ULL; }
+    }
+    template<typename T> void feed(T v)           { feed(&v, sizeof(v)); }
+    void feed(const std::string &s) { uint64_t n = s.size(); feed(n); feed(s.data(), n); }
+    uint64_t value() const { return h; }
+};
+
+// Per-row hash helpers (only content fields; internal bookkeeping excluded).
+// CacheDeviceRow: exclude last_poll_time, last_json_mtime, consec_fail_count.
+static void hash_row(TableHasher &h, const CacheDeviceRow &r) {
+    h.feed(r.index); h.feed(r.name); h.feed(r.path); h.feed(static_cast<int>(r.proto));
+    h.feed(static_cast<int>(r.poll_result)); h.feed(r.poll_exit_status); h.feed(r.uris);
+    h.feed(r.model_family); h.feed(r.model_name); h.feed(r.serial_number);
+    h.feed(r.firmware_version); h.feed(r.wwn);
+}
+static void hash_row(TableHasher &h, const CacheNvmeControllerRow &r) {
+    h.feed(r.device_index); h.feed(r.pci_vendor_id); h.feed(r.pci_subsystem_id);
+    h.feed(r.pci_vendor_id_text); h.feed(r.pci_subsystem_vendor_text);
+    h.feed(r.ieee_oui); h.feed(r.total_capacity); h.feed(r.unallocated_capacity);
+    h.feed(r.controller_id); h.feed(r.version_string); h.feed(r.version_value);
+    h.feed(r.namespace_count); h.feed(r.max_data_transfer_pages);
+}
+static void hash_row(TableHasher &h, const CacheNvmeNamespaceRow &r) {
+    h.feed(r.device_index); h.feed(r.namespace_id);
+    h.feed(r.size_bytes); h.feed(r.capacity_bytes); h.feed(r.utilization_bytes);
+    h.feed(r.formatted_lba_size); h.feed(r.size_blocks); h.feed(r.capacity_blocks);
+    h.feed(r.utilization_blocks);
+}
+static void hash_row(TableHasher &h, const CacheNvmeHealthRow &r) {
+    h.feed(r.device_index); h.feed(r.overall_status); h.feed(r.critical_warning);
+    h.feed(r.available_spare_pct); h.feed(r.available_spare_thresh);
+    h.feed(r.percentage_used); h.feed(r.data_units_read); h.feed(r.data_units_written);
+    h.feed(r.data_bytes_read); h.feed(r.data_bytes_written);
+    h.feed(r.host_read_commands); h.feed(r.host_write_commands);
+    h.feed(r.controller_busy_minutes); h.feed(r.power_cycles); h.feed(r.power_on_hours);
+    h.feed(r.unsafe_shutdowns); h.feed(r.media_errors); h.feed(r.error_log_entries);
+    h.feed(r.warning_temp_minutes); h.feed(r.critical_temp_minutes);
+    h.feed(r.current_selftest_value); h.feed(r.current_selftest_str);
+}
+static void hash_row(TableHasher &h, const CacheNvmeSelfTestRow &r) {
+    h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.number);
+    h.feed(r.type); h.feed(r.result); h.feed(r.result_text);
+    h.feed(r.power_on_hours); h.feed(r.failing_lba); h.feed(r.namespace_id);
+    h.feed(r.segment_number); h.feed(r.status_code_type); h.feed(r.status_code);
+    h.feed(r.estimated_completion);
+}
+// error_timestamp excluded: set to daemon's current time, not JSON data.
+static void hash_row(TableHasher &h, const CacheNvmeErrorLogRow &r) {
+    h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.error_count);
+    h.feed(r.sqid); h.feed(r.command_id); h.feed(r.status_field);
+    h.feed(r.parm_error_location); h.feed(r.lba); h.feed(r.nsid);
+    h.feed(r.status_code); h.feed(r.status_code_type);
+    h.feed(r.do_not_retry); h.feed(r.phase_tag); h.feed(r.status_string);
+}
+static void hash_row(TableHasher &h, const CacheNvmeCapabilityRow &r) {
+    h.feed(r.device_index); h.feed(r.firmware_update_raw); h.feed(r.firmware_slot_count);
+    h.feed(r.firmware_reset_required); h.feed(r.optional_admin_cmd_raw);
+    h.feed(r.optional_nvm_cmd_raw); h.feed(r.log_page_attr_raw);
+    h.feed(r.optional_admin_cmd_text); h.feed(r.optional_nvm_cmd_text);
+    h.feed(r.log_page_attr_text);
+}
+static void hash_row(TableHasher &h, const CacheNvmePowerStateRow &r) {
+    h.feed(r.device_index); h.feed(r.state_index); h.feed(r.operational);
+    h.feed(r.max_power_mw); h.feed(r.has_active_power); h.feed(r.active_power_mw);
+    h.feed(r.has_idle_power); h.feed(r.idle_power_mw); h.feed(r.read_latency_rank);
+    h.feed(r.read_throughput_rank); h.feed(r.write_latency_rank);
+    h.feed(r.write_throughput_rank); h.feed(r.entry_latency_usec); h.feed(r.exit_latency_usec);
+}
+static void hash_row(TableHasher &h, const CacheNvmeLbaFormatRow &r) {
+    h.feed(r.device_index); h.feed(r.namespace_id); h.feed(r.format_id);
+    h.feed(r.current); h.feed(r.data_size); h.feed(r.metadata_size); h.feed(r.rel_perf);
+}
+static void hash_row(TableHasher &h, const CacheSataInfoRow &r) {
+    h.feed(r.device_index); h.feed(r.ata_version); h.feed(r.sata_version);
+    h.feed(r.form_factor); h.feed(r.rotation_rate); h.feed(r.logical_block_size);
+    h.feed(r.physical_block_size); h.feed(r.user_capacity_bytes);
+    h.feed(r.in_smartctl_db); h.feed(r.smart_available); h.feed(r.smart_enabled);
+    h.feed(r.trim_supported); h.feed(r.user_capacity_blocks);
+    h.feed(r.ata_version_major); h.feed(r.ata_version_minor);
+    h.feed(r.if_speed_max_mbps); h.feed(r.if_speed_current_mbps);
+    h.feed(r.apm_enabled); h.feed(r.apm_level);
+    h.feed(r.read_lookahead_enabled); h.feed(r.write_cache_enabled);
+    h.feed(r.security_state); h.feed(r.security_enabled); h.feed(r.security_frozen);
+    h.feed(r.attr_revision); h.feed(r.offline_completion_secs);
+    h.feed(r.polling_short_min); h.feed(r.polling_ext_min); h.feed(r.polling_conv_min);
+    h.feed(r.cap_selftests); h.feed(r.cap_conveyance); h.feed(r.cap_selective);
+    h.feed(r.cap_error_logging); h.feed(r.cap_gp_logging);
+    h.feed(r.sct_error_recovery); h.feed(r.sct_feature_control); h.feed(r.sct_data_table);
+    h.feed(r.cap_exec_offline_immediate); h.feed(r.cap_offline_aborted_on_cmd);
+    h.feed(r.cap_offline_surface_scan); h.feed(r.error_log_revision);
+    h.feed(r.error_log_sectors); h.feed(r.selftest_log_revision);
+    h.feed(r.selftest_log_sectors); h.feed(r.pending_defects_size);
+    h.feed(r.cap_attr_autosave);
+}
+static void hash_row(TableHasher &h, const CacheSataHealthRow &r) {
+    h.feed(r.device_index); h.feed(r.overall_status);
+    h.feed(r.offline_status_value); h.feed(r.selftest_status_value);
+    h.feed(r.power_cycles); h.feed(r.power_on_hours); h.feed(r.error_log_count);
+    h.feed(r.pending_defects_count); h.feed(r.spare_available_pct);
+    h.feed(r.spare_available_thresh_pct); h.feed(r.selftest_log_count);
+    h.feed(r.selftest_log_err_total); h.feed(r.selftest_log_err_outdated);
+    h.feed(r.selective_log_revision); h.feed(r.selective_flags_value);
+    h.feed(r.selective_remainder_scan); h.feed(r.selective_powerup_resume_min);
+    h.feed(r.logdir_gp_version); h.feed(r.logdir_smart_version);
+    h.feed(r.logdir_smart_multisector); h.feed(r.error_log_revision);
+    h.feed(r.cap_exec_offline_immediate); h.feed(r.cap_offline_aborted_on_cmd);
+    h.feed(r.cap_offline_surface_scan); h.feed(r.cap_attr_autosave);
+}
+static void hash_row(TableHasher &h, const CacheSataAttrRow &r) {
+    h.feed(r.device_index); h.feed(r.attr_id); h.feed(r.name);
+    h.feed(r.flags); h.feed(r.attr_type); h.feed(r.attr_updated);
+    h.feed(r.value); h.feed(r.worst); h.feed(r.threshold);
+    h.feed(r.raw_value); h.feed(r.raw_string); h.feed(r.status);
+}
+static void hash_row(TableHasher &h, const CacheSataErrorLogRow &r) {
+    h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.error_number);
+    h.feed(r.lifetime_hours); h.feed(r.description);
+    h.feed(r.comp_reg_error); h.feed(r.comp_reg_status); h.feed(r.lba);
+    h.feed(r.reg_command); h.feed(r.reg_count); h.feed(r.reg_device);
+    h.feed(r.reg_feature); h.feed(r.state_value);
+}
+static void hash_row(TableHasher &h, const CacheSataErrorCmdRow &r) {
+    h.feed(r.device_index); h.feed(r.error_entry_index); h.feed(r.cmd_index);
+    h.feed(r.reg_command); h.feed(r.reg_count); h.feed(r.reg_device);
+    h.feed(r.reg_error); h.feed(r.reg_feature); h.feed(r.reg_lba);
+    h.feed(r.reg_status); h.feed(r.timestamp_ms); h.feed(r.description);
+}
+static void hash_row(TableHasher &h, const CacheSataSelfTestRow &r) {
+    h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.type); h.feed(r.result);
+    h.feed(r.passed); h.feed(r.remaining_pct); h.feed(r.lifetime_hours);
+    h.feed(r.lba_first_error); h.feed(r.estimated_completion);
+}
+static void hash_row(TableHasher &h, const CacheSataErcRow &r) {
+    h.feed(r.device_index); h.feed(r.erc_index); h.feed(r.enabled); h.feed(r.deciseconds);
+}
+static void hash_row(TableHasher &h, const CacheSataPhyEventRow &r) {
+    h.feed(r.device_index); h.feed(r.id); h.feed(r.name);
+    h.feed(r.size); h.feed(r.value); h.feed(r.overflow);
+}
+static void hash_row(TableHasher &h, const CacheSataSelectiveTestRow &r) {
+    h.feed(r.device_index); h.feed(r.slot);
+    h.feed(r.lba_min); h.feed(r.lba_max); h.feed(r.status_value); h.feed(r.status_string);
+}
+static void hash_row(TableHasher &h, const CacheSataPendingDefectRow &r) {
+    h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.lba);
+}
+static void hash_row(TableHasher &h, const CacheSataLogDirRow &r) {
+    h.feed(r.device_index); h.feed(r.address); h.feed(r.name);
+    h.feed(r.readable); h.feed(r.writable); h.feed(r.gp_sectors); h.feed(r.smart_sectors);
+}
+static void hash_row(TableHasher &h, const CacheSataDevStatRow &r) {
+    h.feed(r.device_index); h.feed(r.page_num); h.feed(r.offset);
+    h.feed(r.page_name); h.feed(r.name); h.feed(r.value);
+    h.feed(r.flags_value); h.feed(r.valid); h.feed(r.normalized);
+}
+static void hash_row(TableHasher &h, const CacheSasInfoRow &r) {
+    h.feed(r.device_index); h.feed(r.vendor); h.feed(r.product); h.feed(r.revision);
+    h.feed(r.compliance); h.feed(r.rotation_rate); h.feed(r.form_factor);
+    h.feed(r.logical_block_size); h.feed(r.physical_block_size);
+    h.feed(r.user_capacity_bytes); h.feed(r.power_cycles); h.feed(r.power_on_hours);
+}
+static void hash_row(TableHasher &h, const CacheSasHealthRow &r) {
+    h.feed(r.device_index); h.feed(r.overall_status); h.feed(r.grown_defect_count);
+    h.feed(r.non_medium_errors); h.feed(r.info_exceptions); h.feed(r.pending_defects);
+}
+static void hash_row(TableHasher &h, const CacheSasErrorCounterRow &r) {
+    h.feed(r.device_index); h.feed(r.direction); h.feed(r.ecc_delayed);
+    h.feed(r.ecc_fast); h.feed(r.rereads_rewrites); h.feed(r.total_corrected);
+    h.feed(r.algorithm_invoked); h.feed(r.bytes_processed); h.feed(r.uncorrected);
+}
+static void hash_row(TableHasher &h, const CacheSasSelfTestRow &r) {
+    h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.type); h.feed(r.result);
+    h.feed(r.result_str); h.feed(r.passed); h.feed(r.power_on_hours); h.feed(r.lba_first_error);
+}
+static void hash_row(TableHasher &h, const CacheSasBgScanRow &r) {
+    h.feed(r.device_index); h.feed(r.status_value); h.feed(r.status_string);
+    h.feed(r.progress_percent); h.feed(r.scans_performed); h.feed(r.medium_scans);
+    h.feed(r.scan_results); h.feed(r.estimated_completion);
+}
+// timestamp and update_rate excluded: set to daemon's current time, not JSON data.
+static void hash_row(TableHasher &h, const CacheSensorRow &r) {
+    h.feed(r.device_index); h.feed(r.sensor_index); h.feed(r.type);
+    h.feed(r.name); h.feed(r.source); h.feed(r.scale); h.feed(r.precision);
+    h.feed(r.value); h.feed(r.oper_status); h.feed(r.units_display);
+    h.feed(r.has_high_critical); h.feed(r.high_critical);
+    h.feed(r.has_high_warning);  h.feed(r.high_warning);
+    h.feed(r.has_low_warning);   h.feed(r.low_warning);
+    h.feed(r.has_low_critical);  h.feed(r.low_critical);
+}
+
+template<typename Row>
+static uint64_t hash_vector(const std::vector<Row> &vec) {
+    TableHasher h;
+    uint64_t sz = vec.size();
+    h.feed(&sz, sizeof(sz));
+    for (const auto &r : vec) hash_row(h, r);
+    return h.value();
+}
+
+// Update a ts_* field only when the table content hash changed, and persist.
+static void update_table_ts(int tid, time_t &ts, uint64_t &prev_hash,
+                             uint64_t new_hash, time_t now_ts) {
+    if (new_hash == prev_hash) return;
+    prev_hash = new_hash;
+    ts        = now_ts;
+    state_db_update(tid, new_hash, now_ts);
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // PCI vendor name lookup
@@ -760,17 +981,18 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
         }
     }
 
-    // Update last-change timestamps
-    g_cache.ts_device_table       = now;
-    g_cache.ts_nvme_controller    = now;
-    g_cache.ts_nvme_namespace     = now;
-    g_cache.ts_nvme_health        = now;
-    g_cache.ts_nvme_selftest      = now;
-    g_cache.ts_nvme_error_log     = now;
-    g_cache.ts_nvme_capability    = now;
-    g_cache.ts_nvme_power_state   = now;
-    g_cache.ts_nvme_lba_format    = now;
-    g_cache.ts_sensor             = now;
+    // Update last-change timestamps only when content hash changed
+    auto &hv = g_cache.table_hashes;
+    update_table_ts(TABLE_DEVICE,        g_cache.ts_device_table,    hv[TABLE_DEVICE],        hash_vector(g_cache.devices),           now);
+    update_table_ts(TABLE_NVME_CTRL,     g_cache.ts_nvme_controller, hv[TABLE_NVME_CTRL],     hash_vector(g_cache.nvme_controllers),  now);
+    update_table_ts(TABLE_NVME_NS,       g_cache.ts_nvme_namespace,  hv[TABLE_NVME_NS],       hash_vector(g_cache.nvme_namespaces),   now);
+    update_table_ts(TABLE_NVME_HEALTH,   g_cache.ts_nvme_health,     hv[TABLE_NVME_HEALTH],   hash_vector(g_cache.nvme_health),       now);
+    update_table_ts(TABLE_NVME_SELFTEST, g_cache.ts_nvme_selftest,   hv[TABLE_NVME_SELFTEST], hash_vector(g_cache.nvme_selftests),    now);
+    update_table_ts(TABLE_NVME_ERRLOG,   g_cache.ts_nvme_error_log,  hv[TABLE_NVME_ERRLOG],   hash_vector(g_cache.nvme_error_log),    now);
+    update_table_ts(TABLE_NVME_CAP,      g_cache.ts_nvme_capability, hv[TABLE_NVME_CAP],      hash_vector(g_cache.nvme_capabilities), now);
+    update_table_ts(TABLE_NVME_PS,       g_cache.ts_nvme_power_state,hv[TABLE_NVME_PS],       hash_vector(g_cache.nvme_power_states), now);
+    update_table_ts(TABLE_NVME_LBA,      g_cache.ts_nvme_lba_format, hv[TABLE_NVME_LBA],      hash_vector(g_cache.nvme_lba_formats),  now);
+    update_table_ts(TABLE_SENSOR,        g_cache.ts_sensor,          hv[TABLE_SENSOR],        hash_vector(g_cache.sensors),           now);
 }
 
 static void parse_ata(uint32_t dev_idx, const JVal &root) {
@@ -948,7 +1170,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             sr.device_index    = dev_idx;
             sr.sensor_index    = 2;
             sr.type            = 10;  // percent
-            sr.name            = "Normalized wear indicator";
+            sr.name            = "wear indicator";
             sr.source          = "spare_available.current_percent";
             sr.scale           = 9;
             sr.precision       = 0;
@@ -1349,23 +1571,24 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
         }
     }
 
-    // Update last-change timestamps
+    // Update last-change timestamps only when content hash changed
     {
         time_t now_ts = time(nullptr);
-        g_cache.ts_device_table        = now_ts;
-        g_cache.ts_sata_info           = now_ts;
-        g_cache.ts_sata_health         = now_ts;
-        g_cache.ts_sata_attr           = now_ts;
-        g_cache.ts_sata_error_log      = now_ts;
-        g_cache.ts_sata_error_cmd      = now_ts;
-        g_cache.ts_sata_selftest       = now_ts;
-        g_cache.ts_sata_erc            = now_ts;
-        g_cache.ts_sata_phy_event      = now_ts;
-        g_cache.ts_sata_selective_test  = now_ts;
-        g_cache.ts_sata_pending_defects = now_ts;
-        g_cache.ts_sata_log_dir         = now_ts;
-        g_cache.ts_sata_dev_stat       = now_ts;
-        g_cache.ts_sensor              = now_ts;
+        auto &hv = g_cache.table_hashes;
+        update_table_ts(TABLE_DEVICE,        g_cache.ts_device_table,        hv[TABLE_DEVICE],        hash_vector(g_cache.devices),              now_ts);
+        update_table_ts(TABLE_SATA_INFO,     g_cache.ts_sata_info,           hv[TABLE_SATA_INFO],     hash_vector(g_cache.sata_info),            now_ts);
+        update_table_ts(TABLE_SATA_HEALTH,   g_cache.ts_sata_health,         hv[TABLE_SATA_HEALTH],   hash_vector(g_cache.sata_health),          now_ts);
+        update_table_ts(TABLE_SATA_ATTR,     g_cache.ts_sata_attr,           hv[TABLE_SATA_ATTR],     hash_vector(g_cache.sata_attrs),           now_ts);
+        update_table_ts(TABLE_SATA_ERRLOG,   g_cache.ts_sata_error_log,      hv[TABLE_SATA_ERRLOG],   hash_vector(g_cache.sata_error_log),       now_ts);
+        update_table_ts(TABLE_SATA_ERRCMD,   g_cache.ts_sata_error_cmd,      hv[TABLE_SATA_ERRCMD],   hash_vector(g_cache.sata_error_cmds),      now_ts);
+        update_table_ts(TABLE_SATA_SELFTEST, g_cache.ts_sata_selftest,       hv[TABLE_SATA_SELFTEST], hash_vector(g_cache.sata_selftests),       now_ts);
+        update_table_ts(TABLE_SATA_ERC,      g_cache.ts_sata_erc,            hv[TABLE_SATA_ERC],      hash_vector(g_cache.sata_erc),             now_ts);
+        update_table_ts(TABLE_SATA_PHY,      g_cache.ts_sata_phy_event,      hv[TABLE_SATA_PHY],      hash_vector(g_cache.sata_phy_events),      now_ts);
+        update_table_ts(TABLE_SATA_SELTEST,  g_cache.ts_sata_selective_test, hv[TABLE_SATA_SELTEST],  hash_vector(g_cache.sata_selective_tests), now_ts);
+        update_table_ts(TABLE_SATA_PENDING,  g_cache.ts_sata_pending_defects,hv[TABLE_SATA_PENDING],  hash_vector(g_cache.sata_pending_defects), now_ts);
+        update_table_ts(TABLE_SATA_LOGDIR,   g_cache.ts_sata_log_dir,        hv[TABLE_SATA_LOGDIR],   hash_vector(g_cache.sata_log_dir),         now_ts);
+        update_table_ts(TABLE_SATA_DEVSTAT,  g_cache.ts_sata_dev_stat,       hv[TABLE_SATA_DEVSTAT],  hash_vector(g_cache.sata_dev_stats),       now_ts);
+        update_table_ts(TABLE_SENSOR,        g_cache.ts_sensor,              hv[TABLE_SENSOR],        hash_vector(g_cache.sensors),              now_ts);
     }
 }
 
@@ -1472,15 +1695,16 @@ static void parse_scsi(uint32_t dev_idx, const JVal &root) {
         }
     }
 
-    // Update last-change timestamps
+    // Update last-change timestamps only when content hash changed
     {
         time_t now_ts = time(nullptr);
-        g_cache.ts_device_table      = now_ts;
-        g_cache.ts_sas_info          = now_ts;
-        g_cache.ts_sas_health        = now_ts;
-        g_cache.ts_sas_error_counter = now_ts;
-        g_cache.ts_sas_selftest      = now_ts;
-        g_cache.ts_sas_bgscan        = now_ts;
+        auto &hv = g_cache.table_hashes;
+        update_table_ts(TABLE_DEVICE,      g_cache.ts_device_table,    hv[TABLE_DEVICE],      hash_vector(g_cache.devices),           now_ts);
+        update_table_ts(TABLE_SAS_INFO,    g_cache.ts_sas_info,        hv[TABLE_SAS_INFO],    hash_vector(g_cache.sas_info),          now_ts);
+        update_table_ts(TABLE_SAS_HEALTH,  g_cache.ts_sas_health,      hv[TABLE_SAS_HEALTH],  hash_vector(g_cache.sas_health),        now_ts);
+        update_table_ts(TABLE_SAS_ERRCNT,  g_cache.ts_sas_error_counter,hv[TABLE_SAS_ERRCNT], hash_vector(g_cache.sas_error_counters),now_ts);
+        update_table_ts(TABLE_SAS_SELFTEST,g_cache.ts_sas_selftest,    hv[TABLE_SAS_SELFTEST],hash_vector(g_cache.sas_selftests),     now_ts);
+        update_table_ts(TABLE_SAS_BGSCAN,  g_cache.ts_sas_bgscan,      hv[TABLE_SAS_BGSCAN],  hash_vector(g_cache.sas_bgscan),        now_ts);
     }
 }
 
