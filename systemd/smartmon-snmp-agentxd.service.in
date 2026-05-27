@@ -39,8 +39,8 @@ ProtectHome=yes
 ProtectSystem=strict
 # Read JSON state files written by smartmon-collect or smartd
 ReadOnlyPaths=-/run/smartmontools/json
-# AgentX socket directory (snmpd creates the socket here)
-ReadWritePaths=/var/agentx /run/agentx
+# AgentX socket directory plus SQLite state DB directory
+ReadWritePaths=/var/agentx /run/agentx /var/lib/smartmontools/snmp-agent
 # /dev/disk/by-id and /dev/disk/by-path are needed to populate
 # smartmonDeviceUris.  PrivateDevices=yes hides the real /dev, so we
 # bind-mount the by-* tree read-only into the private namespace.

@@ -4,10 +4,45 @@
 #include "agentxd_cache.h"
 
 #include <sqlite3.h>
+#include <sys/stat.h>
 #include <syslog.h>
+#include <unistd.h>
 
 static sqlite3 *g_db = nullptr;
 static std::string g_db_path;
+
+static std::string parent_dir(const std::string &path) {
+    std::size_t slash = path.rfind('/');
+    if (slash == std::string::npos) return ".";
+    if (slash == 0) return "/";
+    return path.substr(0, slash);
+}
+
+static void log_open_failure_details(const std::string &path) {
+    struct stat st{};
+    std::string dir = parent_dir(path);
+
+    if (stat(dir.c_str(), &st) != 0) {
+        syslog(LOG_WARNING, "state_db: directory '%s' is not accessible: %m",
+               dir.c_str());
+        return;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        syslog(LOG_WARNING, "state_db: parent path '%s' is not a directory",
+               dir.c_str());
+        return;
+    }
+    if (access(dir.c_str(), W_OK) != 0) {
+        syslog(LOG_WARNING,
+               "state_db: directory '%s' is not writable by this service: %m",
+               dir.c_str());
+    }
+    if (access(path.c_str(), F_OK) == 0 && access(path.c_str(), W_OK) != 0) {
+        syslog(LOG_WARNING,
+               "state_db: database file '%s' is not writable by this service: %m",
+               path.c_str());
+    }
+}
 
 bool state_db_open(const std::string &path) {
     if (path.empty()) {
@@ -15,9 +50,14 @@ bool state_db_open(const std::string &path) {
         return true;
     }
 
-    if (sqlite3_open(path.c_str(), &g_db) != SQLITE_OK) {
+    bool existed = (access(path.c_str(), F_OK) == 0);
+
+    if (sqlite3_open_v2(path.c_str(), &g_db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                        nullptr) != SQLITE_OK) {
         syslog(LOG_WARNING, "state_db: cannot open '%s': %s",
                path.c_str(), sqlite3_errmsg(g_db));
+        log_open_failure_details(path);
         sqlite3_close(g_db);
         g_db = nullptr;
         return false;
@@ -39,7 +79,8 @@ bool state_db_open(const std::string &path) {
         g_db_path.clear();
         return false;
     }
-    syslog(LOG_INFO, "state_db: opened '%s'", g_db_path.c_str());
+    syslog(LOG_INFO, "state_db: %s '%s'",
+           existed ? "opened" : "created", g_db_path.c_str());
     return true;
 }
 

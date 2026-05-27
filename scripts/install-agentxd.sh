@@ -31,6 +31,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREFIX="/usr"
 BUILD_DIR=""
 STATE_DIR="/run/smartmontools/json"
+STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentxd-state.db"
 INSTALL_COLLECT=1
 
 # ---------------------------------------------------------------------------
@@ -135,6 +136,8 @@ fi
 echo "--- creating state directory ---"
 install -d -m 750 -o root -g smartmon "$STATE_DIR"
 echo "  $STATE_DIR (mode 750, root:smartmon)"
+install -d -m 750 -o smartmon -g smartmon "$(dirname "$STATE_DB")"
+echo "  $(dirname "$STATE_DB") (mode 750, smartmon:smartmon)"
 
 # ---------------------------------------------------------------------------
 # Binaries
@@ -232,6 +235,10 @@ agentx_socket   /var/agentx/master
 
 # How long (seconds) before a device entry is considered stale
 # cache_timeout  300
+
+# SQLite state DB for persisted table LastChange timestamps.
+# The agent creates the DB file if it does not exist.
+state_db        $STATE_DB
 EOF
     chmod 640 "$CONF_DEST"
     chown root:smartmon "$CONF_DEST"

@@ -50,6 +50,7 @@ EXPORT_DIR=""
 SSH_KEY=""
 SSH_PORT=22
 STATE_DIR="/run/smartmontools/json"
+STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentxd-state.db"
 INSTALL_COLLECT=1
 DRY_RUN=0
 REMOTE=""
@@ -211,6 +212,7 @@ echo "=== Remote deployment: smartmon-snmp-agentxd ==="
 echo "  target       : $REMOTE"
 echo "  prefix       : $PREFIX"
 echo "  state_dir    : $STATE_DIR"
+echo "  state_db     : $STATE_DB"
 echo "  ssh port     : $SSH_PORT"
 echo "  binary       : $BINARY"
 if [ -f "$BUILD_INFO" ]; then
@@ -262,6 +264,7 @@ set -euo pipefail
 SBINDIR="$SBINDIR"
 SYSCONFDIR="/etc"
 STATE_DIR="$STATE_DIR"
+STATE_DB="$STATE_DB"
 INSTALL_COLLECT="$INSTALL_COLLECT"
 SYSTEMD_DIR="$SYSTEMD_DIR"
 
@@ -310,6 +313,12 @@ sudo chown root:smartmon "\$STATE_DIR"
 sudo chmod 750 "\$STATE_DIR"
 echo "  state dir: \$STATE_DIR (mode 750, root:smartmon)"
 
+# ---- Create and secure the SQLite state DB directory -----------------------
+sudo mkdir -p "\$(dirname "\$STATE_DB")"
+sudo chown smartmon:smartmon "\$(dirname "\$STATE_DB")"
+sudo chmod 750 "\$(dirname "\$STATE_DB")"
+echo "  state DB dir: \$(dirname "\$STATE_DB") (mode 750, smartmon:smartmon)"
+
 # ---- Substitute @variables@ in the service file --------------------------
 AGENTXD_SVC="\$SYSTEMD_DIR/smartmon-snmp-agentxd.service"
 if [ -f "\$AGENTXD_SVC.in" ]; then
@@ -345,6 +354,10 @@ agentx_socket   /var/agentx/master
 
 # How long (seconds) before a device entry is considered stale
 # cache_timeout  300
+
+# SQLite state DB for persisted table LastChange timestamps.
+# The agent creates the DB file if it does not exist.
+state_db        \$STATE_DB
 EOF
     echo "  created default config: \$CONF_FILE"
 else

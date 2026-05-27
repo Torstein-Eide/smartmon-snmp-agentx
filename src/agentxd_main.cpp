@@ -99,9 +99,11 @@ int main(int argc, char *argv[])
         }
     }
 
-    // LOG_PERROR mirrors syslog() to stderr when no syslogd is available.
+    // Mirror syslog() to stderr for interactive foreground debugging only.
+    // Under systemd the service also runs with -f, but journald captures both
+    // syslog and stderr, so LOG_PERROR would duplicate every log line.
     int log_opts = LOG_PID | LOG_CONS;
-    if (foreground)
+    if (foreground && isatty(STDERR_FILENO))
         log_opts |= LOG_PERROR;
     openlog("smartmon-snmp-agentxd", log_opts, LOG_DAEMON);
 
