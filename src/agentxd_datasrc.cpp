@@ -8,6 +8,7 @@
 #include "agentxd_state_db.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cctype>
 #include <cerrno>
 #include <climits>
@@ -122,6 +123,7 @@ static void hash_row(TableHasher &h, const CacheSataInfoRow &r) {
     h.feed(r.ata_version_major); h.feed(r.ata_version_minor);
     h.feed(r.if_speed_max_mbps); h.feed(r.if_speed_current_mbps);
     h.feed(r.apm_enabled); h.feed(r.apm_level);
+    // apm_string excluded: human-readable representation, not exposed via MIB
     h.feed(r.read_lookahead_enabled); h.feed(r.write_cache_enabled);
     h.feed(r.security_state); h.feed(r.security_enabled); h.feed(r.security_frozen);
     h.feed(r.attr_revision); h.feed(r.offline_completion_secs);
@@ -231,12 +233,49 @@ static void hash_row(TableHasher &h, const CacheSensorRow &r) {
     h.feed(r.has_low_critical);  h.feed(r.low_critical);
 }
 
+// sort_key — natural primary key per row type, used to produce a stable
+// hash regardless of which device was most recently re-parsed (clear +
+// re-append shifts rows to the end, so raw iteration order is not stable).
+static auto sort_key(const CacheDeviceRow &r)            { return std::make_tuple(r.index); }
+static auto sort_key(const CacheNvmeControllerRow &r)    { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheNvmeNamespaceRow &r)     { return std::make_tuple(r.device_index, r.namespace_id); }
+static auto sort_key(const CacheNvmeHealthRow &r)        { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheNvmeSelfTestRow &r)      { return std::make_tuple(r.device_index, r.entry_index); }
+static auto sort_key(const CacheNvmeErrorLogRow &r)      { return std::make_tuple(r.device_index, r.entry_index); }
+static auto sort_key(const CacheNvmeCapabilityRow &r)    { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheNvmePowerStateRow &r)    { return std::make_tuple(r.device_index, r.state_index); }
+static auto sort_key(const CacheNvmeLbaFormatRow &r)     { return std::make_tuple(r.device_index, r.namespace_id, r.format_id); }
+static auto sort_key(const CacheSataInfoRow &r)          { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheSataHealthRow &r)        { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheSataAttrRow &r)          { return std::make_tuple(r.device_index, r.attr_id); }
+static auto sort_key(const CacheSataErrorLogRow &r)      { return std::make_tuple(r.device_index, r.entry_index); }
+static auto sort_key(const CacheSataErrorCmdRow &r)      { return std::make_tuple(r.device_index, r.error_entry_index, r.cmd_index); }
+static auto sort_key(const CacheSataSelfTestRow &r)      { return std::make_tuple(r.device_index, r.entry_index); }
+static auto sort_key(const CacheSataErcRow &r)           { return std::make_tuple(r.device_index, r.erc_index); }
+static auto sort_key(const CacheSataPhyEventRow &r)      { return std::make_tuple(r.device_index, r.id); }
+static auto sort_key(const CacheSataSelectiveTestRow &r) { return std::make_tuple(r.device_index, r.slot); }
+static auto sort_key(const CacheSataPendingDefectRow &r) { return std::make_tuple(r.device_index, r.entry_index); }
+static auto sort_key(const CacheSataLogDirRow &r)        { return std::make_tuple(r.device_index, r.address); }
+static auto sort_key(const CacheSataDevStatRow &r)       { return std::make_tuple(r.device_index, r.page_num, r.offset); }
+static auto sort_key(const CacheSasInfoRow &r)           { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheSasHealthRow &r)         { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheSasErrorCounterRow &r)   { return std::make_tuple(r.device_index, static_cast<uint32_t>(r.direction)); }
+static auto sort_key(const CacheSasSelfTestRow &r)       { return std::make_tuple(r.device_index, r.entry_index); }
+static auto sort_key(const CacheSasBgScanRow &r)         { return std::make_tuple(r.device_index); }
+static auto sort_key(const CacheSensorRow &r)            { return std::make_tuple(r.device_index, r.sensor_index); }
+
 template<typename Row>
 static uint64_t hash_vector(const std::vector<Row> &vec) {
+    // Sort by natural key so hash is stable across re-parse reorderings.
+    std::vector<size_t> idx(vec.size());
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+        return sort_key(vec[a]) < sort_key(vec[b]);
+    });
     TableHasher h;
     uint64_t sz = vec.size();
     h.feed(&sz, sizeof(sz));
-    for (const auto &r : vec) hash_row(h, r);
+    for (size_t i : idx) hash_row(h, vec[i]);
     return h.value();
 }
 
