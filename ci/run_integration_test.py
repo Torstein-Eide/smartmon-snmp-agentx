@@ -4,6 +4,7 @@
 import argparse
 import fnmatch
 import glob
+import json
 import os
 import re
 import shutil
@@ -320,6 +321,168 @@ def check_rows(ent_oid: str, walk_file: Path, oid_regex: str, minimum: int
     pattern = re.compile(rf"^\.?{ent_esc}{oid_regex}")
     count = sum(1 for line in walk_file.read_text().splitlines() if pattern.match(line))
     return count >= minimum, count
+
+
+def extract_oid_value(walk_file: Path, ent_oid: str, oid_suffix: str) -> Optional[str]:
+    """Return the raw value string for an exact OID from a walk file, or None."""
+    ent_esc = re.escape(ent_oid)
+    suffix_esc = re.escape(oid_suffix)
+    pattern = re.compile(rf"^\.?{ent_esc}{suffix_esc}\s*=\s*(.+)$")
+    for line in walk_file.read_text().splitlines():
+        m = pattern.match(line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _set_json_path(data, path: str, value) -> None:
+    """Set a nested value using a dot-separated path; integer segments index lists."""
+    keys = path.split(".")
+    for k in keys[:-1]:
+        data = data[int(k)] if isinstance(data, list) else data[k]
+    last = keys[-1]
+    if isinstance(data, list):
+        data[int(last)] = value
+    else:
+        data[last] = value
+
+
+def run_stability_check(check: dict, live_fixtures: Path,
+                        ent_oid: str, all_indices: dict[str, str],
+                        snmp_port: int, community: str,
+                        walk_defs: dict, output_dir: Path,
+                        snmp_env: dict[str, str],
+                        walk_files: dict[str, Path],
+                        verbose: bool) -> tuple[int, int, list[str]]:
+    """Apply JSON mutations to a fixture one by one.  For each mutation verify
+    that exactly the expected LastChange OID advances and all others stay stable.
+
+    Symbol key (printed per mutation):
+      green !  — expected OID changed as required
+      dim   .  — OID stayed stable as required
+      red   !  — unexpected change (bug)
+      red   .  — expected change missing (bug)
+      dim   ?  — OID absent from initial walk (skipped)
+    """
+    passed = failed = 0
+    failures: list[str] = []
+
+    fixture_name = check["fixture"]
+    wait_sec = float(check.get("wait_seconds", 2.0))
+    walk_label = check["walk"]
+    raw_oids = check.get("last_change_oids", [])
+    mutations = check.get("mutations", [])
+
+    resolved = [substitute_oid(oid, None, all_indices) for oid in raw_oids]
+
+    initial_walk = walk_files.get(walk_label)
+    if initial_walk is None:
+        failures.append(f"FAIL: walk '{walk_label}' not in walk_files")
+        return 0, 1, failures
+
+    fixture_path = live_fixtures / fixture_name
+    if not fixture_path.exists():
+        failures.append(f"FAIL: fixture not found: {fixture_path}")
+        return 0, 1, failures
+
+    original_bytes = fixture_path.read_bytes()
+    before = {oid: extract_oid_value(initial_walk, ent_oid, oid) for oid in resolved}
+    safe_check = re.sub(r"[^a-zA-Z0-9_-]", "_", check.get("name", "stability"))
+
+    try:
+        for mut_idx, mut in enumerate(mutations):
+            label = mut.get("label", f"mutation {mut_idx + 1}")
+            expected_oid = substitute_oid(mut["expected_change_oid"], None, all_indices)
+
+            data = json.loads(fixture_path.read_bytes())
+            _set_json_path(data, mut["json_path"], mut["new_value"])
+            fixture_path.write_text(json.dumps(data))
+            time.sleep(wait_sec)
+
+            walk_suffix = walk_defs.get(walk_label, "")
+            result = subprocess.run(
+                ["snmpwalk", "-v2c", "-c", community, *SNMP_STABLE_OUTPUT_ARGS,
+                 f"127.0.0.1:{snmp_port}", f"{ent_oid}{walk_suffix}"],
+                capture_output=True, text=True, env=snmp_env,
+            )
+            new_walk_path = output_dir / f"snmpwalk-stability-{safe_check}-{mut_idx}.txt"
+            new_walk_path.write_text(result.stdout + result.stderr)
+
+            symbols: list[str] = []
+            for oid in resolved:
+                before_val = before.get(oid)
+                if before_val is None:
+                    symbols.append(_dim("?"))
+                    continue
+                after_val = extract_oid_value(new_walk_path, ent_oid, oid)
+                changed = (before_val != after_val)
+                is_expected = (oid == expected_oid)
+
+                if changed and is_expected:
+                    symbols.append(_green("!"))
+                    passed += 1
+                elif not changed and not is_expected:
+                    symbols.append(_dim("."))
+                    passed += 1
+                elif changed and not is_expected:
+                    symbols.append(_red("!"))
+                    failed += 1
+                    failures.append(
+                        f"FAIL: unexpected LastChange advance in '{label}'\n"
+                        f"      oid    : {ent_oid}{oid}\n"
+                        f"      before : {before_val}\n"
+                        f"      after  : {after_val}"
+                    )
+                else:
+                    symbols.append(_red("."))
+                    failed += 1
+                    failures.append(
+                        f"FAIL: expected LastChange did not advance in '{label}'\n"
+                        f"      oid    : {ent_oid}{expected_oid}"
+                    )
+
+            print(f"  {''.join(symbols)}  {_dim(label)}")
+            before = {oid: extract_oid_value(new_walk_path, ent_oid, oid) for oid in resolved}
+
+    finally:
+        fixture_path.write_bytes(original_bytes)
+
+    return passed, failed, failures
+
+
+def run_stability_checks(cfg: dict, live_fixtures: Path,
+                         ent_oid: str, all_indices: dict[str, str],
+                         snmp_port: int, community: str,
+                         walk_defs: dict, output_dir: Path,
+                         snmp_env: dict[str, str],
+                         walk_files: dict[str, Path],
+                         verbose: bool,
+                         section_filter: Optional[str]
+                         ) -> tuple[int, int, int, list[tuple[str, list[str]]]]:
+    total_pass = total_fail = total_skip = 0
+    all_failures: list[tuple[str, list[str]]] = []
+
+    for check in cfg.get("stability_checks", []):
+        name = check.get("name", "(unnamed stability check)")
+        if section_filter and section_filter.lower() not in name.lower():
+            continue
+        skip_reason = check.get("skip")
+        if skip_reason:
+            print_section_result(name, 0, 0, 1, skip_reason, [])
+            total_skip += 1
+            continue
+        p, f, failures = run_stability_check(
+            check, live_fixtures, ent_oid, all_indices,
+            snmp_port, community, walk_defs, output_dir, snmp_env,
+            walk_files, verbose,
+        )
+        print_section_result(name, p, f, 0, None, failures)
+        total_pass += p
+        total_fail += f
+        if failures:
+            all_failures.append((name, failures))
+
+    return total_pass, total_fail, total_skip, all_failures
 
 
 def run_section(section: dict, walk_files: dict[str, Path],
@@ -702,6 +865,17 @@ def main() -> int:
             total_skip += s
             if failures:
                 all_section_failures.append((name, failures))
+
+        # Stability checks (re-parse unchanged fixture, verify no LastChange advance)
+        sp, sf, ss, stab_failures = run_stability_checks(
+            cfg, live_fixtures, ent_oid, indices,
+            snmp_port, community, walk_defs, output_dir, snmp_env,
+            walk_files, args.verbose, section_filter,
+        )
+        total_pass += sp
+        total_fail += sf
+        total_skip += ss
+        all_section_failures.extend(stab_failures)
 
         # Notification (trap delivery) tests
         np, nf, ns, notif_failures = run_notifications(
