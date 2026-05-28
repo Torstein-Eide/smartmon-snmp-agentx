@@ -155,7 +155,7 @@ static void hash_row(TableHasher &h, const CacheSataAttrRow &r) {
     h.feed(r.device_index); h.feed(r.attr_id); h.feed(r.name);
     h.feed(r.flags); h.feed(r.attr_type); h.feed(r.attr_updated);
     h.feed(r.value); h.feed(r.worst); h.feed(r.threshold);
-    h.feed(r.raw_value); h.feed(r.raw_string); h.feed(r.status);
+    h.feed(r.raw_value); h.feed(r.raw_int_value); h.feed(r.raw_string); h.feed(r.status);
 }
 static void hash_row(TableHasher &h, const CacheSataErrorLogRow &r) {
     h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.error_number);
@@ -1066,7 +1066,8 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             r.value        = static_cast<uint32_t>(a["value"].as_uint64());
             r.worst        = static_cast<uint32_t>(a["worst"].as_uint64());
             r.threshold    = static_cast<uint32_t>(a["thresh"].as_uint64());
-            r.raw_string   = a["raw"]["string"].as_string();
+            r.raw_string     = a["raw"]["string"].as_string();
+            r.raw_int_value  = a["raw"]["value"].as_int64();
             // Parse the leading decimal from raw_string (matches smartctl display).
             // raw.value is the full 6-byte vendor-encoded integer which packs
             // extra fields (e.g. sub-minute counters, min/max temps) into the
@@ -1077,7 +1078,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
                 unsigned long long v = strtoull(s, &endp, 10);
                 r.raw_value = (endp > s)
                     ? static_cast<int64_t>(v)
-                    : a["raw"]["value"].as_int64();
+                    : r.raw_int_value;
             }
 
             const JVal &flags = a["flags"];
@@ -1645,14 +1646,45 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
         update_table_ts(TABLE_SATA_DEVSTAT,  g_cache.ts_sata_dev_stat,       hv[TABLE_SATA_DEVSTAT],  hash_vector(g_cache.sata_dev_stats),       now_ts);
         update_table_ts(TABLE_SENSOR,        g_cache.ts_sensor,              hv[TABLE_SENSOR],        hash_vector(g_cache.sensors),              now_ts);
 
-        // Per-device BySubindex timestamps — only advance for the reparsed device.
-        auto upd_dev = [&](auto &ts_map, auto &hash_map, const auto &vec) {
-            uint64_t new_h = hash_vector_for_device(vec, dev_idx);
-            auto &prev = hash_map[dev_idx];
-            if (new_h != prev) { prev = new_h; ts_map[dev_idx] = now_ts; }
-        };
-        upd_dev(g_cache.ts_sata_errcmd_by_device,  g_cache.hash_sata_errcmd_by_device,  g_cache.sata_error_cmds);
-        upd_dev(g_cache.ts_sata_devstat_by_device, g_cache.hash_sata_devstat_by_device, g_cache.sata_dev_stats);
+        // Per-(device, tableId) ByDevice timestamps for all 12 SATA tables.
+        {
+            auto upd_by_dev = [&](uint32_t tid, uint64_t new_h) {
+                uint64_t key = ((uint64_t)dev_idx << 32) | tid;
+                auto &prev = g_cache.hash_sata_by_dev[key];
+                if (new_h != prev) {
+                    prev = new_h;
+                    g_cache.ts_sata_by_dev[key] = now_ts;
+                    state_db_update_by_dev(dev_idx, tid, new_h, now_ts);
+                }
+            };
+            upd_by_dev( 1, hash_vector_for_device(g_cache.sata_info,             dev_idx));
+            upd_by_dev( 2, hash_vector_for_device(g_cache.sata_health,           dev_idx));
+            upd_by_dev( 3, hash_vector_for_device(g_cache.sata_attrs,            dev_idx));
+            upd_by_dev( 4, hash_vector_for_device(g_cache.sata_error_log,        dev_idx));
+            upd_by_dev( 5, hash_vector_for_device(g_cache.sata_error_cmds,       dev_idx));
+            upd_by_dev( 6, hash_vector_for_device(g_cache.sata_selftests,        dev_idx));
+            upd_by_dev( 7, hash_vector_for_device(g_cache.sata_erc,              dev_idx));
+            upd_by_dev( 8, hash_vector_for_device(g_cache.sata_phy_events,       dev_idx));
+            upd_by_dev( 9, hash_vector_for_device(g_cache.sata_selective_tests,  dev_idx));
+            upd_by_dev(10, hash_vector_for_device(g_cache.sata_log_dir,          dev_idx));
+            upd_by_dev(11, hash_vector_for_device(g_cache.sata_dev_stats,        dev_idx));
+            upd_by_dev(12, hash_vector_for_device(g_cache.sata_pending_defects,  dev_idx));
+        }
+        // Per-row BySubindex timestamps for devstat — each row advances independently.
+        // errcmd BySubindex reuses ts_sata_by_dev[key|5] set above.
+        for (const auto &r : g_cache.sata_dev_stats) {
+            if (r.device_index != dev_idx) continue;
+            uint64_t key = sata_devstat_row_key(dev_idx, r.page_num, r.offset);
+            TableHasher rh;
+            hash_row(rh, r);
+            uint64_t new_h = rh.value();
+            auto &prev = g_cache.hash_sata_devstat_by_row[key];
+            if (new_h != prev) {
+                prev = new_h;
+                g_cache.ts_sata_devstat_by_row[key] = now_ts;
+                state_db_update_devstat_row(dev_idx, r.page_num, r.offset, new_h, now_ts);
+            }
+        }
     }
 }
 
@@ -1897,6 +1929,7 @@ void agentxd_datasrc_remove_device(uint32_t dev_idx) {
     if (dev)
         notify_device_removed(dev_idx, dev->name, dev->path, (int)dev->proto);
     g_cache.remove_device(dev_idx);
+    state_db_remove_device(dev_idx);
 }
 
 static void dispatch_notifications(uint32_t dev_idx, DeviceProto proto,

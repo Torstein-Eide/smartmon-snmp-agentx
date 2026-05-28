@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Stub syslog so we can link without the full daemon infrastructure.
@@ -104,10 +105,13 @@ void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor) 
 
 // Stub state_db — no SQLite in the unit test binary
 #include "../src/agentxd_state_db.h"
-bool  state_db_open(const std::string &) { return true; }
-void  state_db_load()                    {}
-void  state_db_update(int, uint64_t, time_t) {}
-void  state_db_close()                   {}
+bool  state_db_open(const std::string &)                                    { return true; }
+void  state_db_load()                                                        {}
+void  state_db_update(int, uint64_t, time_t)                                 {}
+void  state_db_update_by_dev(uint32_t, uint32_t, uint64_t, time_t)          {}
+void  state_db_update_devstat_row(uint32_t, uint32_t, uint32_t, uint64_t, time_t) {}
+void  state_db_remove_device(uint32_t)                                       {}
+void  state_db_close()                                                        {}
 
 #include "../src/agentxd_datasrc.cpp"
 #undef syslog
@@ -484,6 +488,284 @@ static void test_cache_upsert() {
     g_cache.remove_device(idx1);
 }
 
+// ---------------------------------------------------------------------------
+// Helpers for SATA hash isolation test
+// ---------------------------------------------------------------------------
+
+// Snapshot of all 12 SATA global table hashes, computed live from g_cache.
+// hash_vector() is the same function used by parse_sata internals.
+struct SataHashes {
+    uint64_t h[12];  // indexed 0..11 matching SATA_TBL_* below
+
+    static SataHashes capture() {
+        SataHashes s;
+        s.h[0]  = hash_vector(g_cache.sata_info);
+        s.h[1]  = hash_vector(g_cache.sata_health);
+        s.h[2]  = hash_vector(g_cache.sata_attrs);
+        s.h[3]  = hash_vector(g_cache.sata_error_log);
+        s.h[4]  = hash_vector(g_cache.sata_error_cmds);
+        s.h[5]  = hash_vector(g_cache.sata_selftests);
+        s.h[6]  = hash_vector(g_cache.sata_erc);
+        s.h[7]  = hash_vector(g_cache.sata_phy_events);
+        s.h[8]  = hash_vector(g_cache.sata_selective_tests);
+        s.h[9]  = hash_vector(g_cache.sata_pending_defects);
+        s.h[10] = hash_vector(g_cache.sata_log_dir);
+        s.h[11] = hash_vector(g_cache.sata_dev_stats);
+        return s;
+    }
+};
+
+enum {
+    SATA_TBL_INFO=0, SATA_TBL_HEALTH, SATA_TBL_ATTR,
+    SATA_TBL_ERRLOG, SATA_TBL_ERRCMD, SATA_TBL_SELFTEST,
+    SATA_TBL_ERC,    SATA_TBL_PHY,    SATA_TBL_SELTEST,
+    SATA_TBL_PENDING,SATA_TBL_LOGDIR, SATA_TBL_DEVSTAT,
+    SATA_TBL_COUNT
+};
+static const char *sata_tbl_name[] = {
+    "sata_info","sata_health","sata_attr",
+    "sata_error_log","sata_error_cmd","sata_selftest",
+    "sata_erc","sata_phy_event","sata_selective_test",
+    "sata_pending_defects","sata_log_dir","sata_dev_stat"
+};
+
+// Verify that exactly one global table hash changed between before and after.
+static void check_hash_isolation(const SataHashes &before, const SataHashes &after,
+                                  int expected_changed) {
+    for (int i = 0; i < SATA_TBL_COUNT; i++) {
+        if (i == expected_changed) {
+            if (after.h[i] == before.h[i]) {
+                ++s_fail;
+                fprintf(stderr, "FAIL %s:%d: %s hash should have changed but didn't\n",
+                        __FILE__, __LINE__, sata_tbl_name[i]);
+            } else {
+                ++s_pass;
+            }
+        } else {
+            if (after.h[i] != before.h[i]) {
+                ++s_fail;
+                fprintf(stderr, "FAIL %s:%d: %s hash changed spuriously"
+                        " (expected only %s to change)\n",
+                        __FILE__, __LINE__, sata_tbl_name[i],
+                        sata_tbl_name[expected_changed]);
+            } else {
+                ++s_pass;
+            }
+        }
+    }
+}
+
+template<typename Vec>
+static typename Vec::value_type *find_dev_row(Vec &v, uint32_t dev_idx) {
+    for (auto &r : v) if (r.device_index == dev_idx) return &r;
+    return nullptr;
+}
+
+// Explicit helper: check isolation for smartmonSataErrorCmdTable (3-level).
+// Mutates timestamp_ms on the first row belonging to dev_idx.
+static void check_errcmd_isolation(uint32_t dev_idx, uint32_t other_dev_idx) {
+    auto *row = find_dev_row(g_cache.sata_error_cmds, dev_idx);
+    if (!row) return;  // device has no error commands — skip
+
+    auto g_before    = SataHashes::capture();
+    uint64_t self_before  = hash_vector_for_device(g_cache.sata_error_cmds, dev_idx);
+    uint64_t other_before = hash_vector_for_device(g_cache.sata_error_cmds, other_dev_idx);
+
+    ++(row->timestamp_ms);
+
+    auto g_after     = SataHashes::capture();
+    uint64_t self_after   = hash_vector_for_device(g_cache.sata_error_cmds, dev_idx);
+    uint64_t other_after  = hash_vector_for_device(g_cache.sata_error_cmds, other_dev_idx);
+
+    check_hash_isolation(g_before, g_after, SATA_TBL_ERRCMD);
+    CHECK(self_after  != self_before);   // mutated device per-device hash changed
+    CHECK(other_after == other_before);  // other device per-device hash unchanged
+
+    --(row->timestamp_ms);
+}
+
+// Explicit helper: check isolation for smartmonSataDevStatTable (3-level).
+// Mutates value on the first row belonging to dev_idx.
+static void check_devstat_isolation(uint32_t dev_idx, uint32_t other_dev_idx) {
+    auto *row = find_dev_row(g_cache.sata_dev_stats, dev_idx);
+    if (!row) return;  // device has no dev stats — skip
+
+    auto g_before    = SataHashes::capture();
+    uint64_t self_before  = hash_vector_for_device(g_cache.sata_dev_stats, dev_idx);
+    uint64_t other_before = hash_vector_for_device(g_cache.sata_dev_stats, other_dev_idx);
+
+    ++(row->value);
+
+    auto g_after     = SataHashes::capture();
+    uint64_t self_after   = hash_vector_for_device(g_cache.sata_dev_stats, dev_idx);
+    uint64_t other_after  = hash_vector_for_device(g_cache.sata_dev_stats, other_dev_idx);
+
+    check_hash_isolation(g_before, g_after, SATA_TBL_DEVSTAT);
+    CHECK(self_after  != self_before);   // mutated device per-device hash changed
+    CHECK(other_after == other_before);  // other device per-device hash unchanged
+
+    --(row->value);
+}
+
+// Run mutation checks on one device's rows.
+// For all 12 global tables: increment one field, verify only that table's hash
+// changed, restore. For the two 3-level tables (errcmd, devstat): additionally
+// verify per-device hash isolation against other_dev_idx (pass 0 when testing
+// single-device — other_dev_idx's hash will be empty/stable in that case).
+static void check_per_table_isolation(uint32_t dev_idx, uint32_t other_dev_idx = 0) {
+#define MUTATE(vec, field, tbl_idx) \
+    do { \
+        auto *row = find_dev_row(g_cache.vec, dev_idx); \
+        if (row) { \
+            auto before = SataHashes::capture(); \
+            ++(row->field); \
+            auto after = SataHashes::capture(); \
+            check_hash_isolation(before, after, tbl_idx); \
+            --(row->field); \
+        } \
+    } while (0)
+
+    // 10 level-2 tables (no per-device tracking):
+    MUTATE(sata_info,            rotation_rate,   SATA_TBL_INFO);
+    MUTATE(sata_health,          power_cycles,    SATA_TBL_HEALTH);
+    MUTATE(sata_attrs,           raw_value,       SATA_TBL_ATTR);
+    MUTATE(sata_error_log,       error_number,    SATA_TBL_ERRLOG);
+    MUTATE(sata_selftests,       lifetime_hours,  SATA_TBL_SELFTEST);
+    MUTATE(sata_erc,             deciseconds,     SATA_TBL_ERC);
+    MUTATE(sata_phy_events,      value,           SATA_TBL_PHY);
+    MUTATE(sata_selective_tests, lba_min,         SATA_TBL_SELTEST);
+    MUTATE(sata_pending_defects, lba,             SATA_TBL_PENDING);
+    MUTATE(sata_log_dir,         gp_sectors,      SATA_TBL_LOGDIR);
+#undef MUTATE
+
+    // 2 level-3 tables (global + per-device hash isolation):
+    check_errcmd_isolation(dev_idx, other_dev_idx);
+    check_devstat_isolation(dev_idx, other_dev_idx);
+}
+
+// ---------------------------------------------------------------------------
+// Main test: per-table hash isolation + multi-device re-parse stability
+// ---------------------------------------------------------------------------
+
+static void test_sata_multidevice_stable_hashes(const char *path_a, const char *path_b) {
+    SECTION("SATA: per-table hash isolation and multi-device re-parse stability");
+    bool prev_scan = s_initial_scan_done;
+    s_initial_scan_done = false;
+    g_cache.clear();
+    // clear() resets ts_* but not table_hashes — reset manually so initial
+    // loads always produce a hash change (matching the daemon's cold-start).
+    for (auto &h : g_cache.table_hashes) h = 0;
+    clear_notify_calls();
+
+    // === Phase 1: single device A ===
+    uint32_t idx_a = load_fixture(path_a);
+    CHECK(idx_a > 0);
+
+    SECTION("SATA: device A alone — mutating each table changes only that table's hash");
+    check_per_table_isolation(idx_a, 0);
+
+    // === Phase 2: add device B ===
+    uint32_t idx_b = load_fixture(path_b);
+    CHECK(idx_b > 0);
+    CHECK(idx_a != idx_b);
+
+    SECTION("SATA: device B added — mutating each table changes only that table's hash"
+            " (3-level tables: per-device hash of other device must not change)");
+    check_per_table_isolation(idx_b, idx_a);
+
+    // === Phase 3: re-parse device A unchanged — stored hashes must not change ===
+    // Snapshot everything that parse_sata persists in g_cache.table_hashes,
+    // the ts_* timestamps, and the per-device maps for the two 3-level tables.
+    uint64_t snap[TABLE_COUNT];
+    for (int i = 0; i < TABLE_COUNT; i++) snap[i] = g_cache.table_hashes[i];
+
+    time_t ts_snap_info    = g_cache.ts_sata_info;
+    time_t ts_snap_health  = g_cache.ts_sata_health;
+    time_t ts_snap_attr    = g_cache.ts_sata_attr;
+    time_t ts_snap_errlog  = g_cache.ts_sata_error_log;
+    time_t ts_snap_errcmd  = g_cache.ts_sata_error_cmd;
+    time_t ts_snap_selftest= g_cache.ts_sata_selftest;
+    time_t ts_snap_erc     = g_cache.ts_sata_erc;
+    time_t ts_snap_phy     = g_cache.ts_sata_phy_event;
+    time_t ts_snap_seltest = g_cache.ts_sata_selective_test;
+    time_t ts_snap_pending = g_cache.ts_sata_pending_defects;
+    time_t ts_snap_logdir  = g_cache.ts_sata_log_dir;
+    time_t ts_snap_devstat = g_cache.ts_sata_dev_stat;
+
+    // Per-device hash/ts snapshots for errcmd (tableId=5) via ts_sata_by_dev.
+    auto errcmd_key = [](uint32_t dev) -> uint64_t { return ((uint64_t)dev << 32) | 5; };
+    uint64_t snap_errcmd_a   = g_cache.hash_sata_by_dev[errcmd_key(idx_a)];
+    uint64_t snap_errcmd_b   = g_cache.hash_sata_by_dev[errcmd_key(idx_b)];
+    time_t ts_snap_errcmd_a  = g_cache.ts_sata_by_dev[errcmd_key(idx_a)];
+    time_t ts_snap_errcmd_b  = g_cache.ts_sata_by_dev[errcmd_key(idx_b)];
+
+    // Per-row hash/ts snapshots for devstat (both devices).
+    std::vector<uint64_t> devstat_keys_a, devstat_keys_b;
+    for (const auto &r : g_cache.sata_dev_stats) {
+        if (r.device_index == idx_a) devstat_keys_a.push_back(sata_devstat_row_key(idx_a, r.page_num, r.offset));
+        if (r.device_index == idx_b) devstat_keys_b.push_back(sata_devstat_row_key(idx_b, r.page_num, r.offset));
+    }
+    std::unordered_map<uint64_t, uint64_t> snap_devstat_hash_a, snap_devstat_hash_b;
+    std::unordered_map<uint64_t, time_t>   snap_devstat_ts_a,   snap_devstat_ts_b;
+    for (auto k : devstat_keys_a) {
+        snap_devstat_hash_a[k] = g_cache.hash_sata_devstat_by_row[k];
+        snap_devstat_ts_a[k]   = g_cache.ts_sata_devstat_by_row[k];
+    }
+    for (auto k : devstat_keys_b) {
+        snap_devstat_hash_b[k] = g_cache.hash_sata_devstat_by_row[k];
+        snap_devstat_ts_b[k]   = g_cache.ts_sata_devstat_by_row[k];
+    }
+
+    SECTION("SATA: re-parsing device A unchanged with device B in cache —"
+            " no global hash, ts, or per-device hash/ts change");
+    agentxd_datasrc_load_file(path_a);
+
+    // Global table hashes and timestamps must be stable.
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_INFO],     snap[TABLE_SATA_INFO]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_HEALTH],   snap[TABLE_SATA_HEALTH]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_ATTR],     snap[TABLE_SATA_ATTR]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_ERRLOG],   snap[TABLE_SATA_ERRLOG]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_ERRCMD],   snap[TABLE_SATA_ERRCMD]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_SELFTEST], snap[TABLE_SATA_SELFTEST]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_ERC],      snap[TABLE_SATA_ERC]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_PHY],      snap[TABLE_SATA_PHY]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_SELTEST],  snap[TABLE_SATA_SELTEST]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_PENDING],  snap[TABLE_SATA_PENDING]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_LOGDIR],   snap[TABLE_SATA_LOGDIR]);
+    CHECK_EQ(g_cache.table_hashes[TABLE_SATA_DEVSTAT],  snap[TABLE_SATA_DEVSTAT]);
+
+    CHECK_EQ(g_cache.ts_sata_info,            ts_snap_info);
+    CHECK_EQ(g_cache.ts_sata_health,          ts_snap_health);
+    CHECK_EQ(g_cache.ts_sata_attr,            ts_snap_attr);
+    CHECK_EQ(g_cache.ts_sata_error_log,       ts_snap_errlog);
+    CHECK_EQ(g_cache.ts_sata_error_cmd,       ts_snap_errcmd);
+    CHECK_EQ(g_cache.ts_sata_selftest,        ts_snap_selftest);
+    CHECK_EQ(g_cache.ts_sata_erc,             ts_snap_erc);
+    CHECK_EQ(g_cache.ts_sata_phy_event,       ts_snap_phy);
+    CHECK_EQ(g_cache.ts_sata_selective_test,  ts_snap_seltest);
+    CHECK_EQ(g_cache.ts_sata_pending_defects, ts_snap_pending);
+    CHECK_EQ(g_cache.ts_sata_log_dir,         ts_snap_logdir);
+    CHECK_EQ(g_cache.ts_sata_dev_stat,        ts_snap_devstat);
+
+    // Per-device errcmd (tableId=5) hashes and timestamps must be stable.
+    CHECK_EQ(g_cache.hash_sata_by_dev[errcmd_key(idx_a)], snap_errcmd_a);
+    CHECK_EQ(g_cache.hash_sata_by_dev[errcmd_key(idx_b)], snap_errcmd_b);
+    CHECK_EQ(g_cache.ts_sata_by_dev[errcmd_key(idx_a)],   ts_snap_errcmd_a);
+    CHECK_EQ(g_cache.ts_sata_by_dev[errcmd_key(idx_b)],   ts_snap_errcmd_b);
+
+    // Per-row devstat hashes and timestamps must be stable.
+    for (auto k : devstat_keys_a) {
+        CHECK_EQ(g_cache.hash_sata_devstat_by_row[k], snap_devstat_hash_a[k]);
+        CHECK_EQ(g_cache.ts_sata_devstat_by_row[k],   snap_devstat_ts_a[k]);
+    }
+    for (auto k : devstat_keys_b) {
+        CHECK_EQ(g_cache.hash_sata_devstat_by_row[k], snap_devstat_hash_b[k]);
+        CHECK_EQ(g_cache.ts_sata_devstat_by_row[k],   snap_devstat_ts_b[k]);
+    }
+
+    s_initial_scan_done = prev_scan;
+}
+
 static void test_notify_no_discovered_during_startup(const char *path) {
     SECTION("notify: no device_discovered during initial startup scan");
     s_initial_scan_done = false;
@@ -678,6 +960,7 @@ int main(int argc, char *argv[]) {
     if (nvme_path)    test_nvme_health(nvme_path);
     if (nvme_st_path) test_nvme_selftest(nvme_st_path);
     if (wdc_path)     test_sata_new_tables(wdc_path);
+    if (wdc_path && ata_path) test_sata_multidevice_stable_hashes(wdc_path, ata_path);
     if (ata_path)     test_ata_attrs(ata_path);
     if (ata_st_path)  test_ata_selftest(ata_st_path);
     if (scsi_path)    test_scsi_health(scsi_path);

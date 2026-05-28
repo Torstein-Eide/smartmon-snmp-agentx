@@ -353,9 +353,11 @@ def run_stability_check(check: dict, live_fixtures: Path,
                         walk_defs: dict, output_dir: Path,
                         snmp_env: dict[str, str],
                         walk_files: dict[str, Path],
-                        verbose: bool) -> tuple[int, int, list[str]]:
+                        verbose: bool) -> tuple[int, int, int, int, list[str]]:
     """Apply JSON mutations to a fixture one by one.  For each mutation verify
     that exactly the expected LastChange OID advances and all others stay stable.
+
+    Returns (mut_passed, mut_failed, oid_passed, oid_failed, failures).
 
     Symbol key (printed per mutation):
       green !  — expected OID changed as required
@@ -364,7 +366,7 @@ def run_stability_check(check: dict, live_fixtures: Path,
       red   .  — expected change missing (bug)
       dim   ?  — OID absent from initial walk (skipped)
     """
-    passed = failed = 0
+    mut_passed = mut_failed = oid_passed = oid_failed = 0
     failures: list[str] = []
 
     fixture_name = check["fixture"]
@@ -378,12 +380,12 @@ def run_stability_check(check: dict, live_fixtures: Path,
     initial_walk = walk_files.get(walk_label)
     if initial_walk is None:
         failures.append(f"FAIL: walk '{walk_label}' not in walk_files")
-        return 0, 1, failures
+        return 0, 1, 0, 0, failures
 
     fixture_path = live_fixtures / fixture_name
     if not fixture_path.exists():
         failures.append(f"FAIL: fixture not found: {fixture_path}")
-        return 0, 1, failures
+        return 0, 1, 0, 0, failures
 
     original_bytes = fixture_path.read_bytes()
     before = {oid: extract_oid_value(initial_walk, ent_oid, oid) for oid in resolved}
@@ -409,6 +411,7 @@ def run_stability_check(check: dict, live_fixtures: Path,
             new_walk_path.write_text(result.stdout + result.stderr)
 
             symbols: list[str] = []
+            mut_oid_failed = 0
             for oid in resolved:
                 before_val = before.get(oid)
                 if before_val is None:
@@ -420,13 +423,14 @@ def run_stability_check(check: dict, live_fixtures: Path,
 
                 if changed and is_expected:
                     symbols.append(_green("!"))
-                    passed += 1
+                    oid_passed += 1
                 elif not changed and not is_expected:
                     symbols.append(_dim("."))
-                    passed += 1
+                    oid_passed += 1
                 elif changed and not is_expected:
                     symbols.append(_red("!"))
-                    failed += 1
+                    oid_failed += 1
+                    mut_oid_failed += 1
                     failures.append(
                         f"FAIL: unexpected LastChange advance in '{label}'\n"
                         f"      oid    : {ent_oid}{oid}\n"
@@ -435,11 +439,17 @@ def run_stability_check(check: dict, live_fixtures: Path,
                     )
                 else:
                     symbols.append(_red("."))
-                    failed += 1
+                    oid_failed += 1
+                    mut_oid_failed += 1
                     failures.append(
                         f"FAIL: expected LastChange did not advance in '{label}'\n"
                         f"      oid    : {ent_oid}{expected_oid}"
                     )
+
+            if mut_oid_failed == 0:
+                mut_passed += 1
+            else:
+                mut_failed += 1
 
             print(f"  {''.join(symbols)}  {_dim(label)}")
             before = {oid: extract_oid_value(new_walk_path, ent_oid, oid) for oid in resolved}
@@ -447,7 +457,7 @@ def run_stability_check(check: dict, live_fixtures: Path,
     finally:
         fixture_path.write_bytes(original_bytes)
 
-    return passed, failed, failures
+    return mut_passed, mut_failed, oid_passed, oid_failed, failures
 
 
 def run_stability_checks(cfg: dict, live_fixtures: Path,
@@ -471,14 +481,21 @@ def run_stability_checks(cfg: dict, live_fixtures: Path,
             print_section_result(name, 0, 0, 1, skip_reason, [])
             total_skip += 1
             continue
-        p, f, failures = run_stability_check(
+        mp, mf, op, of, failures = run_stability_check(
             check, live_fixtures, ent_oid, all_indices,
             snmp_port, community, walk_defs, output_dir, snmp_env,
             walk_files, verbose,
         )
-        print_section_result(name, p, f, 0, None, failures)
-        total_pass += p
-        total_fail += f
+        mut_total = mp + mf
+        oid_total = op + of
+        parts = [f"{mp}/{mut_total} Passed", f"({op}/{oid_total} subtest passed)"]
+        if mf:
+            parts.append(_red(f"{mf} FAILED"))
+        width = 28
+        padded = f"--- {name} ---".ljust(width)
+        print(f"{padded}  [{', '.join(parts)}]")
+        total_pass += mp
+        total_fail += mf
         if failures:
             all_failures.append((name, failures))
 

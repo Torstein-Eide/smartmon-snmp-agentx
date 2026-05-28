@@ -8,6 +8,13 @@
 #include <unordered_map>
 #include <vector>
 
+// Key for per-row devstat BySubindex tracking: packs (device, page, offset) into uint64_t.
+// page_num and offset are ATA Device Statistics fields; both fit in 16 bits in practice
+// (pages 0-255, offsets multiples of 8 up to ~2040).
+static inline uint64_t sata_devstat_row_key(uint32_t dev, uint32_t page, uint32_t offset) {
+    return ((uint64_t)dev << 32) | ((uint64_t)(page & 0xFFFFu) << 16) | (offset & 0xFFFFu);
+}
+
 // --------------------------------------------------------------------
 // Poll result codes (mirrors SmartmonPollResult TC)
 // --------------------------------------------------------------------
@@ -111,6 +118,7 @@ struct CacheSataAttrRow {
     uint32_t    worst       { 0 };
     uint32_t    threshold   { 0 };
     int64_t     raw_value   { 0 };
+    int64_t     raw_int_value { 0 }; // raw.value from JSON (uninterpreted 6-byte integer)
     std::string raw_string;
     int         status      { 0 };   // SmartmonAtaSmartAttrStatus
 };
@@ -707,12 +715,17 @@ struct AgentxCache {
     // FNV-1a hashes of each table's vector content — used to gate ts_* updates
     uint64_t table_hashes[TABLE_COUNT] {};
 
-    // Per-device hashes and timestamps for BySubindex table (errcmd + devstat).
-    // Compared per-device so that reparsing device A does not advance device B's timestamp.
-    std::unordered_map<uint32_t, uint64_t> hash_sata_errcmd_by_device;
-    std::unordered_map<uint32_t, uint64_t> hash_sata_devstat_by_device;
-    std::unordered_map<uint32_t, time_t>   ts_sata_errcmd_by_device;
-    std::unordered_map<uint32_t, time_t>   ts_sata_devstat_by_device;
+    // Per-(device, tableId) hashes and timestamps for ByDevice table.
+    // Key = (device_index << 32) | tableId (1-12).
+    // Ensures changing device A's data does not advance device B's ByDevice lastChange.
+    // tableId=5 (errcmd) also serves as the BySubindex errcmd timestamp source.
+    std::unordered_map<uint64_t, uint64_t> hash_sata_by_dev;
+    std::unordered_map<uint64_t, time_t>   ts_sata_by_dev;
+
+    // Per-row hashes and timestamps for BySubindex devstat rows.
+    // Use sata_devstat_row_key() to build the key.
+    std::unordered_map<uint64_t, uint64_t> hash_sata_devstat_by_row;
+    std::unordered_map<uint64_t, time_t>   ts_sata_devstat_by_row;
 
     // Remove device row and all sub-table rows for device_index
     void remove_device(uint32_t device_index);

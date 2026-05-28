@@ -701,6 +701,206 @@
               "valid": true,
               "normalized": false
             }
+          },
+          {
+            "offset": 32,
+            "name": "Logical Sectors Read",
+            "value": 56789012
+          },
+          {
+            "offset": 40,
+            "name": "Number of Read Commands",
+            "value": 3210987
+          },
+          {
+            "offset": 48,
+            "name": "Number of Write Commands",
+            "value": 1234567
+          },
+          {
+            "offset": 56,
+            "name": "Number of Random Read Commands",
+            "value": 987654
+          }
+        ]
+      },
+      {
+        "name": "Rotating Media Statistics",
+        "number": 3,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Spindle Motor Power-on Hours",
+            "value": 43201
+          },
+          {
+            "offset": 16,
+            "name": "Head Flying Hours",
+            "value": 43100
+          },
+          {
+            "offset": 24,
+            "name": "Head Load Events",
+            "value": 1057
+          },
+          {
+            "offset": 32,
+            "name": "Number of Reallocated Logical Sectors",
+            "value": 0
+          },
+          {
+            "offset": 40,
+            "name": "Read Recovery Attempts",
+            "value": 3
+          },
+          {
+            "offset": 48,
+            "name": "Number of Mechanical Start Failures",
+            "value": 0
+          },
+          {
+            "offset": 56,
+            "name": "Number of Realloc. Candidate Logical Sectors",
+            "value": 0
+          },
+          {
+            "offset": 64,
+            "name": "Number of High Priority Unload Events",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "name": "General Errors Statistics",
+        "number": 4,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Number of Reported Uncorrectable Errors",
+            "value": 0
+          },
+          {
+            "offset": 16,
+            "name": "Number of Resets Between Cmd Acceptance and Completion",
+            "value": 2
+          },
+          {
+            "offset": 24,
+            "name": "Physical Element Status Changed",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "name": "Temperature Statistics",
+        "number": 5,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Current Temperature",
+            "value": 28
+          },
+          {
+            "offset": 16,
+            "name": "Average Short-Term Temperature",
+            "value": 27
+          },
+          {
+            "offset": 24,
+            "name": "Average Long-Term Temperature",
+            "value": 26
+          },
+          {
+            "offset": 32,
+            "name": "Highest Temperature",
+            "value": 38
+          },
+          {
+            "offset": 40,
+            "name": "Lowest Temperature",
+            "value": 19
+          },
+          {
+            "offset": 48,
+            "name": "Highest Average Short-Term Temperature",
+            "value": 35
+          },
+          {
+            "offset": 56,
+            "name": "Lowest Average Short-Term Temperature",
+            "value": 21
+          },
+          {
+            "offset": 64,
+            "name": "Time in Over-Temperature",
+            "value": 0
+          },
+          {
+            "offset": 72,
+            "name": "Specified Maximum Operating Temperature",
+            "value": 60
+          },
+          {
+            "offset": 80,
+            "name": "Time in Under-Temperature",
+            "value": 0
+          },
+          {
+            "offset": 88,
+            "name": "Specified Minimum Operating Temperature",
+            "value": 0
+          },
+          {
+            "offset": 96,
+            "name": "Vendor Specific Temperature Statistic",
+            "value": 0
+          },
+          {
+            "offset": 104,
+            "name": "Vendor Specific Temperature Statistic 2",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "name": "Transport Statistics",
+        "number": 6,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Number of Hardware Resets",
+            "value": 57
+          },
+          {
+            "offset": 16,
+            "name": "Number of ASR Events",
+            "value": 0
+          },
+          {
+            "offset": 24,
+            "name": "Number of Interface CRC Errors",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "name": "Vendor Specific Statistics",
+        "number": 255,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Vendor Specific Statistic 1",
+            "value": 1000
+          },
+          {
+            "offset": 16,
+            "name": "Vendor Specific Statistic 2",
+            "value": 2000
+          },
+          {
+            "offset": 24,
+            "name": "Vendor Specific Statistic 3",
+            "value": 3000
           }
         ]
       }

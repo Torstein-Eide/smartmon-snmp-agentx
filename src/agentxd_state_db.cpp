@@ -69,6 +69,21 @@ bool state_db_open(const std::string &path) {
         "  table_id    INTEGER PRIMARY KEY,"
         "  hash        INTEGER NOT NULL,"
         "  last_change INTEGER NOT NULL"
+        ");"
+        "CREATE TABLE IF NOT EXISTS sata_by_dev_state ("
+        "  dev_id      INTEGER NOT NULL,"
+        "  table_id    INTEGER NOT NULL,"
+        "  hash        INTEGER NOT NULL,"
+        "  last_change INTEGER NOT NULL,"
+        "  PRIMARY KEY (dev_id, table_id)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS sata_devstat_row_state ("
+        "  dev_id      INTEGER NOT NULL,"
+        "  page_num    INTEGER NOT NULL,"
+        "  row_offset  INTEGER NOT NULL,"
+        "  hash        INTEGER NOT NULL,"
+        "  last_change INTEGER NOT NULL,"
+        "  PRIMARY KEY (dev_id, page_num, row_offset)"
         ");";
     char *errmsg = nullptr;
     if (sqlite3_exec(g_db, sql, nullptr, nullptr, &errmsg) != SQLITE_OK) {
@@ -136,6 +151,46 @@ void state_db_load() {
     }
     sqlite3_finalize(stmt);
     syslog(LOG_INFO, "state_db: loaded %u table timestamp(s)", loaded);
+
+    // Load per-(device, tableId) ByDevice timestamps.
+    const char *sql2 =
+        "SELECT dev_id, table_id, hash, last_change FROM sata_by_dev_state;";
+    if (sqlite3_prepare_v2(g_db, sql2, -1, &stmt, nullptr) == SQLITE_OK) {
+        unsigned n = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t dev = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            uint32_t tid = static_cast<uint32_t>(sqlite3_column_int64(stmt, 1));
+            uint64_t h   = static_cast<uint64_t>(sqlite3_column_int64(stmt, 2));
+            time_t   ts  = static_cast<time_t>(sqlite3_column_int64(stmt, 3));
+            uint64_t key = ((uint64_t)dev << 32) | tid;
+            g_cache.hash_sata_by_dev[key] = h;
+            g_cache.ts_sata_by_dev[key]   = ts;
+            ++n;
+        }
+        sqlite3_finalize(stmt);
+        syslog(LOG_INFO, "state_db: loaded %u ByDevice timestamp(s)", n);
+    }
+
+    // Load per-row devstat BySubindex timestamps.
+    const char *sql3 =
+        "SELECT dev_id, page_num, row_offset, hash, last_change"
+        " FROM sata_devstat_row_state;";
+    if (sqlite3_prepare_v2(g_db, sql3, -1, &stmt, nullptr) == SQLITE_OK) {
+        unsigned n = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t dev    = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            uint32_t page   = static_cast<uint32_t>(sqlite3_column_int64(stmt, 1));
+            uint32_t offset = static_cast<uint32_t>(sqlite3_column_int64(stmt, 2));
+            uint64_t h      = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
+            time_t   ts     = static_cast<time_t>(sqlite3_column_int64(stmt, 4));
+            uint64_t key    = sata_devstat_row_key(dev, page, offset);
+            g_cache.hash_sata_devstat_by_row[key] = h;
+            g_cache.ts_sata_devstat_by_row[key]   = ts;
+            ++n;
+        }
+        sqlite3_finalize(stmt);
+        syslog(LOG_INFO, "state_db: loaded %u devstat row timestamp(s)", n);
+    }
 }
 
 void state_db_update(int table_id, uint64_t hash, time_t ts) {
@@ -151,6 +206,54 @@ void state_db_update(int table_id, uint64_t hash, time_t ts) {
     sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(ts));
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+}
+
+void state_db_update_by_dev(uint32_t dev_id, uint32_t table_id, uint64_t hash, time_t ts) {
+    if (!g_db) return;
+    const char *sql =
+        "INSERT OR REPLACE INTO sata_by_dev_state (dev_id, table_id, hash, last_change)"
+        " VALUES (?, ?, ?, ?);";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(table_id));
+    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(hash));
+    sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(ts));
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+void state_db_update_devstat_row(uint32_t dev_id, uint32_t page_num, uint32_t row_offset,
+                                 uint64_t hash, time_t ts) {
+    if (!g_db) return;
+    const char *sql =
+        "INSERT OR REPLACE INTO sata_devstat_row_state"
+        " (dev_id, page_num, row_offset, hash, last_change)"
+        " VALUES (?, ?, ?, ?, ?);";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(page_num));
+    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(row_offset));
+    sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(hash));
+    sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(ts));
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+void state_db_remove_device(uint32_t dev_id) {
+    if (!g_db) return;
+    const char *sqls[] = {
+        "DELETE FROM sata_by_dev_state      WHERE dev_id = ?;",
+        "DELETE FROM sata_devstat_row_state WHERE dev_id = ?;",
+    };
+    for (const char *sql : sqls) {
+        sqlite3_stmt *stmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) continue;
+        sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
 }
 
 void state_db_close() {

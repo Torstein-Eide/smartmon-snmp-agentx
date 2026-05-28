@@ -1165,7 +1165,10 @@ sata_change_by_dev_handler(netsnmp_mib_handler *,
         case 2:  { u_long v = (u_long)sata_count_by_device(table_id, dev_idx);
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 3:  { uint8_t dt[8]; snmp_encode_date_time(m.last_change, dt);
+        case 3:  { uint64_t key = ((uint64_t)dev_idx << 32) | (uint64_t)table_id;
+                   auto it = g_cache.ts_sata_by_dev.find(key);
+                   time_t ts = (it != g_cache.ts_sata_by_dev.end()) ? it->second : m.last_change;
+                   uint8_t dt[8]; snmp_encode_date_time(ts, dt);
                    snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                        dt, sizeof(dt)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
@@ -1235,12 +1238,14 @@ sata_change_by_subidx_handler(netsnmp_mib_handler *,
         time_t ts;
         if (idx < errcmd_size) {
             uint32_t dev = g_cache.sata_error_cmds[idx].device_index;
-            auto it = g_cache.ts_sata_errcmd_by_device.find(dev);
-            ts = (it != g_cache.ts_sata_errcmd_by_device.end()) ? it->second : g_cache.ts_sata_error_cmd;
+            uint64_t key = ((uint64_t)dev << 32) | 5;
+            auto it = g_cache.ts_sata_by_dev.find(key);
+            ts = (it != g_cache.ts_sata_by_dev.end()) ? it->second : g_cache.ts_sata_error_cmd;
         } else {
-            uint32_t dev = g_cache.sata_dev_stats[idx - errcmd_size].device_index;
-            auto it = g_cache.ts_sata_devstat_by_device.find(dev);
-            ts = (it != g_cache.ts_sata_devstat_by_device.end()) ? it->second : g_cache.ts_sata_dev_stat;
+            const CacheSataDevStatRow &dr = g_cache.sata_dev_stats[idx - errcmd_size];
+            uint64_t key = sata_devstat_row_key(dr.device_index, dr.page_num, dr.offset);
+            auto it = g_cache.ts_sata_devstat_by_row.find(key);
+            ts = (it != g_cache.ts_sata_devstat_by_row.end()) ? it->second : g_cache.ts_sata_dev_stat;
         }
         switch (tinfo->colnum) {
         case 4:  { uint8_t dt[8]; snmp_encode_date_time(ts, dt);

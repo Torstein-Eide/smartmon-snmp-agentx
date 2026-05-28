@@ -51,6 +51,22 @@ void AgentxCache::remove_device(uint32_t idx) {
                        [idx](const CacheDeviceRow &r) { return r.index == idx; }),
         devices.end());
     clear_device_data(idx);
+
+    // Purge per-(device, tableId) ByDevice entries.
+    for (uint32_t tid = 1; tid <= 12; ++tid) {
+        uint64_t key = ((uint64_t)idx << 32) | tid;
+        hash_sata_by_dev.erase(key);
+        ts_sata_by_dev.erase(key);
+    }
+    // Purge per-row devstat entries for this device (high 32 bits of key == idx).
+    for (auto it = hash_sata_devstat_by_row.begin(); it != hash_sata_devstat_by_row.end(); ) {
+        if ((uint32_t)(it->first >> 32) == idx) it = hash_sata_devstat_by_row.erase(it);
+        else ++it;
+    }
+    for (auto it = ts_sata_devstat_by_row.begin(); it != ts_sata_devstat_by_row.end(); ) {
+        if ((uint32_t)(it->first >> 32) == idx) it = ts_sata_devstat_by_row.erase(it);
+        else ++it;
+    }
 }
 
 void AgentxCache::clear() {
@@ -78,8 +94,8 @@ void AgentxCache::clear() {
     ts_sata_pending_defects = ts_sata_log_dir = ts_sata_dev_stat = 0;
     ts_sas_info     = ts_sas_health      = ts_sas_error_counter = 0;
     ts_sas_selftest = ts_sas_bgscan      = ts_sensor            = 0;
-    hash_sata_errcmd_by_device.clear();  hash_sata_devstat_by_device.clear();
-    ts_sata_errcmd_by_device.clear();    ts_sata_devstat_by_device.clear();
+    hash_sata_by_dev.clear();   ts_sata_by_dev.clear();
+    hash_sata_devstat_by_row.clear();    ts_sata_devstat_by_row.clear();
     next_device_index = 1;
 }
 

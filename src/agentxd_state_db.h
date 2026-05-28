@@ -10,12 +10,21 @@
 // Returns false on failure (non-fatal; timestamps still work within a run).
 bool state_db_open(const std::string &path);
 
-// Load persisted (hash, ts) pairs into g_cache.table_hashes[] and ts_* fields.
-// Call once after state_db_open, before the first parse cycle.
+// Load persisted state into g_cache. Call once after state_db_open, before first parse.
 void state_db_load();
 
-// Persist one table's hash and timestamp. Called when a table's hash changes.
+// Persist one global table's hash and timestamp. Called when a table's hash changes.
 void state_db_update(int table_id, uint64_t hash, time_t ts);
+
+// Persist one per-(device, tableId) ByDevice entry. Called when its hash changes.
+void state_db_update_by_dev(uint32_t dev_id, uint32_t table_id, uint64_t hash, time_t ts);
+
+// Persist one per-row devstat BySubindex entry. Called when its hash changes.
+void state_db_update_devstat_row(uint32_t dev_id, uint32_t page_num, uint32_t row_offset,
+                                 uint64_t hash, time_t ts);
+
+// Remove all persisted per-device and per-row entries for a device.
+void state_db_remove_device(uint32_t dev_id);
 
 // Close the database.
 void state_db_close();

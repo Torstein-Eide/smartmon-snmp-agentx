@@ -528,9 +528,9 @@ stability_checks:
   # all others must stay stable (.).  Mutations are sequential: each builds on
   # the state left by the previous one.
 
-  - name: "SATA SELFTESTS: attr change advances attrTable ByDevice"
+  - name: "SATA LastChange: update Device #1"
     fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
-    wait_seconds: 2
+    wait_seconds: 0.1
     walk: "sata"
     last_change_oids:
       # 12 ByDevice LastChange for the SELFTESTS device ({sata}).
@@ -552,9 +552,9 @@ stability_checks:
         new_value: 4322
         expected_change_oid: ".4.1.2.2.1.3.{sata}.3"
 
-  - name: "SATA 81GDJW2V: data changes advance correct ByDevice table"
+  - name: "SATA LastChange: update Device #2"
     fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-81GDJW2V.ata.json"
-    wait_seconds: 2
+    wait_seconds: 0.1
     walk: "sata"
     last_change_oids:
       # 11 ByDevice LastChange for the 81GDJW2V device ({sata2}).
@@ -580,9 +580,9 @@ stability_checks:
         new_value: 1
         expected_change_oid: ".4.1.2.2.1.3.{sata2}.3"
 
-  - name: "SATA 81GDJW2V: devstat row changes advance correct BySubindex"
+  - name: "SATA LastChange, Device #2: devstat row changes advance correct BySubindex"
     fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-81GDJW2V.ata.json"
-    wait_seconds: 2
+    wait_seconds: 0.1
     walk: "sata"
     last_change_oids:
       # BySubindex LastChange — INDEX {deviceIndex, sataDevStat=11, page_num, offset}
