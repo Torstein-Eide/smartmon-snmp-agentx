@@ -100,6 +100,10 @@ static uint8_t ata_flags_to_bits(uint8_t raw) {
 // col 43 = selfTestLogSectors
 // col 44 = pendingDefectsSize
 // col 45 = capabilityAttrAutosave (TruthValue)
+// col 46 = sctHistOpLimitMin
+// col 47 = sctHistOpLimitMax
+// col 48 = sctHistLimitMin
+// col 49 = sctHistLimitMax
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -261,6 +265,18 @@ sata_info_handler(netsnmp_mib_handler *,
         case 45: { long v = row->cap_attr_autosave ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
+        case 46: { long v = row->sct_hist_op_limit_min;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 47: { long v = row->sct_hist_op_limit_max;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 48: { long v = row->sct_hist_limit_min;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 49: { long v = row->sct_hist_limit_max;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }
@@ -280,6 +296,16 @@ sata_info_handler(netsnmp_mib_handler *,
 // col 8  = selfTestLogCount
 // col 9  = selfTestLogErrTotal
 // col 10 = selfTestLogErrOutdated
+// col 11 = sctStatusFormatVersion
+// col 12 = sctStatusSctVersion
+// col 13 = sctStatusDeviceState
+// col 14 = sctTempPowerCycleMin
+// col 15 = sctTempPowerCycleMax
+// col 16 = sctTempLifetimeMin
+// col 17 = sctTempLifetimeMax
+// col 18 = sctTempUnderLimitCount
+// col 19 = sctTempOverLimitCount
+// col 20 = sctSmartStatusPassed
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -335,6 +361,36 @@ sata_health_handler(netsnmp_mib_handler *,
                        (u_char*)&v, sizeof(v)); break; }
         case 10: { u_long v = row->selftest_log_err_outdated;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 11: { u_long v = row->sct_status_format_version;
+                   snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 12: { u_long v = row->sct_status_sct_version;
+                   snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 13: { u_long v = row->sct_status_device_state;
+                   snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 14: { long v = row->sct_temp_power_cycle_min;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 15: { long v = row->sct_temp_power_cycle_max;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 16: { long v = row->sct_temp_lifetime_min;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 17: { long v = row->sct_temp_lifetime_max;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 18: { u_long v = row->sct_temp_under_limit_count;
+                   snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 19: { u_long v = row->sct_temp_over_limit_count;
+                   snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 20: { long v = row->sct_smart_status_passed ? 1 : 2;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
@@ -1312,8 +1368,8 @@ void register_sata_mib() {
         oid_sata_selftest_last_change,  OID_LEN(oid_sata_selftest_last_change),  HANDLER_CAN_RONLY));
 
     // SATA table iterator registrations
-    REG_TABLE_U("smartmonSataInfoTable",      sata_info_handler,   oid_sata_info_table,      sata_info_get_next,    1, 45);
-    REG_TABLE_U("smartmonSataHealthTable",    sata_health_handler, oid_sata_health_table,    sata_health_get_next,  1, 10);
+    REG_TABLE_U("smartmonSataInfoTable",      sata_info_handler,   oid_sata_info_table,      sata_info_get_next,    1, 49);
+    REG_TABLE_U("smartmonSataHealthTable",    sata_health_handler, oid_sata_health_table,    sata_health_get_next,  1, 20);
     REG_TABLE_UU("smartmonSataErrorLogTable", sata_el_handler,     oid_sata_error_log_table, sata_el_get_next,      2, 12);
     REG_TABLE_UU("smartmonSataAttrTable",     sata_attr_handler,   oid_sata_attr_table,      sata_attr_get_next,    2, 11);
 

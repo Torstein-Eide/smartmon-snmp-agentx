@@ -386,6 +386,10 @@ static void test_sata_new_tables(const char *path) {
         CHECK_EQ(info.security_state, 1u);
         CHECK_EQ(info.user_capacity_blocks, 27344764928ULL);
         CHECK(info.write_cache_enabled);
+        CHECK_EQ(info.sct_hist_op_limit_min, 0);
+        CHECK_EQ(info.sct_hist_op_limit_max, 70);
+        CHECK_EQ(info.sct_hist_limit_min, 0);
+        CHECK_EQ(info.sct_hist_limit_max, 70);
         break;
     }
 
@@ -456,6 +460,16 @@ static void test_sata_new_tables(const char *path) {
         CHECK_EQ(h.selective_log_revision, 1u);
         // logdir scalars
         CHECK_EQ(h.logdir_gp_version, 1u);
+        CHECK_EQ(h.sct_status_format_version, 3u);
+        CHECK_EQ(h.sct_status_sct_version, 256u);
+        CHECK_EQ(h.sct_status_device_state, 0u);
+        CHECK_EQ(h.sct_temp_power_cycle_min, 39);
+        CHECK_EQ(h.sct_temp_power_cycle_max, 45);
+        CHECK_EQ(h.sct_temp_lifetime_min, 22);
+        CHECK_EQ(h.sct_temp_lifetime_max, 53);
+        CHECK_EQ(h.sct_temp_under_limit_count, 0u);
+        CHECK_EQ(h.sct_temp_over_limit_count, 0u);
+        CHECK(h.sct_smart_status_passed);
         break;
     }
 }

@@ -2,7 +2,7 @@ SMARTMON-SATA-MIB DEFINITIONS ::= BEGIN
 
 IMPORTS
     MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE,
-    Unsigned32
+    Integer32, Unsigned32
         FROM SNMPv2-SMI
     DisplayString, TruthValue, DateAndTime
         FROM SNMPv2-TC
@@ -49,15 +49,15 @@ smartmonSataMIB MODULE-IDENTITY
           device types.  Managers requiring ATA/SATA temperature information
           MUST consult SMARTMON-SENSOR-MIB.
 
-         SCT status metadata (ata_sct_status.format_version,
-         ata_sct_status.sct_version, ata_sct_status.device_state) is
-         available through smartmonSataDevStatTable when the device
-         exposes it via the ATA Device Statistics log.
+         SCT status metadata and live SCT temperature status values from
+          ata_sct_status are exposed through smartmonSataHealthTable.
 
-         SCT temperature history (ata_sct_temperature_history) is
-         intentionally absent.  Clients that need historical temperature
-         data are expected to maintain their own log by recording
-         temperature readings over time.
+         SCT temperature history limit metadata from
+          ata_sct_temperature_history.temperature is exposed through
+          smartmonSataInfoTable.  The history table samples themselves are
+          intentionally absent.  Clients that need historical temperature
+          data are expected to maintain their own log by recording
+          temperature readings over time.
 
          This MIB requires SMARTMON-TC-MIB and SMARTMON-COMMON-MIB."
     REVISION "202605270000Z"
@@ -358,7 +358,11 @@ SmartmonSataInfoEntry ::= SEQUENCE {
     smartmonSataSelfTestLogRevision              Unsigned32,
     smartmonSataSelfTestLogSectors               Unsigned32,
     smartmonSataPendingDefectsSize               Unsigned32,
-    smartmonSataCapabilityAttrAutosave           TruthValue
+    smartmonSataCapabilityAttrAutosave           TruthValue,
+    smartmonSataSctHistOpLimitMin                Integer32,
+    smartmonSataSctHistOpLimitMax                Integer32,
+    smartmonSataSctHistLimitMin                  Integer32,
+    smartmonSataSctHistLimitMax                  Integer32
 }
 
 smartmonSataAtaVersion OBJECT-TYPE
@@ -749,6 +753,46 @@ smartmonSataCapabilityAttrAutosave OBJECT-TYPE
          (ata_smart_data.capabilities.attribute_autosave_enabled)."
     ::= { smartmonSataInfoEntry 45 }
 
+smartmonSataSctHistOpLimitMin OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Minimum SCT operating temperature limit
+         (ata_sct_temperature_history.temperature.op_limit_min)."
+    ::= { smartmonSataInfoEntry 46 }
+
+smartmonSataSctHistOpLimitMax OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Maximum SCT operating temperature limit
+         (ata_sct_temperature_history.temperature.op_limit_max)."
+    ::= { smartmonSataInfoEntry 47 }
+
+smartmonSataSctHistLimitMin OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Minimum SCT temperature history plotting limit
+         (ata_sct_temperature_history.temperature.limit_min)."
+    ::= { smartmonSataInfoEntry 48 }
+
+smartmonSataSctHistLimitMax OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Maximum SCT temperature history plotting limit
+         (ata_sct_temperature_history.temperature.limit_max)."
+    ::= { smartmonSataInfoEntry 49 }
+
 -- --------------------------------------------------------------------------
 -- SATA SMART health table  (.4 RowCount, .5 LastChange, .6 Table)
 -- --------------------------------------------------------------------------
@@ -796,7 +840,17 @@ SmartmonSataHealthEntry ::= SEQUENCE {
     smartmonSataPendingDefectsCount      Unsigned32,
     smartmonSataSelfTestLogCount         Unsigned32,
     smartmonSataSelfTestLogErrTotal      Unsigned32,
-    smartmonSataSelfTestLogErrOutdated   Unsigned32
+    smartmonSataSelfTestLogErrOutdated   Unsigned32,
+    smartmonSataSctStatusFormatVersion   Unsigned32,
+    smartmonSataSctStatusSctVersion      Unsigned32,
+    smartmonSataSctStatusDeviceState     Unsigned32,
+    smartmonSataSctTempPowerCycleMin     Integer32,
+    smartmonSataSctTempPowerCycleMax     Integer32,
+    smartmonSataSctTempLifetimeMin       Integer32,
+    smartmonSataSctTempLifetimeMax       Integer32,
+    smartmonSataSctTempUnderLimitCount   Unsigned32,
+    smartmonSataSctTempOverLimitCount    Unsigned32,
+    smartmonSataSctSmartStatusPassed     TruthValue
 }
 
 smartmonSataHealthOverallStatus OBJECT-TYPE
@@ -905,6 +959,106 @@ smartmonSataSelfTestLogErrOutdated OBJECT-TYPE
         "Number of self-test errors that have been overwritten and are
          no longer in the log (ata_smart_self_test_log.extended.error_count_outdated)."
     ::= { smartmonSataHealthEntry 10 }
+
+smartmonSataSctStatusFormatVersion OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "SCT Status response format version
+         (ata_sct_status.format_version).  The value is sourced from the
+         SCT Command/Status log, SMART READ LOG page 0xe0."
+    ::= { smartmonSataHealthEntry 11 }
+
+smartmonSataSctStatusSctVersion OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Vendor-specific SCT version number
+         (ata_sct_status.sct_version)."
+    ::= { smartmonSataHealthEntry 12 }
+
+smartmonSataSctStatusDeviceState OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "SCT device state byte from the SCT Status response
+         (ata_sct_status.device_state.value).  Values defined by smartctl
+         include 0 active, 1 stand-by, 2 sleep, 3 DST executing in
+         background, 4 SMART off-line data collection executing in
+         background, and 5 SCT command executing in background."
+    ::= { smartmonSataHealthEntry 13 }
+
+smartmonSataSctTempPowerCycleMin OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Minimum SCT temperature recorded in the current power cycle
+         (ata_sct_status.temperature.power_cycle_min)."
+    ::= { smartmonSataHealthEntry 14 }
+
+smartmonSataSctTempPowerCycleMax OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Maximum SCT temperature recorded in the current power cycle
+         (ata_sct_status.temperature.power_cycle_max)."
+    ::= { smartmonSataHealthEntry 15 }
+
+smartmonSataSctTempLifetimeMin OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Minimum SCT lifetime temperature
+         (ata_sct_status.temperature.lifetime_min)."
+    ::= { smartmonSataHealthEntry 16 }
+
+smartmonSataSctTempLifetimeMax OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "degrees Celsius"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Maximum SCT lifetime temperature
+         (ata_sct_status.temperature.lifetime_max)."
+    ::= { smartmonSataHealthEntry 17 }
+
+smartmonSataSctTempUnderLimitCount OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Number of SCT temperature intervals below the minimum operating
+         limit since the last reset
+         (ata_sct_status.temperature.under_limit_count)."
+    ::= { smartmonSataHealthEntry 18 }
+
+smartmonSataSctTempOverLimitCount OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Number of SCT temperature intervals above the maximum operating
+         limit since the last reset
+         (ata_sct_status.temperature.over_limit_count)."
+    ::= { smartmonSataHealthEntry 19 }
+
+smartmonSataSctSmartStatusPassed OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "SMART RETURN STATUS result reported in the SCT Status response
+         (ata_sct_status.smart_status.passed)."
+    ::= { smartmonSataHealthEntry 20 }
 
 -- --------------------------------------------------------------------------
 -- SATA SMART attributes table  (.7 RowCount, .8 LastChange, .9 Table)
@@ -2230,7 +2384,11 @@ smartmonSataInfoGroup OBJECT-GROUP
         smartmonSataSelfTestLogRevision,
         smartmonSataSelfTestLogSectors,
         smartmonSataPendingDefectsSize,
-        smartmonSataCapabilityAttrAutosave
+        smartmonSataCapabilityAttrAutosave,
+        smartmonSataSctHistOpLimitMin,
+        smartmonSataSctHistOpLimitMax,
+        smartmonSataSctHistLimitMin,
+        smartmonSataSctHistLimitMax
     }
     STATUS current
     DESCRIPTION "ATA/SATA device identity, capability, and static log-structure objects."
@@ -2247,7 +2405,17 @@ smartmonSataHealthGroup OBJECT-GROUP
         smartmonSataPendingDefectsCount,
         smartmonSataSelfTestLogCount,
         smartmonSataSelfTestLogErrTotal,
-        smartmonSataSelfTestLogErrOutdated
+        smartmonSataSelfTestLogErrOutdated,
+        smartmonSataSctStatusFormatVersion,
+        smartmonSataSctStatusSctVersion,
+        smartmonSataSctStatusDeviceState,
+        smartmonSataSctTempPowerCycleMin,
+        smartmonSataSctTempPowerCycleMax,
+        smartmonSataSctTempLifetimeMin,
+        smartmonSataSctTempLifetimeMax,
+        smartmonSataSctTempUnderLimitCount,
+        smartmonSataSctTempOverLimitCount,
+        smartmonSataSctSmartStatusPassed
     }
     STATUS current
     DESCRIPTION "ATA/SATA SMART live-state objects (5-minute polling)."

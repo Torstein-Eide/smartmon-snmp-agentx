@@ -287,6 +287,10 @@ sections:
       - {label: "col9  smartAvailable = 1",      col: 9,  expected: "INTEGER: 1"}
       - {label: "col10 smartEnabled = 1",        col: 10, expected: "INTEGER: 1"}
       - {label: "col11 trimSupported = 2",       col: 11, expected: "INTEGER: 2"}
+      - {label: "col46 sctHistOpLimitMin = 0",   col: 46, expected: "INTEGER: 0"}
+      - {label: "col47 sctHistOpLimitMax = 70",  col: 47, expected: "INTEGER: 70"}
+      - {label: "col48 sctHistLimitMin = 0",     col: 48, expected: "INTEGER: 0"}
+      - {label: "col49 sctHistLimitMax = 70",    col: 49, expected: "INTEGER: 70"}
 
   - name: "SATA Health"
     walk: "sata"
@@ -299,6 +303,16 @@ sections:
       - {label: "col4 powerCycles = 42",           col: 4, expected: "Counter64: 42"}
       - {label: "col5 powerOnHours = 4321",        col: 5, expected: "Counter64: 4321"}
       - {label: "col6 errorLogCount = 1",          col: 6, expected: "Gauge32: 1"}
+      - {label: "col11 sctStatusFormatVersion = 3", col: 11, expected: "Gauge32: 3"}
+      - {label: "col12 sctStatusSctVersion = 256",  col: 12, expected: "Gauge32: 256"}
+      - {label: "col13 sctStatusDeviceState = 0",   col: 13, expected: "Gauge32: 0"}
+      - {label: "col14 sctTempPowerCycleMin = 39",  col: 14, expected: "INTEGER: 39"}
+      - {label: "col15 sctTempPowerCycleMax = 45",  col: 15, expected: "INTEGER: 45"}
+      - {label: "col16 sctTempLifetimeMin = 22",    col: 16, expected: "INTEGER: 22"}
+      - {label: "col17 sctTempLifetimeMax = 53",    col: 17, expected: "INTEGER: 53"}
+      - {label: "col18 sctTempUnderLimitCount = 0", col: 18, expected: "Gauge32: 0"}
+      - {label: "col19 sctTempOverLimitCount = 0",  col: 19, expected: "Gauge32: 0"}
+      - {label: "col20 sctSmartStatusPassed = 1",   col: 20, expected: "INTEGER: 1"}
 
   - name: "SATA Attributes"
     walk: "sata"

@@ -136,6 +136,8 @@ static void hash_row(TableHasher &h, const CacheSataInfoRow &r) {
     h.feed(r.error_log_sectors); h.feed(r.selftest_log_revision);
     h.feed(r.selftest_log_sectors); h.feed(r.pending_defects_size);
     h.feed(r.cap_attr_autosave);
+    h.feed(r.sct_hist_op_limit_min); h.feed(r.sct_hist_op_limit_max);
+    h.feed(r.sct_hist_limit_min); h.feed(r.sct_hist_limit_max);
 }
 static void hash_row(TableHasher &h, const CacheSataHealthRow &r) {
     h.feed(r.device_index); h.feed(r.overall_status);
@@ -150,6 +152,11 @@ static void hash_row(TableHasher &h, const CacheSataHealthRow &r) {
     h.feed(r.logdir_smart_multisector); h.feed(r.error_log_revision);
     h.feed(r.cap_exec_offline_immediate); h.feed(r.cap_offline_aborted_on_cmd);
     h.feed(r.cap_offline_surface_scan); h.feed(r.cap_attr_autosave);
+    h.feed(r.sct_status_format_version); h.feed(r.sct_status_sct_version);
+    h.feed(r.sct_status_device_state); h.feed(r.sct_temp_power_cycle_min);
+    h.feed(r.sct_temp_power_cycle_max); h.feed(r.sct_temp_lifetime_min);
+    h.feed(r.sct_temp_lifetime_max); h.feed(r.sct_temp_under_limit_count);
+    h.feed(r.sct_temp_over_limit_count); h.feed(r.sct_smart_status_passed);
 }
 static void hash_row(TableHasher &h, const CacheSataAttrRow &r) {
     h.feed(r.device_index); h.feed(r.attr_id); h.feed(r.name);
@@ -1386,6 +1393,13 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             info.selftest_log_revision = static_cast<uint32_t>(stl["revision"].as_uint64());
             info.selftest_log_sectors  = static_cast<uint32_t>(stl["sectors"].as_uint64());
         }
+        {
+            const JVal &temp = root["ata_sct_temperature_history"]["temperature"];
+            info.sct_hist_op_limit_min = static_cast<int32_t>(temp["op_limit_min"].as_int64());
+            info.sct_hist_op_limit_max = static_cast<int32_t>(temp["op_limit_max"].as_int64());
+            info.sct_hist_limit_min    = static_cast<int32_t>(temp["limit_min"].as_int64());
+            info.sct_hist_limit_max    = static_cast<int32_t>(temp["limit_max"].as_int64());
+        }
 
         if (info.logical_block_size > 0 || info.ata_version > 0)
             g_cache.sata_info.push_back(info);
@@ -1441,6 +1455,23 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
                 h.cap_offline_aborted_on_cmd = cap["offline_is_aborted_upon_new_cmd"].as_bool();
                 h.cap_offline_surface_scan   = cap["offline_surface_scan_supported"].as_bool();
                 h.cap_attr_autosave          = cap["attribute_autosave_enabled"].as_bool();
+            }
+            {
+                const JVal &sct = root["ata_sct_status"];
+                h.sct_status_format_version = static_cast<uint32_t>(sct["format_version"].as_uint64());
+                h.sct_status_sct_version    = static_cast<uint32_t>(sct["sct_version"].as_uint64());
+                h.sct_status_device_state   = static_cast<uint32_t>(sct["device_state"]["value"].as_uint64());
+                const JVal &temp = sct["temperature"];
+                h.sct_temp_power_cycle_min   = static_cast<int32_t>(temp["power_cycle_min"].as_int64());
+                h.sct_temp_power_cycle_max   = static_cast<int32_t>(temp["power_cycle_max"].as_int64());
+                h.sct_temp_lifetime_min      = static_cast<int32_t>(temp["lifetime_min"].as_int64());
+                h.sct_temp_lifetime_max      = static_cast<int32_t>(temp["lifetime_max"].as_int64());
+                h.sct_temp_under_limit_count = static_cast<uint32_t>(temp["under_limit_count"].as_uint64());
+                h.sct_temp_over_limit_count  = static_cast<uint32_t>(temp["over_limit_count"].as_uint64());
+                const JVal &sct_passed = sct["smart_status"]["passed"];
+                h.sct_smart_status_passed = sct_passed.is_null()
+                    ? root["smart_status"]["passed"].as_bool()
+                    : sct_passed.as_bool();
             }
 
             g_cache.sata_health.push_back(h);
@@ -1549,7 +1580,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
                     r.offset       = static_cast<uint32_t>(entry["offset"].as_uint64());
                     r.page_name    = page_name;
                     r.name         = entry["name"].as_string();
-                    r.value        = entry["value"].as_uint64();
+                    r.value        = static_cast<uint64_t>(entry["value"].as_int64());
                     r.flags_value  = static_cast<uint32_t>(entry["flags"]["value"].as_uint64());
                     r.valid        = entry["flags"]["valid"].as_bool();
                     r.normalized   = entry["flags"]["normalized"].as_bool();

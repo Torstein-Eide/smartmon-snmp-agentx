@@ -364,6 +364,10 @@ struct CacheSataInfoRow {
     uint32_t    selftest_log_sectors         { 0 };    // col 51
     uint32_t    pending_defects_size         { 0 };    // col 52
     bool        cap_attr_autosave            { false }; // col 53
+    int32_t     sct_hist_op_limit_min        { 0 };
+    int32_t     sct_hist_op_limit_max        { 0 };
+    int32_t     sct_hist_limit_min           { 0 };
+    int32_t     sct_hist_limit_max           { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -399,6 +403,16 @@ struct CacheSataHealthRow {
     bool        cap_offline_aborted_on_cmd { false };
     bool        cap_offline_surface_scan   { false };
     bool        cap_attr_autosave          { false };
+    uint32_t    sct_status_format_version  { 0 };
+    uint32_t    sct_status_sct_version     { 0 };
+    uint32_t    sct_status_device_state    { 0 };
+    int32_t     sct_temp_power_cycle_min   { 0 };
+    int32_t     sct_temp_power_cycle_max   { 0 };
+    int32_t     sct_temp_lifetime_min      { 0 };
+    int32_t     sct_temp_lifetime_max      { 0 };
+    uint32_t    sct_temp_under_limit_count { 0 };
+    uint32_t    sct_temp_over_limit_count  { 0 };
+    bool        sct_smart_status_passed    { false };
 };
 
 // --------------------------------------------------------------------
