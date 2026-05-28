@@ -523,9 +523,7 @@ struct CacheSataLogDirRow {
 // col 3  = pageName
 // col 4  = name
 // col 5  = value (Counter64)
-// col 6  = flagsValue
-// col 7  = valid (TruthValue)
-// col 8  = normalized (TruthValue)
+// col 6  = flagsValue (BITS)
 // --------------------------------------------------------------------
 struct CacheSataDevStatRow {
     uint32_t    device_index { 0 };
@@ -535,8 +533,6 @@ struct CacheSataDevStatRow {
     std::string name;
     uint64_t    value        { 0 };
     uint32_t    flags_value  { 0 };
-    bool        valid        { false };
-    bool        normalized   { false };
 };
 
 // --------------------------------------------------------------------

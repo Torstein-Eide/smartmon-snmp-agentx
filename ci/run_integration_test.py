@@ -107,10 +107,16 @@ def setup_fixtures(src_dir: str, run_dir: Path, patterns: list[str]) -> tuple[Pa
     variants = run_dir / "fixture-variants"
     live.mkdir()
     variants.mkdir()
+    # Main fixtures: split by variant pattern into live vs variants.
     for fpath in sorted(Path(src_dir).glob("*.json")):
         name = fpath.name
         dest = variants if any(fnmatch.fnmatch(name, p) for p in patterns) else live
         shutil.copy2(fpath, dest / name)
+    # Pre-sorted fixture-variants/ directory: always goes to variants.
+    variants_src = Path(src_dir).parent / "fixture-variants"
+    if variants_src.is_dir():
+        for fpath in sorted(variants_src.glob("*.json")):
+            shutil.copy2(fpath, variants / fpath.name)
     return live, variants
 
 

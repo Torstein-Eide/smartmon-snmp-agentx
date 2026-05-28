@@ -150,19 +150,49 @@ while IFS= read -r line; do
     # Exit codes 0 or 64/128 (status bits) are acceptable — the JSON
     # is still valid even when SMART self-check reports warnings.
     if "$SMARTCTL" -x -j "${dev_args[@]}" "$dev" > "$tmpfile" 2>/dev/null; then
-        mv -f "$tmpfile" "$outfile"
-        touch "$TRACK_DIR/$(basename "$outfile")"
-        log_verbose "wrote $outfile"
+        :
     elif [ -s "$tmpfile" ] \
          && grep -q '"json_format_version"' "$tmpfile" 2>/dev/null; then
         # Non-zero exit but valid JSON (SMART error bits set) — still useful
-        mv -f "$tmpfile" "$outfile"
-        touch "$TRACK_DIR/$(basename "$outfile")"
-        log_verbose "wrote $outfile (smartctl non-zero exit)"
+        :
     else
         rm -f "$tmpfile"
         log_warn "smartctl failed for $dev (type=$dtype) — skipped"
+        continue
     fi
+
+    # For ATA/SAT devices: fetch the Seagate FARM log (GP Log 0xa6) when the
+    # -x output signals support but omits the page data (the stub form is
+    # '"seagate_farm_log": {"supported": true}' with no page keys).
+    # smartctl -l farm may return non-zero even on success (SMART status bits),
+    # so ignore the exit code and validate the JSON output directly.
+    if [[ "$suffix" == "ata" || "$suffix" == "sat" ]]; then
+        if jq -e '.seagate_farm_log.supported == true
+                  and (.seagate_farm_log.page_4_environment_statistics == null)' \
+               "$tmpfile" >/dev/null 2>&1; then
+            log_verbose "querying FARM log (GP Log 0xa6) for $dev"
+            farm_tmp=$(mktemp)
+            "$SMARTCTL" -l farm -j "${dev_args[@]}" "$dev" > "$farm_tmp" 2>/dev/null || true
+            if jq -e '.seagate_farm_log.page_4_environment_statistics != null' \
+                   "$farm_tmp" >/dev/null 2>&1; then
+                farm_json=$(jq '.seagate_farm_log' "$farm_tmp")
+                jq --argjson farm "$farm_json" '. + {seagate_farm_log: $farm}' \
+                    "$tmpfile" > "${tmpfile}.farm" \
+                    && mv -f "${tmpfile}.farm" "$tmpfile"
+                log_info "FARM log merged for $dev"
+            else
+                log_verbose "FARM query returned no page data for $dev"
+            fi
+            rm -f "$farm_tmp"
+        elif jq -e '.seagate_farm_log.page_4_environment_statistics != null' \
+                 "$tmpfile" >/dev/null 2>&1; then
+            log_verbose "FARM log already fully present in -x output for $dev"
+        fi
+    fi
+
+    mv -f "$tmpfile" "$outfile"
+    touch "$TRACK_DIR/$(basename "$outfile")"
+    log_verbose "wrote $outfile"
 
 done <<< "$DISCOVERED"
 

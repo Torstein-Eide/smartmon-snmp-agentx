@@ -982,9 +982,7 @@ static int sata_logdir_smart_multisector_handler(netsnmp_mib_handler *,
 // col 3  = pageName
 // col 4  = name
 // col 5  = value (Counter64)
-// col 6  = flagsValue
-// col 7  = valid (TruthValue)
-// col 8  = normalized (TruthValue)
+// col 6  = flagsValue (BITS)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -1022,15 +1020,9 @@ sata_devstat_handler(netsnmp_mib_handler *,
         case 4:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->name.c_str(), row->name.size()); break;
         case 5:  set_counter64(req, row->value); break;
-        case 6:  { u_long v = row->flags_value;
-                   snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
-                       (u_char*)&v, sizeof(v)); break; }
-        case 7:  { long v = row->valid ? 1 : 2;
-                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
-                       (u_char*)&v, sizeof(v)); break; }
-        case 8:  { long v = row->normalized ? 1 : 2;
-                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
-                       (u_char*)&v, sizeof(v)); break; }
+        case 6:  { uint8_t bits = (uint8_t)(row->flags_value & 0xFF);
+                   snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                       &bits, 1); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }

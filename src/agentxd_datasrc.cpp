@@ -203,7 +203,7 @@ static void hash_row(TableHasher &h, const CacheSataLogDirRow &r) {
 static void hash_row(TableHasher &h, const CacheSataDevStatRow &r) {
     h.feed(r.device_index); h.feed(r.page_num); h.feed(r.offset);
     h.feed(r.page_name); h.feed(r.name); h.feed(r.value);
-    h.feed(r.flags_value); h.feed(r.valid); h.feed(r.normalized);
+    h.feed(r.flags_value);
 }
 static void hash_row(TableHasher &h, const CacheSasInfoRow &r) {
     h.feed(r.device_index); h.feed(r.vendor); h.feed(r.product); h.feed(r.revision);
@@ -1057,6 +1057,110 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
     update_table_ts(TABLE_SENSOR,        g_cache.ts_sensor,          hv[TABLE_SENSOR],        hash_vector(g_cache.sensors),           now);
 }
 
+static void parse_seagate_farm(uint32_t dev_idx, const JVal &farm) {
+    // Timestamp from FARM log itself; fall back to wall clock.
+    time_t farm_ts = static_cast<time_t>(farm["local_time"]["time_t"].as_int64());
+    if (farm_ts == 0) farm_ts = time(nullptr);
+
+    // Emit one CacheSataDevStatRow per numeric scalar field in each FARM page.
+    // Page numbers 100-105 avoid collision with ACS ata_device_statistics pages (1-7).
+    // Emit one row per scalar. For sub-objects, flatten one level:
+    // name = "parent_key.child_key", preserving insertion order throughout.
+    auto emit_scalar = [&](uint32_t page_num, const std::string &page_name,
+                           uint32_t &offset, const std::string &name, const JVal &val) {
+        CacheSataDevStatRow r;
+        r.device_index = dev_idx;
+        r.page_num     = page_num;
+        r.offset       = offset++;
+        r.page_name    = page_name;
+        r.name         = name;
+        r.value        = static_cast<uint64_t>(val.as_int64());
+        r.flags_value  = 0;
+        g_cache.sata_dev_stats.push_back(r);
+    };
+
+    auto emit_page = [&](const JVal &page_obj, uint32_t page_num,
+                         const std::string &page_name) {
+        if (!page_obj.is_object()) return;
+        std::vector<std::pair<std::size_t, std::string>> sorted_keys;
+        sorted_keys.reserve(page_obj.obj_keys.size());
+        for (const auto &kv : page_obj.obj_keys)
+            sorted_keys.push_back({kv.second, kv.first});
+        std::sort(sorted_keys.begin(), sorted_keys.end());
+        uint32_t offset = 1;
+        for (const auto &kv2 : sorted_keys) {
+            const JVal &val = page_obj.arr[kv2.first];
+            const std::string &key = kv2.second;
+            if (val.is_number()) {
+                emit_scalar(page_num, page_name, offset, key, val);
+            } else if (val.is_object()) {
+                // Flatten sub-object: name = "parent_key.child_key"
+                std::vector<std::pair<std::size_t, std::string>> sub_keys;
+                sub_keys.reserve(val.obj_keys.size());
+                for (const auto &skv : val.obj_keys)
+                    sub_keys.push_back({skv.second, skv.first});
+                std::sort(sub_keys.begin(), sub_keys.end());
+                for (const auto &skv2 : sub_keys) {
+                    const JVal &sv = val.arr[skv2.first];
+                    if (!sv.is_number()) continue;
+                    const std::string &child = skv2.second;
+                    // Strip longest common _-word prefix shared with parent key
+                    size_t sep = 0;
+                    for (size_t i = 0; i < key.size() && i < child.size() && key[i] == child[i]; ++i)
+                        if (child[i] == '_') sep = i + 1;
+                    std::string child_short = (sep > 0) ? child.substr(sep) : child;
+                    emit_scalar(page_num, page_name, offset, key + "." + child_short, sv);
+                }
+            }
+            // arrays and strings are skipped
+        }
+    };
+
+    emit_page(farm["page_0_log_header"],             100, "FARM Log Header");
+    emit_page(farm["page_1_drive_information"],      101, "FARM Drive Information");
+    emit_page(farm["page_2_workload_statistics"],    102, "FARM Workload Statistics");
+    emit_page(farm["page_3_error_statistics"],       103, "FARM Error Statistics");
+    emit_page(farm["page_4_environment_statistics"], 104, "FARM Environment Statistics");
+    emit_page(farm["page_5_reliability_statistics"], 105, "FARM Reliability Statistics");
+
+    // Sensor rows from page 4: 12V supply, 5V supply, humidity, motor power.
+    // No threshold limits (not present in FARM log).
+    const JVal &env = farm["page_4_environment_statistics"];
+    if (env.is_object()) {
+        struct FarmSensor {
+            uint32_t    sensor_index;
+            const char *field;
+            const char *name;
+            int         type;   // SmartmonSensorDataType
+            int         scale;  // SmartmonSensorDataScale
+            const char *units_display;
+        };
+        static const FarmSensor farm_sensors[] = {
+            { 3, "current_12v_in_mv",    "12V Supply",  6, 8, "mV"     },
+            { 4, "current_5v_in_mv",     "5V Supply",   6, 8, "mV"     },
+            { 5, "humidity",             "Humidity",   10, 9, "percent" },
+            { 6, "current_motor_power",  "Motor Power", 4, 8, "mW"     },
+        };
+        for (const auto &fs : farm_sensors) {
+            const JVal &v = env[fs.field];
+            if (v.is_null()) continue;
+            CacheSensorRow sr;
+            sr.device_index  = dev_idx;
+            sr.sensor_index  = fs.sensor_index;
+            sr.type          = fs.type;
+            sr.name          = fs.name;
+            sr.source        = std::string("seagate_farm_log.page_4_environment_statistics.") + fs.field;
+            sr.scale         = fs.scale;
+            sr.precision     = 0;
+            sr.value         = static_cast<int32_t>(v.as_int64());
+            sr.oper_status   = 1;
+            sr.units_display = fs.units_display;
+            sr.timestamp     = farm_ts;
+            g_cache.sensors.push_back(sr);
+        }
+    }
+}
+
 static void parse_ata(uint32_t dev_idx, const JVal &root) {
     g_cache.clear_device_data(dev_idx);
 
@@ -1582,13 +1686,15 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
                     r.name         = entry["name"].as_string();
                     r.value        = static_cast<uint64_t>(entry["value"].as_int64());
                     r.flags_value  = static_cast<uint32_t>(entry["flags"]["value"].as_uint64());
-                    r.valid        = entry["flags"]["valid"].as_bool();
-                    r.normalized   = entry["flags"]["normalized"].as_bool();
                     g_cache.sata_dev_stats.push_back(r);
                 }
             }
         }
     }
+
+    // Seagate FARM log (GP Log 0xa6) — supplementary devstat rows and sensors
+    if (root["seagate_farm_log"]["supported"].as_bool())
+        parse_seagate_farm(dev_idx, root["seagate_farm_log"]);
 
     // SATA error log (extended) + error cmd table
     {
@@ -1657,6 +1763,14 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             }
         }
     }
+
+    // Sort sata_dev_stats by (device_index, page_num, offset) so the SNMP
+    // iterator returns rows in OID-ascending order.  FARM pages (100-105)
+    // interleave with ATA device-stats page 255 and must be sorted into place.
+    std::sort(g_cache.sata_dev_stats.begin(), g_cache.sata_dev_stats.end(),
+              [](const CacheSataDevStatRow &a, const CacheSataDevStatRow &b) {
+                  return sort_key(a) < sort_key(b);
+              });
 
     // Update last-change timestamps only when content hash changed
     {

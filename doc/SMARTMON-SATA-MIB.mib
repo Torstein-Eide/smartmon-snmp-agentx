@@ -2103,9 +2103,7 @@ SmartmonSataDevStatEntry ::= SEQUENCE {
     smartmonSataDevStatPageName   DisplayString,
     smartmonSataDevStatName       DisplayString,
     smartmonSataDevStatValue      CounterBasedGauge64,
-    smartmonSataDevStatFlagsValue Unsigned32,
-    smartmonSataDevStatValid      TruthValue,
-    smartmonSataDevStatNormalized TruthValue
+    smartmonSataDevStatFlagsValue BITS
 }
 
 smartmonSataDevStatPageNum OBJECT-TYPE
@@ -2154,31 +2152,20 @@ smartmonSataDevStatValue OBJECT-TYPE
     ::= { smartmonSataDevStatEntry 5 }
 
 smartmonSataDevStatFlagsValue OBJECT-TYPE
-    SYNTAX      Unsigned32
+    SYNTAX      BITS {
+                    supported(0),
+                    valid(1),
+                    supportsNotification(2),
+                    normalized(7)
+                }
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Raw flags byte for this statistic
-         (ata_device_statistics.pages[].table[].flags.value)."
+        "Flags byte for this statistic.  Bit layout follows ACS Device
+         Statistics flags (ACS-3 section 7.8): bit 0 (MSB) = supported,
+         bit 1 = valid, bit 2 = supportsNotification, bit 7 (LSB) = normalized.
+         (ata_device_statistics.pages[].table[].flags.value)"
     ::= { smartmonSataDevStatEntry 6 }
-
-smartmonSataDevStatValid OBJECT-TYPE
-    SYNTAX      TruthValue
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Whether this statistic contains a valid value
-         (ata_device_statistics.pages[].table[].flags.valid)."
-    ::= { smartmonSataDevStatEntry 7 }
-
-smartmonSataDevStatNormalized OBJECT-TYPE
-    SYNTAX      TruthValue
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Whether this statistic is normalized
-         (ata_device_statistics.pages[].table[].flags.normalized)."
-    ::= { smartmonSataDevStatEntry 8 }
 
 -- --------------------------------------------------------------------------
 -- Pending defects LBA table  (.41 RowCount, .42 LastChange, .43 Table)

@@ -64,6 +64,12 @@ discovery:
     oid_grep_re: '\.5\.1\.6\.1\.2\.[0-9]+\.1'
     value_pattern: "Gauge32: 3"
 
+  farmata:
+    label: "Seagate ST16000NM000J ZR7061LA (FARM)"
+    walk_label: "sensor"
+    oid_grep_re: '\.6\.1\.3\.1\.7\.[0-9]+\.3'
+    value_pattern: "INTEGER: 12187"
+
 # Walk definitions — which OID subtree to walk for each label.
 # Used by both discovery and section tests.
 walks:
@@ -492,7 +498,7 @@ sections:
     walk: "sensor"
     # Scalars sit outside the table, so use explicit oid: rather than a template.
     tests:
-      - {label: "rowCount = 18",        oid: ".6.1.1.0", expected: "Gauge32: 18"}
+      - {label: "rowCount = 22",        oid: ".6.1.1.0", expected: "Gauge32: 22"}
       - {label: "lastChange timestamp", oid: ".6.1.2.0", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
 
   - name: "Sensor MIB NVMe"
@@ -523,6 +529,66 @@ sections:
       - {label: "s[10] col7 value = 38°C",                 col: 7,  inst: 10, expected: "INTEGER: 38"}
       - {label: "s[11] col3 name = Sensor 2",              col: 3,  inst: 11, expected: 'STRING: "Sensor 2"'}
       - {label: "s[11] col7 value = 41°C",                 col: 7,  inst: 11, expected: "INTEGER: 41"}
+
+  # ---------------------------------------------------------------------------
+  # Sensor MIB — Seagate FARM sensors (ZR7061LA)
+  # Fixture: smartd-json.ST16000NM000J_2TW103-ZR7061LA.farm.ata.json
+  # Sensor indices 3-6: 12V supply, 5V supply, humidity, motor power.
+  # OID: .6.1.3.1.{col}.{D}.{sensorIdx}
+  # ---------------------------------------------------------------------------
+
+  - name: "Sensor MIB FARM — voltages, humidity, power"
+    walk: "sensor"
+    device: farmata
+    oid_template: ".6.1.3.1.{col}.{D}.{inst}"
+    tests:
+      - {label: "s[3] col2 type = 6 (voltsDC)",        col: 2, inst: 3, expected: "INTEGER: 6"}
+      - {label: "s[3] col3 name = 12V Supply",          col: 3, inst: 3, expected: 'STRING: "12V Supply"'}
+      - {label: "s[3] col5 scale = 8 (milli)",          col: 5, inst: 3, expected: "INTEGER: 8"}
+      - {label: "s[3] col7 value = 12187 mV",           col: 7, inst: 3, expected: "INTEGER: 12187"}
+      - {label: "s[3] col8 operStatus = 1 (ok)",        col: 8, inst: 3, expected: "INTEGER: 1"}
+      - {label: "s[3] col9 units = mV",                 col: 9, inst: 3, expected: 'STRING: "mV"'}
+      - {label: "s[4] col2 type = 6 (voltsDC)",         col: 2, inst: 4, expected: "INTEGER: 6"}
+      - {label: "s[4] col3 name = 5V Supply",           col: 3, inst: 4, expected: 'STRING: "5V Supply"'}
+      - {label: "s[4] col7 value = 4985 mV",            col: 7, inst: 4, expected: "INTEGER: 4985"}
+      - {label: "s[5] col2 type = 10 (percent)",        col: 2, inst: 5, expected: "INTEGER: 10"}
+      - {label: "s[5] col3 name = Humidity",            col: 3, inst: 5, expected: 'STRING: "Humidity"'}
+      - {label: "s[5] col5 scale = 9 (units)",          col: 5, inst: 5, expected: "INTEGER: 9"}
+      - {label: "s[5] col7 value = 0%",                 col: 7, inst: 5, expected: "INTEGER: 0"}
+      - {label: "s[6] col2 type = 4 (watts)",           col: 2, inst: 6, expected: "INTEGER: 4"}
+      - {label: "s[6] col3 name = Motor Power",         col: 3, inst: 6, expected: 'STRING: "Motor Power"'}
+      - {label: "s[6] col5 scale = 8 (milli)",          col: 5, inst: 6, expected: "INTEGER: 8"}
+      - {label: "s[6] col7 value = 3372 mW",            col: 7, inst: 6, expected: "INTEGER: 3372"}
+      - {label: "s[6] col9 units = mW",                 col: 9, inst: 6, expected: 'STRING: "mW"'}
+
+  # ---------------------------------------------------------------------------
+  # SATA FARM DevStats (ZR7061LA)
+  # Table: smartmonSataDevStatTable (.4.1.40)
+  # INDEX { deviceIndex(NOT-ACC), pageNum(NOT-ACC), offset(NOT-ACC) }
+  # FARM pages use page_num 100-105 to avoid collision with ACS pages 1-7.
+  # OID: .4.1.40.1.{col}.{D}.{pageNum}.{offset}
+  # page 103 = FARM Error Statistics; sub-objects flattened as "parent.child"
+  # page 104 = FARM Environment Statistics
+  # Offsets are JSON insertion order; current_12v_in_mv is offset 16 in page 104.
+  # ---------------------------------------------------------------------------
+
+  - name: "SATA FARM DevStats — page 103 error stats (scalars + flattened sub-objects)"
+    walk: "sata"
+    device: farmata
+    tests:
+      - {label: "p103 off17 name = index_flash_led (scalar)",          oid: ".4.1.40.1.4.{D}.103.17", expected: 'STRING: "index_flash_led"'}
+      - {label: "p103 off21 name = flash_led_event_0.timestamp",       oid: ".4.1.40.1.4.{D}.103.21", expected: 'STRING: "flash_led_event_0.timestamp_of_event"'}
+      - {label: "p103 off45 name = cum_lifetime_head_0.read_repeating",oid: ".4.1.40.1.4.{D}.103.45", expected: 'STRING: "cum_lifetime_unrecoverable_by_head_0.read_repeating"'}
+
+  - name: "SATA FARM DevStats — page 104 environment"
+    walk: "sata"
+    device: farmata
+    tests:
+      - {label: "page 104 rows exist",                     type: rows, oid_regex: '\.4\.1\.40\.1\.3\.', min: 1}
+      - {label: "p104 off16 pageName = FARM Environment",  oid: ".4.1.40.1.3.{D}.104.16", expected: 'STRING: "FARM Environment Statistics"'}
+      - {label: "p104 off16 name = current_12v_in_mv",     oid: ".4.1.40.1.4.{D}.104.16", expected: 'STRING: "current_12v_in_mv"'}
+      - {label: "p104 off16 value = 12187",                oid: ".4.1.40.1.5.{D}.104.16", expected: "Counter64: 12187"}
+      - {label: "p104 off16 flagsValue = BITS (no flags on FARM row)", oid: ".4.1.40.1.6.{D}.104.16", expected: 'BITS: '}
 
 # ---------------------------------------------------------------------------
 # Stability checks
@@ -760,9 +826,9 @@ stability_checks:
         json_path: "ata_device_statistics.pages.3.table.9.value"
         new_value: 1
         expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.80"
-      - label: "p5 offset=88 Min Operating Temperature -1°C"
+      - label: "p5 offset=88 Max Operating Temperature 20°C"
         json_path: "ata_device_statistics.pages.3.table.10.value"
-        new_value: -1
+        new_value: 20
         expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.88"
       - label: "p5 offset=96 Vendor Specific Temp Stat +1"
         json_path: "ata_device_statistics.pages.3.table.11.value"

@@ -363,7 +363,7 @@ static void test_sata_new_tables(const char *path) {
         if (r.device_index != idx) continue;
         if (r.page_num == 1 && r.name == "Power-on Hours") {
             found_poh_stat = true;
-            CHECK(r.valid);
+            CHECK(r.flags_value & 0x40u); // valid bit (ACS bit 6)
             CHECK(r.value > 0u);
         }
     }

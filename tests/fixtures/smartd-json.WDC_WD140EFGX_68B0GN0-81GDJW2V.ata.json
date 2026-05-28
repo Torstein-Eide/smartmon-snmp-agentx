@@ -489,6 +489,37 @@
       "deciseconds": 70
     }
   },
+  "ata_sct_status": {
+    "device_state": {
+      "string": "Active",
+      "value": 0
+    },
+    "format_version": 3,
+    "sct_version": 256,
+    "temperature": {
+      "lifetime_max": 53,
+      "lifetime_min": 22,
+      "op_limit_max": 70,
+      "over_limit_count": 0,
+      "power_cycle_max": 45,
+      "power_cycle_min": 39,
+      "under_limit_count": 0
+    }
+  },
+  "ata_sct_temperature_history": {
+    "index": 0,
+    "logging_interval_minutes": 10,
+    "sampling_period_minutes": 1,
+    "size": 128,
+    "table": [],
+    "temperature": {
+      "limit_max": 70,
+      "limit_min": 0,
+      "op_limit_max": 70,
+      "op_limit_min": 0
+    },
+    "version": 2
+  },
   "sata_phy_event_counters": {
     "table": [
       {
