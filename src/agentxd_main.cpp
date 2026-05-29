@@ -123,7 +123,10 @@ int main(int argc, char *argv[])
         syslog(LOG_ERR, "Configuration error — exiting.");
         return EXIT_FAILURE;
     }
-    g_poll_failure_threshold = cfg.poll_failure_threshold;
+    g_poll_failure_threshold  = cfg.poll_failure_threshold;
+    g_test_mode               = cfg.test_mode;
+    g_sensor_resend_interval  = cfg.sensor_resend_interval;
+    g_sensor_hysteresis       = cfg.sensor_hysteresis;
 
     if (!foreground)
         daemonise();

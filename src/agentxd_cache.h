@@ -22,6 +22,17 @@ struct SataSubidxUniqueRow {
 };
 
 // --------------------------------------------------------------------
+// Sensor alarm state — tracks per-sensor threshold state across refreshes
+// --------------------------------------------------------------------
+enum SensorAlarmState : int {
+    SENSOR_ALARM_NORMAL        = 0,
+    SENSOR_ALARM_HIGH_CRITICAL = 1,
+    SENSOR_ALARM_HIGH_WARNING  = 2,
+    SENSOR_ALARM_LOW_CRITICAL  = 3,
+    SENSOR_ALARM_LOW_WARNING   = 4,
+};
+
+// --------------------------------------------------------------------
 // Poll result codes (mirrors SmartmonPollResult TC)
 // --------------------------------------------------------------------
 enum PollResult {
@@ -750,6 +761,20 @@ struct AgentxCache {
     // Deduplicated rows for the BySubindex change-tracking table.
     // One entry per unique {device_index, table_id, sub1}; rebuilt after each device parse.
     std::vector<SataSubidxUniqueRow> sata_subidx_unique;
+
+    // Sensor alarm state per (device_index, sensor_index).
+    // Key = (device_index << 32) | sensor_index.
+    std::unordered_map<uint64_t, int>    sensor_alarm_state;
+    std::unordered_map<uint64_t, time_t> sensor_alarm_last_sent;
+
+    // SATA attribute alarm state: set of attr_ids currently in failing state per device.
+    // Persisted across restarts to avoid re-firing alarms for pre-existing failures.
+    std::unordered_map<uint32_t, std::vector<uint32_t>> sata_attr_alarm;
+
+    // SAS uncorrected error baseline per (device_index, direction).
+    // Key = (device_index << 32) | direction.
+    // Traps fire only when uncorrected count exceeds this baseline.
+    std::unordered_map<uint64_t, uint64_t> sas_uncorrected_baseline;
 
     // Remove device row and all sub-table rows for device_index
     void remove_device(uint32_t device_index);

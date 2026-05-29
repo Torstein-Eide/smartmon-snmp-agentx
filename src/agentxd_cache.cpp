@@ -69,6 +69,21 @@ void AgentxCache::remove_device(uint32_t idx) {
         else ++it;
     }
     rebuild_sata_subidx_unique(idx);
+
+    // Purge alarm state for this device.
+    for (auto it = sensor_alarm_state.begin(); it != sensor_alarm_state.end(); ) {
+        if ((uint32_t)(it->first >> 32) == idx) it = sensor_alarm_state.erase(it);
+        else ++it;
+    }
+    for (auto it = sensor_alarm_last_sent.begin(); it != sensor_alarm_last_sent.end(); ) {
+        if ((uint32_t)(it->first >> 32) == idx) it = sensor_alarm_last_sent.erase(it);
+        else ++it;
+    }
+    sata_attr_alarm.erase(idx);
+    for (auto it = sas_uncorrected_baseline.begin(); it != sas_uncorrected_baseline.end(); ) {
+        if ((uint32_t)(it->first >> 32) == idx) it = sas_uncorrected_baseline.erase(it);
+        else ++it;
+    }
 }
 
 void AgentxCache::clear() {
@@ -99,6 +114,8 @@ void AgentxCache::clear() {
     hash_sata_by_dev.clear();   ts_sata_by_dev.clear();
     hash_sata_devstat_by_page.clear();   ts_sata_devstat_by_page.clear();
     sata_subidx_unique.clear();
+    sensor_alarm_state.clear();   sensor_alarm_last_sent.clear();
+    sata_attr_alarm.clear();      sas_uncorrected_baseline.clear();
     next_device_index = 1;
 }
 

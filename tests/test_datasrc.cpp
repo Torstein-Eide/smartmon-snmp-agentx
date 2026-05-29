@@ -24,8 +24,11 @@ extern "C" void syslog_stub(int, const char *fmt, ...) {
 }
 
 #define syslog syslog_stub
-int      g_verbosity             = 0;
+int      g_verbosity              = 0;
 uint32_t g_poll_failure_threshold = 1;
+bool     g_test_mode              = false;
+uint32_t g_sensor_resend_interval = 0;
+int32_t  g_sensor_hysteresis      = 0;
 #include "../src/agentxd_cache.cpp"
 #include "../src/agentxd_json.cpp"
 
@@ -102,6 +105,9 @@ void notify_sensor_low_warning(uint32_t dev_idx, const CacheSensorRow &sensor) {
 void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor) {
     g_notify_calls.push_back({"sensor_low_critical", dev_idx, sensor.value, sensor.sensor_index, sensor.name, 0});
 }
+void notify_sensor_recovered(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    g_notify_calls.push_back({"sensor_recovered", dev_idx, sensor.value, sensor.sensor_index, sensor.name, 0});
+}
 
 // Stub state_db — no SQLite in the unit test binary
 #include "../src/agentxd_state_db.h"
@@ -111,6 +117,9 @@ void  state_db_update(int, uint64_t, time_t)                                 {}
 void  state_db_update_by_dev(uint32_t, uint32_t, uint64_t, time_t)          {}
 void  state_db_update_devstat_page(uint32_t, uint32_t, uint64_t, time_t)         {}
 void  state_db_remove_device(uint32_t)                                       {}
+void  state_db_update_sensor_alarm(uint32_t, uint32_t, int, time_t)         {}
+void  state_db_set_sata_attr_alarm(uint32_t, uint32_t, bool)                {}
+void  state_db_update_sas_uncorrected_baseline(uint32_t, int, uint64_t)     {}
 void  state_db_close()                                                        {}
 
 #include "../src/agentxd_datasrc.cpp"

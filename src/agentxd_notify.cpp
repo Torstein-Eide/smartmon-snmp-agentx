@@ -528,3 +528,32 @@ void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor) 
         oid_sensor_low_critical, OID_LEN(oid_sensor_low_critical),
         sensor.low_critical, "sensor_low_critical");
 }
+
+void notify_sensor_recovered(uint32_t dev_idx, const CacheSensorRow &sensor) {
+    const CacheDeviceRow *dev = g_cache.find_device(dev_idx);
+    syslog(LOG_INFO, "notify: sensor_recovered dev_idx=%u path=%s sensor=%s value=%d",
+           dev_idx, dev ? dev->path.c_str() : "(unknown)",
+           sensor.name.c_str(), sensor.value);
+
+    netsnmp_variable_list *vars =
+        make_trap_header(oid_notif_sensor_recovered, OID_LEN(oid_notif_sensor_recovered));
+
+    append_device_identity(&vars, dev_idx, dev);
+
+    uint32_t sensor_idx = sensor.sensor_index;
+    append_string_2idx(&vars, oid_sensor_name, OID_LEN(oid_sensor_name),
+                       dev_idx, sensor_idx, sensor.name.c_str());
+    append_uint32_2idx(&vars, oid_sensor_type, OID_LEN(oid_sensor_type),
+                       dev_idx, sensor_idx, ASN_INTEGER, (u_long)sensor.type);
+    append_int32_2idx(&vars, oid_sensor_value, OID_LEN(oid_sensor_value),
+                      dev_idx, sensor_idx, sensor.value);
+    append_string_2idx(&vars, oid_sensor_units, OID_LEN(oid_sensor_units),
+                       dev_idx, sensor_idx, sensor.units_display.c_str());
+    if (dev)
+        append_date_time(&vars, oid_device_last_poll_time,
+                         OID_LEN(oid_device_last_poll_time),
+                         dev_idx, dev->last_poll_time);
+
+    send_v2trap_timed(vars, "sensor_recovered");
+    snmp_free_varbind(vars);
+}

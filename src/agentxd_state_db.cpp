@@ -83,6 +83,24 @@ bool state_db_open(const std::string &path) {
         "  hash        INTEGER NOT NULL,"
         "  last_change INTEGER NOT NULL,"
         "  PRIMARY KEY (dev_id, page_num)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS sensor_alarm_state ("
+        "  dev_id      INTEGER NOT NULL,"
+        "  sensor_idx  INTEGER NOT NULL,"
+        "  alarm_state INTEGER NOT NULL,"
+        "  last_sent   INTEGER NOT NULL,"
+        "  PRIMARY KEY (dev_id, sensor_idx)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS sata_attr_alarm ("
+        "  dev_id   INTEGER NOT NULL,"
+        "  attr_id  INTEGER NOT NULL,"
+        "  PRIMARY KEY (dev_id, attr_id)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS sas_uncorrected_baseline ("
+        "  dev_id      INTEGER NOT NULL,"
+        "  direction   INTEGER NOT NULL,"
+        "  uncorrected INTEGER NOT NULL,"
+        "  PRIMARY KEY (dev_id, direction)"
         ");";
     char *errmsg = nullptr;
     if (sqlite3_exec(g_db, sql, nullptr, nullptr, &errmsg) != SQLITE_OK) {
@@ -188,6 +206,56 @@ void state_db_load() {
         sqlite3_finalize(stmt);
         syslog(LOG_INFO, "state_db: loaded %u devstat page timestamp(s)", n);
     }
+
+    // Load sensor alarm state.
+    const char *sql4 =
+        "SELECT dev_id, sensor_idx, alarm_state, last_sent FROM sensor_alarm_state;";
+    if (sqlite3_prepare_v2(g_db, sql4, -1, &stmt, nullptr) == SQLITE_OK) {
+        unsigned n = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t dev    = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            uint32_t sidx   = static_cast<uint32_t>(sqlite3_column_int64(stmt, 1));
+            int      astate = sqlite3_column_int(stmt, 2);
+            time_t   lsent  = static_cast<time_t>(sqlite3_column_int64(stmt, 3));
+            uint64_t key    = ((uint64_t)dev << 32) | sidx;
+            g_cache.sensor_alarm_state[key]     = astate;
+            g_cache.sensor_alarm_last_sent[key] = lsent;
+            ++n;
+        }
+        sqlite3_finalize(stmt);
+        syslog(LOG_INFO, "state_db: loaded %u sensor alarm state(s)", n);
+    }
+
+    // Load SATA attr alarm set.
+    const char *sql5 = "SELECT dev_id, attr_id FROM sata_attr_alarm;";
+    if (sqlite3_prepare_v2(g_db, sql5, -1, &stmt, nullptr) == SQLITE_OK) {
+        unsigned n = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t dev    = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            uint32_t attr   = static_cast<uint32_t>(sqlite3_column_int64(stmt, 1));
+            g_cache.sata_attr_alarm[dev].push_back(attr);
+            ++n;
+        }
+        sqlite3_finalize(stmt);
+        syslog(LOG_INFO, "state_db: loaded %u SATA attr alarm(s)", n);
+    }
+
+    // Load SAS uncorrected baseline.
+    const char *sql6 =
+        "SELECT dev_id, direction, uncorrected FROM sas_uncorrected_baseline;";
+    if (sqlite3_prepare_v2(g_db, sql6, -1, &stmt, nullptr) == SQLITE_OK) {
+        unsigned n = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t dev  = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            int      dir  = sqlite3_column_int(stmt, 1);
+            uint64_t unc  = static_cast<uint64_t>(sqlite3_column_int64(stmt, 2));
+            uint64_t key  = ((uint64_t)dev << 32) | (uint32_t)dir;
+            g_cache.sas_uncorrected_baseline[key] = unc;
+            ++n;
+        }
+        sqlite3_finalize(stmt);
+        syslog(LOG_INFO, "state_db: loaded %u SAS uncorrected baseline(s)", n);
+    }
 }
 
 void state_db_update(int table_id, uint64_t hash, time_t ts) {
@@ -237,11 +305,60 @@ void state_db_update_devstat_page(uint32_t dev_id, uint32_t page_num,
     sqlite3_finalize(stmt);
 }
 
+void state_db_update_sensor_alarm(uint32_t dev_id, uint32_t sensor_idx,
+                                  int alarm_state, time_t last_sent) {
+    if (!g_db) return;
+    const char *sql =
+        "INSERT OR REPLACE INTO sensor_alarm_state"
+        " (dev_id, sensor_idx, alarm_state, last_sent)"
+        " VALUES (?, ?, ?, ?);";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(sensor_idx));
+    sqlite3_bind_int(stmt,  3, alarm_state);
+    sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(last_sent));
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+void state_db_set_sata_attr_alarm(uint32_t dev_id, uint32_t attr_id, bool failing) {
+    if (!g_db) return;
+    const char *sql = failing
+        ? "INSERT OR IGNORE INTO sata_attr_alarm (dev_id, attr_id) VALUES (?, ?);"
+        : "DELETE FROM sata_attr_alarm WHERE dev_id = ? AND attr_id = ?;";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(attr_id));
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+void state_db_update_sas_uncorrected_baseline(uint32_t dev_id, int direction,
+                                              uint64_t uncorrected) {
+    if (!g_db) return;
+    const char *sql =
+        "INSERT OR REPLACE INTO sas_uncorrected_baseline"
+        " (dev_id, direction, uncorrected)"
+        " VALUES (?, ?, ?);";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+    sqlite3_bind_int(stmt,  2, direction);
+    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(uncorrected));
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
 void state_db_remove_device(uint32_t dev_id) {
     if (!g_db) return;
     const char *sqls[] = {
         "DELETE FROM sata_by_dev_state       WHERE dev_id = ?;",
         "DELETE FROM sata_devstat_page_state WHERE dev_id = ?;",
+        "DELETE FROM sensor_alarm_state      WHERE dev_id = ?;",
+        "DELETE FROM sata_attr_alarm         WHERE dev_id = ?;",
+        "DELETE FROM sas_uncorrected_baseline WHERE dev_id = ?;",
     };
     for (const char *sql : sqls) {
         sqlite3_stmt *stmt = nullptr;

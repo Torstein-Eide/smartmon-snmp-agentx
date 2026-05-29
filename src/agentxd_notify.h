@@ -36,3 +36,4 @@ void notify_sensor_high_critical(uint32_t dev_idx, const CacheSensorRow &sensor)
 void notify_sensor_high_warning(uint32_t dev_idx, const CacheSensorRow &sensor);
 void notify_sensor_low_warning(uint32_t dev_idx, const CacheSensorRow &sensor);
 void notify_sensor_low_critical(uint32_t dev_idx, const CacheSensorRow &sensor);
+void notify_sensor_recovered(uint32_t dev_idx, const CacheSensorRow &sensor);

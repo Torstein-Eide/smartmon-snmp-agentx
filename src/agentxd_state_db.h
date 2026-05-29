@@ -26,5 +26,16 @@ void state_db_update_devstat_page(uint32_t dev_id, uint32_t page_num,
 // Remove all persisted per-device and per-row entries for a device.
 void state_db_remove_device(uint32_t dev_id);
 
+// Persist sensor alarm state for one (device, sensor) pair.
+void state_db_update_sensor_alarm(uint32_t dev_id, uint32_t sensor_idx,
+                                  int alarm_state, time_t last_sent);
+
+// Add or remove one SATA attribute from the persisted failing-attribute set.
+void state_db_set_sata_attr_alarm(uint32_t dev_id, uint32_t attr_id, bool failing);
+
+// Persist the SAS uncorrected error baseline for one (device, direction) pair.
+void state_db_update_sas_uncorrected_baseline(uint32_t dev_id, int direction,
+                                              uint64_t uncorrected);
+
 // Close the database.
 void state_db_close();

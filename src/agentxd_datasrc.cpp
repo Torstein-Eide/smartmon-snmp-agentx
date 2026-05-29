@@ -2056,9 +2056,10 @@ static DeviceSnapshot capture_snapshot(uint32_t dev_idx, DeviceProto proto) {
             if (st.device_index == dev_idx && !st.passed)
                 snap.last_failed_selftest_entry =
                     std::max(snap.last_failed_selftest_entry, st.entry_index);
-        for (const auto &a : g_cache.sata_attrs)
-            if (a.device_index == dev_idx && a.threshold > 0 && a.value <= a.threshold)
-                snap.failing_attr_ids.push_back(a.attr_id);
+        // Use persisted alarm set — survives restart, prevents re-firing for existing failures.
+        auto it = g_cache.sata_attr_alarm.find(dev_idx);
+        if (it != g_cache.sata_attr_alarm.end())
+            snap.failing_attr_ids = it->second;
     } else if (proto == PROTO_SCSI || proto == PROTO_SAS) {
         for (const auto &h : g_cache.sas_health)
             if (h.device_index == dev_idx) { snap.health_status = h.overall_status; break; }
@@ -2066,9 +2067,14 @@ static DeviceSnapshot capture_snapshot(uint32_t dev_idx, DeviceProto proto) {
             if (st.device_index == dev_idx && !st.passed)
                 snap.last_failed_selftest_entry =
                     std::max(snap.last_failed_selftest_entry, st.entry_index);
-        for (const auto &ec : g_cache.sas_error_counters)
-            if (ec.device_index == dev_idx)
-                snap.uncorrected_before[ec.direction] = ec.uncorrected;
+        // Use persisted baseline — survives restart, prevents re-firing for pre-existing counts.
+        for (const auto &ec : g_cache.sas_error_counters) {
+            if (ec.device_index != dev_idx) continue;
+            uint64_t key = ((uint64_t)dev_idx << 32) | (uint32_t)ec.direction;
+            auto bit = g_cache.sas_uncorrected_baseline.find(key);
+            snap.uncorrected_before[ec.direction] =
+                (bit != g_cache.sas_uncorrected_baseline.end()) ? bit->second : 0;
+        }
     }
 
     return snap;
@@ -2080,6 +2086,51 @@ void agentxd_datasrc_remove_device(uint32_t dev_idx) {
         notify_device_removed(dev_idx, dev->name, dev->path, (int)dev->proto);
     g_cache.remove_device(dev_idx);
     state_db_remove_device(dev_idx);
+}
+
+// Compute the new alarm state for a sensor, applying hysteresis when clearing.
+// High alarms clear when value drops below (threshold - hysteresis).
+// Low alarms clear when value rises above (threshold + hysteresis).
+static int compute_sensor_alarm_state(const CacheSensorRow &s, int old_state,
+                                      int32_t hyst) {
+    // High side: critical takes priority over warning.
+    if (s.has_high_critical) {
+        bool stay = (old_state == SENSOR_ALARM_HIGH_CRITICAL &&
+                     s.value >= s.high_critical - hyst);
+        if (s.value >= s.high_critical || stay)
+            return SENSOR_ALARM_HIGH_CRITICAL;
+    }
+    if (s.has_high_warning) {
+        bool stay = (old_state == SENSOR_ALARM_HIGH_WARNING &&
+                     s.value >= s.high_warning - hyst);
+        if (s.value >= s.high_warning || stay)
+            return SENSOR_ALARM_HIGH_WARNING;
+    }
+    // Low side: critical takes priority over warning.
+    if (s.has_low_critical) {
+        bool stay = (old_state == SENSOR_ALARM_LOW_CRITICAL &&
+                     s.value <= s.low_critical + hyst);
+        if (s.value <= s.low_critical || stay)
+            return SENSOR_ALARM_LOW_CRITICAL;
+    }
+    if (s.has_low_warning) {
+        bool stay = (old_state == SENSOR_ALARM_LOW_WARNING &&
+                     s.value <= s.low_warning + hyst);
+        if (s.value <= s.low_warning || stay)
+            return SENSOR_ALARM_LOW_WARNING;
+    }
+    return SENSOR_ALARM_NORMAL;
+}
+
+static void fire_sensor_alarm_trap(uint32_t dev_idx, const CacheSensorRow &sensor,
+                                   int alarm_state) {
+    switch (alarm_state) {
+    case SENSOR_ALARM_HIGH_CRITICAL: notify_sensor_high_critical(dev_idx, sensor); break;
+    case SENSOR_ALARM_HIGH_WARNING:  notify_sensor_high_warning(dev_idx, sensor);  break;
+    case SENSOR_ALARM_LOW_WARNING:   notify_sensor_low_warning(dev_idx, sensor);   break;
+    case SENSOR_ALARM_LOW_CRITICAL:  notify_sensor_low_critical(dev_idx, sensor);  break;
+    default: break;
+    }
 }
 
 static void dispatch_notifications(uint32_t dev_idx, DeviceProto proto,
@@ -2160,18 +2211,89 @@ static void dispatch_notifications(uint32_t dev_idx, DeviceProto proto,
         }
     }
 
+    // Sensor alarm state machine — transition-based, with hysteresis and periodic resend.
+    time_t now = time(nullptr);
     for (const auto &sensor : g_cache.sensors) {
         if (sensor.device_index != dev_idx)
             continue;
-        if (sensor.has_high_critical && sensor.value >= sensor.high_critical)
-            notify_sensor_high_critical(dev_idx, sensor);
-        else if (sensor.has_high_warning && sensor.value >= sensor.high_warning)
-            notify_sensor_high_warning(dev_idx, sensor);
 
-        if (sensor.has_low_critical && sensor.value <= sensor.low_critical)
-            notify_sensor_low_critical(dev_idx, sensor);
-        else if (sensor.has_low_warning && sensor.value <= sensor.low_warning)
-            notify_sensor_low_warning(dev_idx, sensor);
+        uint64_t key = ((uint64_t)dev_idx << 32) | sensor.sensor_index;
+        int old_state = SENSOR_ALARM_NORMAL;
+        {
+            auto it = g_cache.sensor_alarm_state.find(key);
+            if (it != g_cache.sensor_alarm_state.end()) old_state = it->second;
+        }
+
+        if (g_test_mode) {
+            // Test mode: fire unconditionally whenever sensor is in alarm (original behaviour).
+            if (sensor.has_high_critical && sensor.value >= sensor.high_critical)
+                notify_sensor_high_critical(dev_idx, sensor);
+            else if (sensor.has_high_warning && sensor.value >= sensor.high_warning)
+                notify_sensor_high_warning(dev_idx, sensor);
+
+            if (sensor.has_low_critical && sensor.value <= sensor.low_critical)
+                notify_sensor_low_critical(dev_idx, sensor);
+            else if (sensor.has_low_warning && sensor.value <= sensor.low_warning)
+                notify_sensor_low_warning(dev_idx, sensor);
+            continue;
+        }
+
+        int new_state = compute_sensor_alarm_state(sensor, old_state, g_sensor_hysteresis);
+
+        if (new_state != old_state) {
+            if (new_state == SENSOR_ALARM_NORMAL)
+                notify_sensor_recovered(dev_idx, sensor);
+            else
+                fire_sensor_alarm_trap(dev_idx, sensor, new_state);
+            g_cache.sensor_alarm_state[key]     = new_state;
+            g_cache.sensor_alarm_last_sent[key] = now;
+            state_db_update_sensor_alarm(dev_idx, sensor.sensor_index, new_state, now);
+        } else if (new_state != SENSOR_ALARM_NORMAL && g_sensor_resend_interval > 0) {
+            time_t last_sent = 0;
+            auto it = g_cache.sensor_alarm_last_sent.find(key);
+            if (it != g_cache.sensor_alarm_last_sent.end()) last_sent = it->second;
+            if (now - last_sent >= static_cast<time_t>(g_sensor_resend_interval)) {
+                fire_sensor_alarm_trap(dev_idx, sensor, new_state);
+                g_cache.sensor_alarm_last_sent[key] = now;
+                state_db_update_sensor_alarm(dev_idx, sensor.sensor_index, new_state, now);
+            }
+        }
+    }
+}
+
+// Update persisted alarm baseline state after dispatching notifications.
+// Must be called after dispatch_notifications so the new state is current.
+static void update_alarm_state(uint32_t dev_idx, DeviceProto proto) {
+    if (proto == PROTO_ATA || proto == PROTO_SAT) {
+        // Rebuild current failing attr set and sync changes to SQLite.
+        std::vector<uint32_t> now_failing;
+        for (const auto &a : g_cache.sata_attrs) {
+            if (a.device_index != dev_idx) continue;
+            if (a.threshold > 0 && a.value <= a.threshold)
+                now_failing.push_back(a.attr_id);
+        }
+        auto &alarm = g_cache.sata_attr_alarm[dev_idx];
+        // Persist newly-failing attrs.
+        for (uint32_t id : now_failing) {
+            bool was = std::find(alarm.begin(), alarm.end(), id) != alarm.end();
+            if (!was) state_db_set_sata_attr_alarm(dev_idx, id, true);
+        }
+        // Persist newly-cleared attrs.
+        for (uint32_t id : alarm) {
+            bool still = std::find(now_failing.begin(), now_failing.end(), id) != now_failing.end();
+            if (!still) state_db_set_sata_attr_alarm(dev_idx, id, false);
+        }
+        alarm = std::move(now_failing);
+    }
+
+    if (proto == PROTO_SCSI || proto == PROTO_SAS) {
+        // Update SAS uncorrected baseline to current observed counts.
+        for (const auto &ec : g_cache.sas_error_counters) {
+            if (ec.device_index != dev_idx) continue;
+            uint64_t key = ((uint64_t)dev_idx << 32) | (uint32_t)ec.direction;
+            g_cache.sas_uncorrected_baseline[key] = ec.uncorrected;
+            state_db_update_sas_uncorrected_baseline(dev_idx, ec.direction, ec.uncorrected);
+        }
     }
 }
 
@@ -2321,6 +2443,8 @@ static void process_json_file(const std::string &filepath) {
         struct timespec t_notif;
         clock_gettime(CLOCK_MONOTONIC, &t_notif);
         dispatch_notifications(dev_idx, proto, snap, is_new_device);
+        if (!is_new_device)
+            update_alarm_state(dev_idx, proto);
         long notif_ms = elapsed_ms(t_notif);
         if (notif_ms >= 10)
             syslog(LOG_WARNING, "datasrc: dispatch_notifications '%s' took %ldms",

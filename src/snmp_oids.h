@@ -324,6 +324,7 @@ static const oid oid_notif_sensor_high_critical[] = { SMARTMON_ENT, 6, 2, 1 };
 static const oid oid_notif_sensor_high_warning[]  = { SMARTMON_ENT, 6, 2, 2 };
 static const oid oid_notif_sensor_low_warning[]   = { SMARTMON_ENT, 6, 2, 3 };
 static const oid oid_notif_sensor_low_critical[]  = { SMARTMON_ENT, 6, 2, 4 };
+static const oid oid_notif_sensor_recovered[]     = { SMARTMON_ENT, 6, 2, 5 };
 
 // ---------------------------------------------------------------------------
 // Convenience macro

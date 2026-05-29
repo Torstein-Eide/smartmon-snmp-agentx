@@ -9,8 +9,11 @@
 #include <limits>
 #include <syslog.h>
 
-int      g_verbosity             = 0;
+int      g_verbosity              = 0;
 uint32_t g_poll_failure_threshold = 1;
+bool     g_test_mode              = false;
+uint32_t g_sensor_resend_interval = 0;
+int32_t  g_sensor_hysteresis      = 0;
 
 bool agentxd_config_load(const char *path, AgentxConfig &out)
 {
@@ -75,6 +78,32 @@ bool agentxd_config_load(const char *path, AgentxConfig &out)
             }
         } else if (strcmp(key, "state_db") == 0) {
             out.state_db_path = value;
+        } else if (strcmp(key, "test_mode") == 0) {
+            out.test_mode = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
+        } else if (strcmp(key, "sensor_resend_interval") == 0) {
+            char *end;
+            errno = 0;
+            unsigned long long v = strtoull(value, &end, 10);
+            if (*end != '\0' || errno == ERANGE
+                    || v > static_cast<unsigned long long>(std::numeric_limits<uint32_t>::max())) {
+                syslog(LOG_ERR, "%s:%d: sensor_resend_interval must be a non-negative integer",
+                       path, lineno);
+                ok = false;
+            } else {
+                out.sensor_resend_interval = static_cast<uint32_t>(v);
+            }
+        } else if (strcmp(key, "sensor_hysteresis") == 0) {
+            char *end;
+            errno = 0;
+            long v = strtol(value, &end, 10);
+            if (*end != '\0' || errno == ERANGE || v < 0
+                    || v > static_cast<long>(std::numeric_limits<int32_t>::max())) {
+                syslog(LOG_ERR, "%s:%d: sensor_hysteresis must be a non-negative integer",
+                       path, lineno);
+                ok = false;
+            } else {
+                out.sensor_hysteresis = static_cast<int32_t>(v);
+            }
         } else {
             syslog(LOG_WARNING, "%s:%d: unknown option '%s'", path, lineno, key);
         }
