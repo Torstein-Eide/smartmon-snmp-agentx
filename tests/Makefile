@@ -2,7 +2,7 @@
 # No net-snmp required.  Run: make test FIXTURES=<path-to-fixture-dir>
 
 CXX      ?= g++
-CXXFLAGS ?= -std=c++14 -Wall -Wextra -g
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -g
 SRCDIR   := ../src
 REPO_ROOT := $(abspath ..)
 FIXTURES ?= $(abspath fixtures)
