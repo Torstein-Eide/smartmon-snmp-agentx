@@ -833,7 +833,7 @@ smartmonSataHealthEntry OBJECT-TYPE
 SmartmonSataHealthEntry ::= SEQUENCE {
     smartmonSataHealthOverallStatus      SmartmonHealthStatus,
     smartmonSataOfflineCollectionStatusValue Unsigned32,
-    smartmonSataSelfTestExecutionStatusValue Unsigned32,
+    smartmonSataSelfTestExecutionStatusValue INTEGER,
     smartmonSataPowerCycles              CounterBasedGauge64,
     smartmonSataPowerOnHours             CounterBasedGauge64,
     smartmonSataErrorLogCount            Unsigned32,
