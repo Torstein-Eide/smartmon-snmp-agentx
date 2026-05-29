@@ -55,7 +55,7 @@ sas_info_get_next(void **loop_ctx, void **data_ctx,
     CacheSasInfoRow &row = g_cache.sas_info[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // infoIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -139,7 +139,7 @@ sas_bgscan_get_next(void **loop_ctx, void **data_ctx,
     CacheSasBgScanRow &row = g_cache.sas_bgscan[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // bgScanIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -198,7 +198,7 @@ sas_health_get_next(void **loop_ctx, void **data_ctx,
     CacheSasHealthRow &row = g_cache.sas_health[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // healthIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -261,7 +261,7 @@ sas_ec_get_next(void **loop_ctx, void **data_ctx,
     CacheSasErrorCounterRow &row = g_cache.sas_error_counters[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     long dir = (long)row.direction;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_INTEGER,
@@ -317,9 +317,9 @@ sas_st_get_next(void **loop_ctx, void **data_ctx,
     CacheSasSelfTestRow &row = g_cache.sas_selftests[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.entry_index;
+    v = row.entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;

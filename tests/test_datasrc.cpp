@@ -450,7 +450,7 @@ static void test_sata_new_tables(const char *path) {
 static void test_cache_remove() {
     SECTION("cache remove_device");
     size_t initial_devs = g_cache.devices.size();
-    uint32_t idx = g_cache.upsert_device("/dev/test_remove", PROTO_ATA);
+    uint32_t idx = g_cache.upsert_device("/dev/test_remove", PROTO_ATA, 0);
     CHECK(g_cache.devices.size() == initial_devs + 1);
     g_cache.remove_device(idx);
     CHECK(g_cache.devices.size() == initial_devs);
@@ -461,14 +461,14 @@ static void test_cache_remove() {
 
 static void test_cache_upsert() {
     SECTION("cache upsert idempotence");
-    uint32_t idx1 = g_cache.upsert_device("/dev/upsert_test", PROTO_NVME);
-    uint32_t idx2 = g_cache.upsert_device("/dev/upsert_test", PROTO_NVME);
+    uint32_t idx1 = g_cache.upsert_device("/dev/upsert_test", PROTO_NVME, 0);
+    uint32_t idx2 = g_cache.upsert_device("/dev/upsert_test", PROTO_NVME, 0);
     CHECK_EQ(idx1, idx2);
     size_t count_before = g_cache.devices.size();
-    g_cache.upsert_device("/dev/upsert_test", PROTO_NVME);
+    g_cache.upsert_device("/dev/upsert_test", PROTO_NVME, 0);
     CHECK_EQ(g_cache.devices.size(), count_before);
     // Update proto
-    uint32_t idx3 = g_cache.upsert_device("/dev/upsert_test", PROTO_SAT);
+    uint32_t idx3 = g_cache.upsert_device("/dev/upsert_test", PROTO_SAT, 0);
     CHECK_EQ(idx1, idx3);
     for (const auto &d : g_cache.devices)
         if (d.index == idx1) { CHECK_EQ(d.proto, PROTO_SAT); break; }
@@ -596,7 +596,7 @@ static void test_notify_sas_uncorrected(const char *ok_path,
 static void test_notify_device_removed() {
     SECTION("notify: device_removed via agentxd_datasrc_remove_device");
     g_cache.clear();
-    uint32_t idx = g_cache.upsert_device("/dev/test_notify_remove", PROTO_ATA);
+    uint32_t idx = g_cache.upsert_device("/dev/test_notify_remove", PROTO_ATA, 0);
     for (auto &d : g_cache.devices)
         if (d.index == idx) { d.name = "test_notify_remove"; break; }
     clear_notify_calls();

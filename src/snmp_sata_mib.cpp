@@ -117,7 +117,7 @@ sata_info_get_next(void **loop_ctx, void **data_ctx,
     CacheSataInfoRow &row = g_cache.sata_info[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     return put_idx;
 }
@@ -312,7 +312,7 @@ sata_health_get_next(void **loop_ctx, void **data_ctx,
     CacheSataHealthRow &row = g_cache.sata_health[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     return put_idx;
 }
@@ -389,9 +389,9 @@ sata_el_get_next(void **loop_ctx, void **data_ctx,
     CacheSataErrorLogRow &row = g_cache.sata_error_log[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.entry_index;
+    v = row.entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -470,9 +470,9 @@ sata_attr_get_next(void **loop_ctx, void **data_ctx,
     CacheSataAttrRow &row = g_cache.sata_attrs[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.attr_id;
+    v = row.attr_id;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -545,9 +545,9 @@ sata_st_get_next(void **loop_ctx, void **data_ctx,
     CacheSataSelfTestRow &row = g_cache.sata_selftests[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.entry_index;
+    v = row.entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -611,12 +611,12 @@ sata_errcmd_get_next(void **loop_ctx, void **data_ctx,
     CacheSataErrorCmdRow &row = g_cache.sata_error_cmds[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.error_entry_index;
+    v = row.error_entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
-    v = (u_long)row.cmd_index;
+    v = row.cmd_index;
     snmp_set_var_typed_value(put_idx->next_variable->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -683,9 +683,9 @@ sata_erc_get_next(void **loop_ctx, void **data_ctx,
     CacheSataErcRow &row = g_cache.sata_erc[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.erc_index;
+    v = row.erc_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     return put_idx;
 }
@@ -731,9 +731,9 @@ sata_phy_event_get_next(void **loop_ctx, void **data_ctx,
     CacheSataPhyEventRow &row = g_cache.sata_phy_events[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.id;
+    v = row.id;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     return put_idx;
 }
@@ -781,9 +781,9 @@ sata_selective_get_next(void **loop_ctx, void **data_ctx,
     CacheSataSelectiveTestRow &row = g_cache.sata_selective_tests[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.slot;
+    v = row.slot;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     return put_idx;
 }
@@ -866,9 +866,9 @@ sata_logdir_get_next(void **loop_ctx, void **data_ctx,
     CacheSataLogDirRow &row = g_cache.sata_log_dir[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.address;
+    v = row.address;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     return put_idx;
 }
@@ -952,11 +952,11 @@ sata_devstat_get_next(void **loop_ctx, void **data_ctx,
     CacheSataDevStatRow &row = g_cache.sata_dev_stats[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.page_num;
+    v = row.page_num;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.offset;
+    v = row.offset;
     snmp_set_var_typed_value(put_idx->next_variable->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -1012,9 +1012,9 @@ sata_pending_def_get_next(void **loop_ctx, void **data_ctx,
     CacheSataPendingDefectRow &row = g_cache.sata_pending_defects[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.entry_index;
+    v = row.entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;

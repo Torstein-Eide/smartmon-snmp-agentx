@@ -683,7 +683,7 @@ struct AgentxCache {
     const CacheDeviceRow *find_device(uint32_t device_index) const;
 
     // Find or create a device row, return its index
-    uint32_t upsert_device(const std::string &path, DeviceProto proto);
+    uint32_t upsert_device(const std::string &path, DeviceProto proto, uint32_t hint_idx);
 };
 
 extern AgentxCache g_cache;
