@@ -65,10 +65,11 @@ discovery:
     value_pattern: "Gauge32: 3"
 
   farmata:
+    # ...6.1.3.1.4.1889140974.4 = STRING: seagate_farm_log.page_4_environment_statistics.current_5v_in_mv
     label: "Seagate ST16000NM000J ZR7061LA (FARM)"
     walk_label: "sensor"
     oid_grep_re: '\.6\.1\.3\.1\.7\.[0-9]+\.3'
-    value_pattern: "INTEGER: 12187"
+    value_pattern: "INTEGER: 12189"
 
 # Walk definitions — which OID subtree to walk for each label.
 # Used by both discovery and section tests.
@@ -294,9 +295,9 @@ sections:
       - {label: "col10 smartEnabled = 1",        col: 10, expected: "INTEGER: 1"}
       - {label: "col11 trimSupported = 2",       col: 11, expected: "INTEGER: 2"}
       - {label: "col46 sctHistOpLimitMin = 0",   col: 46, expected: "INTEGER: 0"}
-      - {label: "col47 sctHistOpLimitMax = 70",  col: 47, expected: "INTEGER: 70"}
+      - {label: "col47 sctHistOpLimitMax = 0",   col: 47, expected: "INTEGER: 0"}
       - {label: "col48 sctHistLimitMin = 0",     col: 48, expected: "INTEGER: 0"}
-      - {label: "col49 sctHistLimitMax = 70",    col: 49, expected: "INTEGER: 70"}
+      - {label: "col49 sctHistLimitMax = 0",     col: 49, expected: "INTEGER: 0"}
 
   - name: "SATA Health"
     walk: "sata"
@@ -309,6 +310,15 @@ sections:
       - {label: "col4 powerCycles = 42",           col: 4, expected: "Counter64: 42"}
       - {label: "col5 powerOnHours = 4321",        col: 5, expected: "Counter64: 4321"}
       - {label: "col6 errorLogCount = 1",          col: 6, expected: "Gauge32: 1"}
+      - {label: "col18 sctTempUnderLimitCount = 0", col: 18, expected: "Gauge32: 0"}
+      - {label: "col19 sctTempOverLimitCount = 0",  col: 19, expected: "Gauge32: 0"}
+      - {label: "col20 sctSmartStatusPassed = 1",   col: 20, expected: "INTEGER: 1"}
+
+  - name: "SATA Health SCT (81GDJW2V)"
+    walk: "sata"
+    device: sata2
+    oid_template: ".4.1.6.1.{col}.{D}"
+    tests:
       - {label: "col11 sctStatusFormatVersion = 3", col: 11, expected: "Gauge32: 3"}
       - {label: "col12 sctStatusSctVersion = 256",  col: 12, expected: "Gauge32: 256"}
       - {label: "col13 sctStatusDeviceState = 0",   col: 13, expected: "Gauge32: 0"}
@@ -316,9 +326,6 @@ sections:
       - {label: "col15 sctTempPowerCycleMax = 45",  col: 15, expected: "INTEGER: 45"}
       - {label: "col16 sctTempLifetimeMin = 22",    col: 16, expected: "INTEGER: 22"}
       - {label: "col17 sctTempLifetimeMax = 53",    col: 17, expected: "INTEGER: 53"}
-      - {label: "col18 sctTempUnderLimitCount = 0", col: 18, expected: "Gauge32: 0"}
-      - {label: "col19 sctTempOverLimitCount = 0",  col: 19, expected: "Gauge32: 0"}
-      - {label: "col20 sctSmartStatusPassed = 1",   col: 20, expected: "INTEGER: 1"}
 
   - name: "SATA Attributes"
     walk: "sata"
@@ -498,7 +505,7 @@ sections:
     walk: "sensor"
     # Scalars sit outside the table, so use explicit oid: rather than a template.
     tests:
-      - {label: "rowCount = 22",        oid: ".6.1.1.0", expected: "Gauge32: 22"}
+      - {label: "rowCount = 23",        oid: ".6.1.1.0", expected: "Gauge32: 23"}
       - {label: "lastChange timestamp", oid: ".6.1.2.0", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
 
   - name: "Sensor MIB NVMe"
@@ -545,12 +552,12 @@ sections:
       - {label: "s[3] col2 type = 6 (voltsDC)",        col: 2, inst: 3, expected: "INTEGER: 6"}
       - {label: "s[3] col3 name = 12V Supply",          col: 3, inst: 3, expected: 'STRING: "12V Supply"'}
       - {label: "s[3] col5 scale = 8 (milli)",          col: 5, inst: 3, expected: "INTEGER: 8"}
-      - {label: "s[3] col7 value = 12187 mV",           col: 7, inst: 3, expected: "INTEGER: 12187"}
+      - {label: "s[3] col7 value = 12189 mV",           col: 7, inst: 3, expected: "INTEGER: 12189"}
       - {label: "s[3] col8 operStatus = 1 (ok)",        col: 8, inst: 3, expected: "INTEGER: 1"}
       - {label: "s[3] col9 units = mV",                 col: 9, inst: 3, expected: 'STRING: "mV"'}
       - {label: "s[4] col2 type = 6 (voltsDC)",         col: 2, inst: 4, expected: "INTEGER: 6"}
       - {label: "s[4] col3 name = 5V Supply",           col: 3, inst: 4, expected: 'STRING: "5V Supply"'}
-      - {label: "s[4] col7 value = 4985 mV",            col: 7, inst: 4, expected: "INTEGER: 4985"}
+      - {label: "s[4] col7 value = 4986 mV",            col: 7, inst: 4, expected: "INTEGER: 4986"}
       - {label: "s[5] col2 type = 10 (percent)",        col: 2, inst: 5, expected: "INTEGER: 10"}
       - {label: "s[5] col3 name = Humidity",            col: 3, inst: 5, expected: 'STRING: "Humidity"'}
       - {label: "s[5] col5 scale = 9 (units)",          col: 5, inst: 5, expected: "INTEGER: 9"}
@@ -558,7 +565,7 @@ sections:
       - {label: "s[6] col2 type = 4 (watts)",           col: 2, inst: 6, expected: "INTEGER: 4"}
       - {label: "s[6] col3 name = Motor Power",         col: 3, inst: 6, expected: 'STRING: "Motor Power"'}
       - {label: "s[6] col5 scale = 8 (milli)",          col: 5, inst: 6, expected: "INTEGER: 8"}
-      - {label: "s[6] col7 value = 3372 mW",            col: 7, inst: 6, expected: "INTEGER: 3372"}
+      - {label: "s[6] col7 value = 3327 mW",            col: 7, inst: 6, expected: "INTEGER: 3327"}
       - {label: "s[6] col9 units = mW",                 col: 9, inst: 6, expected: 'STRING: "mW"'}
 
   # ---------------------------------------------------------------------------
@@ -587,8 +594,8 @@ sections:
       - {label: "page 104 rows exist",                     type: rows, oid_regex: '\.4\.1\.40\.1\.3\.', min: 1}
       - {label: "p104 off16 pageName = FARM Environment",  oid: ".4.1.40.1.3.{D}.104.16", expected: 'STRING: "FARM Environment Statistics"'}
       - {label: "p104 off16 name = current_12v_in_mv",     oid: ".4.1.40.1.4.{D}.104.16", expected: 'STRING: "current_12v_in_mv"'}
-      - {label: "p104 off16 value = 12187",                oid: ".4.1.40.1.5.{D}.104.16", expected: "Counter64: 12187"}
-      - {label: "p104 off16 flagsValue = BITS (no flags on FARM row)", oid: ".4.1.40.1.6.{D}.104.16", expected: 'BITS: '}
+      - {label: "p104 off16 value = 12189",                oid: ".4.1.40.1.5.{D}.104.16", expected: "Counter64: 12189"}
+      - {label: "p104 off16 flagsValue = BITS: 00",        oid: ".4.1.40.1.6.{D}.104.16", expected: 'BITS: 00 '}
 
 # ---------------------------------------------------------------------------
 # Stability checks

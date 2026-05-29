@@ -917,6 +917,42 @@ static void test_notify_device_removed() {
 
 // ---------------------------------------------------------------------------
 // main
+static void test_farm_sensors(const char *path) {
+    SECTION("FARM sensor cache");
+    uint32_t idx = load_fixture(path);
+    CHECK(idx > 0);
+
+    // Collect all sensors for this device
+    std::vector<const CacheSensorRow *> rows;
+    for (const auto &s : g_cache.sensors)
+        if (s.device_index == idx) rows.push_back(&s);
+
+    CHECK_EQ(rows.size(), 5u);  // temp(1) + 12V(3) + 5V(4) + humidity(5) + motor(6)
+
+    // Temperature at sensor_index 1
+    bool found_temp = false;
+    for (const auto *s : rows) {
+        if (s->sensor_index != 1) continue;
+        found_temp = true;
+        CHECK_EQ(s->type, 3);  // celsius
+        break;
+    }
+    CHECK(found_temp);
+
+    // 12V supply at sensor_index 3
+    bool found_12v = false;
+    for (const auto *s : rows) {
+        if (s->sensor_index != 3) continue;
+        found_12v = true;
+        CHECK_STR(s->name, "12V Supply");
+        CHECK_EQ(s->value, 12187);
+        CHECK_EQ(s->type, 6);   // voltsDC
+        CHECK_EQ(s->scale, 8);  // milli
+        break;
+    }
+    CHECK(found_12v);
+}
+
 // ---------------------------------------------------------------------------
 
 int main(int argc, char *argv[]) {
@@ -933,6 +969,7 @@ int main(int argc, char *argv[]) {
     const char *scsi_path         = nullptr;
     const char *scsi_uncorr_path  = nullptr;
     const char *wdc_path          = nullptr;  // WDC fixture with new SATA tables
+    const char *farm_path         = nullptr;  // Seagate FARM ATA fixture
 
     for (int i = 1; i < argc; ++i) {
         std::string p = argv[i];
@@ -956,6 +993,8 @@ int main(int argc, char *argv[]) {
                 ata_st_path = argv[i];
         } else if (p.find("WDC_WD140EFGX_68B0GN0-81GDJW2V") != std::string::npos) {
             wdc_path = argv[i];
+        } else if (p.find(".farm.ata.json") != std::string::npos) {
+            farm_path = argv[i];
         } else if (p.find(".ata.json") != std::string::npos && !ata_path) {
             ata_path = argv[i];
         } else if (p.find(".scsi.json") != std::string::npos) {
@@ -975,6 +1014,7 @@ int main(int argc, char *argv[]) {
     if (nvme_st_path) test_nvme_selftest(nvme_st_path);
     if (wdc_path)     test_sata_new_tables(wdc_path);
     if (wdc_path && ata_path) test_sata_multidevice_stable_hashes(wdc_path, ata_path);
+    if (farm_path)    test_farm_sensors(farm_path);
     if (ata_path)     test_ata_attrs(ata_path);
     if (ata_st_path)  test_ata_selftest(ata_st_path);
     if (scsi_path)    test_scsi_health(scsi_path);
