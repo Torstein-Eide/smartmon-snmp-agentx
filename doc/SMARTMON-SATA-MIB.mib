@@ -356,45 +356,6 @@ SmartmonSataInfoEntry ::= SEQUENCE {
     smartmonSataCapabilityAttrAutosave           TruthValue
 }
 
-smartmonSataModelFamily OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Drive model family as identified in the smartctl database
-         (model_family)."
-    ::= { smartmonSataInfoEntry 1 }
-
-smartmonSataModelName OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Drive model name from ATA IDENTIFY DEVICE (model_name)."
-    ::= { smartmonSataInfoEntry 2 }
-
-smartmonSataSerialNumber OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Drive serial number from ATA IDENTIFY DEVICE (serial_number)."
-    ::= { smartmonSataInfoEntry 3 }
-
-smartmonSataFirmwareVersion OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Drive firmware version from ATA IDENTIFY DEVICE (firmware_version)."
-    ::= { smartmonSataInfoEntry 4 }
-
-smartmonSataWwn OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "World Wide Name as a 64-bit hex string (e.g. 0x5000c500a7f9a768),
-         matching the Linux /dev/disk/by-id/wwn-0x... symlink format."
-    ::= { smartmonSataInfoEntry 5 }
-
 smartmonSataAtaVersion OBJECT-TYPE
     SYNTAX      SmartmonAtaVersion
     MAX-ACCESS  read-only

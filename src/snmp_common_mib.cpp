@@ -11,14 +11,19 @@
 // Device table iterator
 // ---------------------------------------------------------------------------
 
-#define COL_DEV_NAME        2
-#define COL_DEV_PATH        3
-#define COL_DEV_TYPE        4
-#define COL_DEV_LAST_POLL   5
-#define COL_DEV_POLL_RESULT 6
-#define COL_DEV_EXIT_STATUS 7
-#define COL_DEV_PHYS_INDEX  8
-#define COL_DEV_URIS        9
+#define COL_DEV_NAME         2
+#define COL_DEV_PATH         3
+#define COL_DEV_TYPE         4
+#define COL_DEV_LAST_POLL    5
+#define COL_DEV_POLL_RESULT  6
+#define COL_DEV_EXIT_STATUS  7
+#define COL_DEV_PHYS_INDEX   8
+#define COL_DEV_URIS         9
+#define COL_DEV_MODEL_FAMILY 10
+#define COL_DEV_MODEL_NAME   11
+#define COL_DEV_SERIAL       12
+#define COL_DEV_FIRMWARE     13
+#define COL_DEV_WWN          14
 
 static netsnmp_variable_list *
 device_get_next(void **loop_ctx, void **data_ctx,
@@ -89,6 +94,26 @@ device_table_handler(netsnmp_mib_handler *,
         case COL_DEV_URIS:
             snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                 (u_char*)row->uris.c_str(), row->uris.size());
+            break;
+        case COL_DEV_MODEL_FAMILY:
+            snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                (u_char*)row->model_family.c_str(), row->model_family.size());
+            break;
+        case COL_DEV_MODEL_NAME:
+            snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                (u_char*)row->model_name.c_str(), row->model_name.size());
+            break;
+        case COL_DEV_SERIAL:
+            snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                (u_char*)row->serial_number.c_str(), row->serial_number.size());
+            break;
+        case COL_DEV_FIRMWARE:
+            snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                (u_char*)row->firmware_version.c_str(), row->firmware_version.size());
+            break;
+        case COL_DEV_WWN:
+            snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                (u_char*)row->wwn.c_str(), row->wwn.size());
             break;
         default:
             netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
@@ -173,8 +198,7 @@ void register_common_mib() {
     netsnmp_register_scalar(netsnmp_create_handler_registration(
         "smartmonDeviceCountSas",  device_count_sas_handler,
         oid_device_count_sas,  OID_LEN(oid_device_count_sas),  HANDLER_CAN_RONLY));
-
     // Device table (single ASN_UNSIGNED index: smartmonDeviceIndex)
     REG_TABLE_U("smartmonDeviceTable", device_table_handler, oid_device_table,
-                device_get_next, COL_DEV_NAME, COL_DEV_URIS);
+                device_get_next, COL_DEV_NAME, COL_DEV_WWN);
 }

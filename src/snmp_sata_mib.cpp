@@ -56,56 +56,51 @@ static uint8_t ata_flags_to_bits(uint8_t raw) {
 // ---------------------------------------------------------------------------
 // SATA info table
 // INDEX { smartmonDeviceIndex }
-// col 1  = modelFamily
-// col 2  = modelName
-// col 3  = serialNumber
-// col 4  = firmwareVersion
-// col 5  = wwn
-// col 6  = ataVersion (SmartmonAtaVersion)
-// col 7  = sataVersion (SmartmonSataVersion)
-// col 8  = rotationRate
-// col 9  = formFactor (SmartmonAtaFormFactor)
-// col 10 = logicalBlockSize
-// col 11 = physicalBlockSize
-// col 12 = userCapacityBytes
-// col 13 = inSmartctlDatabase (TruthValue)
-// col 14 = smartAvailable (TruthValue)
-// col 15 = smartEnabled (TruthValue)
-// col 16 = trimSupported (TruthValue)
-// col 17 = userCapacityBlocks
-// col 18 = ataVersionMajor
-// col 19 = ataVersionMinor
-// col 20 = ifSpeedMaxValue
-// col 21 = ifSpeedCurrentValue
-// col 22 = apmEnabled (TruthValue)
-// col 23 = apmLevel
-// col 24 = readLookaheadEnabled (TruthValue)
-// col 25 = writeCacheEnabled (TruthValue)
-// col 26 = securityState
-// col 27 = securityEnabled (TruthValue)
-// col 28 = securityFrozen (TruthValue)
-// col 29 = attrRevision
-// col 30 = offlineCollectionCompletionSecs
-// col 31 = selfTestPollingShortMinutes
-// col 32 = selfTestPollingExtendedMinutes
-// col 33 = selfTestPollingConveyanceMinutes
-// col 34 = capabilitySelfTestsSupported (TruthValue)
-// col 35 = capabilityConveyanceSupported (TruthValue)
-// col 36 = capabilitySelectiveSupported (TruthValue)
-// col 37 = capabilityErrorLoggingSupported (TruthValue)
-// col 38 = capabilityGpLoggingSupported (TruthValue)
-// col 39 = sctErrorRecoverySupported (TruthValue)
-// col 40 = sctFeatureControlSupported (TruthValue)
-// col 41 = sctDataTableSupported (TruthValue)
-// col 42 = capabilityExecOfflineImmediate (TruthValue)
-// col 43 = capabilityOfflineAbortedOnCmd (TruthValue)
-// col 44 = capabilityOfflineSurfaceScan (TruthValue)
-// col 45 = errorLogRevision
-// col 46 = errorLogSectors
-// col 47 = selfTestLogRevision
-// col 48 = selfTestLogSectors
-// col 49 = pendingDefectsSize
-// col 50 = capabilityAttrAutosave (TruthValue)
+// col 1  = ataVersion (SmartmonAtaVersion)
+// col 2  = sataVersion (SmartmonSataVersion)
+// col 3  = rotationRate
+// col 4  = formFactor (SmartmonAtaFormFactor)
+// col 5  = logicalBlockSize
+// col 6  = physicalBlockSize
+// col 7  = userCapacityBytes
+// col 8  = inSmartctlDatabase (TruthValue)
+// col 9  = smartAvailable (TruthValue)
+// col 10 = smartEnabled (TruthValue)
+// col 11 = trimSupported (TruthValue)
+// col 12 = userCapacityBlocks
+// col 13 = ataVersionMajor
+// col 14 = ataVersionMinor
+// col 15 = ifSpeedMaxValue
+// col 16 = ifSpeedCurrentValue
+// col 17 = apmEnabled (TruthValue)
+// col 18 = apmLevel
+// col 19 = readLookaheadEnabled (TruthValue)
+// col 20 = writeCacheEnabled (TruthValue)
+// col 21 = securityState
+// col 22 = securityEnabled (TruthValue)
+// col 23 = securityFrozen (TruthValue)
+// col 24 = attrRevision
+// col 25 = offlineCollectionCompletionSecs
+// col 26 = selfTestPollingShortMinutes
+// col 27 = selfTestPollingExtendedMinutes
+// col 28 = selfTestPollingConveyanceMinutes
+// col 29 = capabilitySelfTestsSupported (TruthValue)
+// col 30 = capabilityConveyanceSupported (TruthValue)
+// col 31 = capabilitySelectiveSupported (TruthValue)
+// col 32 = capabilityErrorLoggingSupported (TruthValue)
+// col 33 = capabilityGpLoggingSupported (TruthValue)
+// col 34 = sctErrorRecoverySupported (TruthValue)
+// col 35 = sctFeatureControlSupported (TruthValue)
+// col 36 = sctDataTableSupported (TruthValue)
+// col 37 = capabilityExecOfflineImmediate (TruthValue)
+// col 38 = capabilityOfflineAbortedOnCmd (TruthValue)
+// col 39 = capabilityOfflineSurfaceScan (TruthValue)
+// col 40 = errorLogRevision
+// col 41 = errorLogSectors
+// col 42 = selfTestLogRevision
+// col 43 = selfTestLogSectors
+// col 44 = pendingDefectsSize
+// col 45 = capabilityAttrAutosave (TruthValue)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -136,150 +131,135 @@ sata_info_handler(netsnmp_mib_handler *,
         if (!row || !tinfo) continue;
 
         switch (tinfo->colnum) {
-        case 1:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->model_family.c_str(),
-                     row->model_family.size()); break;
-        case 2:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->model_name.c_str(),
-                     row->model_name.size()); break;
-        case 3:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->serial_number.c_str(),
-                     row->serial_number.size()); break;
-        case 4:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->firmware_version.c_str(),
-                     row->firmware_version.size()); break;
-        case 5:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->wwn.c_str(),
-                     row->wwn.size()); break;
-        case 6:  { long v = (long)row->ata_version;
+        case 1:  { long v = (long)row->ata_version;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 7:  { long v = (long)row->sata_version;
+        case 2:  { long v = (long)row->sata_version;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 8:  { u_long v = row->rotation_rate;
+        case 3:  { u_long v = row->rotation_rate;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 9:  { long v = (long)row->form_factor;
+        case 4:  { long v = (long)row->form_factor;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 10: { u_long v = row->logical_block_size;
+        case 5:  { u_long v = row->logical_block_size;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 11: { u_long v = row->physical_block_size;
+        case 6:  { u_long v = row->physical_block_size;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 12: set_counter64(req, row->user_capacity_bytes); break;
-        case 13: { long v = row->in_smartctl_db ? 1 : 2;
+        case 7:  set_counter64(req, row->user_capacity_bytes); break;
+        case 8:  { long v = row->in_smartctl_db ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 14: { long v = row->smart_available ? 1 : 2;
+        case 9:  { long v = row->smart_available ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 15: { long v = row->smart_enabled ? 1 : 2;
+        case 10: { long v = row->smart_enabled ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 16: { long v = row->trim_supported ? 1 : 2;
+        case 11: { long v = row->trim_supported ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 17: set_counter64(req, row->user_capacity_blocks); break;
-        case 18: { u_long v = row->ata_version_major;
+        case 12: set_counter64(req, row->user_capacity_blocks); break;
+        case 13: { u_long v = row->ata_version_major;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 19: { u_long v = row->ata_version_minor;
+        case 14: { u_long v = row->ata_version_minor;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 20: { u_long v = row->if_speed_max_mbps;
+        case 15: { u_long v = row->if_speed_max_mbps;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 21: { u_long v = row->if_speed_current_mbps;
+        case 16: { u_long v = row->if_speed_current_mbps;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 22: { long v = row->apm_enabled ? 1 : 2;
+        case 17: { long v = row->apm_enabled ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 23: { long v = (long)row->apm_level;
+        case 18: { long v = (long)row->apm_level;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 24: { long v = row->read_lookahead_enabled ? 1 : 2;
+        case 19: { long v = row->read_lookahead_enabled ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 25: { long v = row->write_cache_enabled ? 1 : 2;
+        case 20: { long v = row->write_cache_enabled ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 26: { u_long v = row->security_state;
+        case 21: { u_long v = row->security_state;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 27: { long v = row->security_enabled ? 1 : 2;
+        case 22: { long v = row->security_enabled ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 28: { long v = row->security_frozen ? 1 : 2;
+        case 23: { long v = row->security_frozen ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 29: { u_long v = row->attr_revision;
+        case 24: { u_long v = row->attr_revision;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 30: { u_long v = row->offline_completion_secs;
+        case 25: { u_long v = row->offline_completion_secs;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 31: { u_long v = row->polling_short_min;
+        case 26: { u_long v = row->polling_short_min;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 32: { u_long v = row->polling_ext_min;
+        case 27: { u_long v = row->polling_ext_min;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 33: { u_long v = row->polling_conv_min;
+        case 28: { u_long v = row->polling_conv_min;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 34: { long v = row->cap_selftests ? 1 : 2;
+        case 29: { long v = row->cap_selftests ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 35: { long v = row->cap_conveyance ? 1 : 2;
+        case 30: { long v = row->cap_conveyance ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 36: { long v = row->cap_selective ? 1 : 2;
+        case 31: { long v = row->cap_selective ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 37: { long v = row->cap_error_logging ? 1 : 2;
+        case 32: { long v = row->cap_error_logging ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 38: { long v = row->cap_gp_logging ? 1 : 2;
+        case 33: { long v = row->cap_gp_logging ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 39: { long v = row->sct_error_recovery ? 1 : 2;
+        case 34: { long v = row->sct_error_recovery ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 40: { long v = row->sct_feature_control ? 1 : 2;
+        case 35: { long v = row->sct_feature_control ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 41: { long v = row->sct_data_table ? 1 : 2;
+        case 36: { long v = row->sct_data_table ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 42: { long v = row->cap_exec_offline_immediate ? 1 : 2;
+        case 37: { long v = row->cap_exec_offline_immediate ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 43: { long v = row->cap_offline_aborted_on_cmd ? 1 : 2;
+        case 38: { long v = row->cap_offline_aborted_on_cmd ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 44: { long v = row->cap_offline_surface_scan ? 1 : 2;
+        case 39: { long v = row->cap_offline_surface_scan ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 45: { u_long v = row->error_log_revision;
+        case 40: { u_long v = row->error_log_revision;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 46: { u_long v = row->error_log_sectors;
+        case 41: { u_long v = row->error_log_sectors;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 47: { u_long v = row->selftest_log_revision;
+        case 42: { u_long v = row->selftest_log_revision;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 48: { u_long v = row->selftest_log_sectors;
+        case 43: { u_long v = row->selftest_log_sectors;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 49: { u_long v = row->pending_defects_size;
+        case 44: { u_long v = row->pending_defects_size;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 50: { long v = row->cap_attr_autosave ? 1 : 2;
+        case 45: { long v = row->cap_attr_autosave ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);

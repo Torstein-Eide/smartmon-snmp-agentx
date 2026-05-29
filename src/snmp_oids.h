@@ -70,6 +70,11 @@ static const oid oid_device_last_poll_time[]  = { SMARTMON_ENT, 2, 1, 3, 1, 5 };
 static const oid oid_device_last_poll_result[]= { SMARTMON_ENT, 2, 1, 3, 1, 6 };
 static const oid oid_device_poll_exit_status[]= { SMARTMON_ENT, 2, 1, 3, 1, 7 };
 static const oid oid_device_uris[]            = { SMARTMON_ENT, 2, 1, 3, 1, 9 };
+static const oid oid_device_model_family[]    = { SMARTMON_ENT, 2, 1, 3, 1, 10 };
+static const oid oid_device_model_name[]      = { SMARTMON_ENT, 2, 1, 3, 1, 11 };
+static const oid oid_device_serial_number[]   = { SMARTMON_ENT, 2, 1, 3, 1, 12 };
+static const oid oid_device_firmware_version[]= { SMARTMON_ENT, 2, 1, 3, 1, 13 };
+static const oid oid_device_wwn[]             = { SMARTMON_ENT, 2, 1, 3, 1, 14 };
 
 // ---------------------------------------------------------------------------
 // NVMe MIB (.3.1.X)

@@ -272,45 +272,36 @@ nvme_ctrl_handler(netsnmp_mib_handler *,
         if (!row || !tinfo) continue;
 
         switch (tinfo->colnum) {
-        case 1:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->model_number.c_str(),
-                     row->model_number.size()); break;
-        case 2:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->serial_number.c_str(),
-                     row->serial_number.size()); break;
-        case 3:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->firmware_version.c_str(),
-                     row->firmware_version.size()); break;
-        case 4:  { u_long v = row->pci_vendor_id;
+        case 1:  { u_long v = row->pci_vendor_id;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 5:  { u_long v = row->ieee_oui;
+        case 2:  { u_long v = row->ieee_oui;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 6:  set_counter64(req, row->total_capacity); break;
-        case 7:  set_counter64(req, row->unallocated_capacity); break;
-        case 8:  { u_long v = row->controller_id;
+        case 3:  set_counter64(req, row->total_capacity); break;
+        case 4:  set_counter64(req, row->unallocated_capacity); break;
+        case 5:  { u_long v = row->controller_id;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 9:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+        case 6:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->version_string.c_str(),
                      row->version_string.size()); break;
-        case 10: { u_long v = row->namespace_count;
+        case 7:  { u_long v = row->namespace_count;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 11: { u_long v = row->max_data_transfer_pages;
+        case 8:  { u_long v = row->max_data_transfer_pages;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 15: { u_long v = row->pci_subsystem_id;
+        case 12: { u_long v = row->pci_subsystem_id;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 16: { u_long v = row->version_value;
+        case 13: { u_long v = row->version_value;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 17: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+        case 14: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->pci_vendor_id_text.c_str(),
                      row->pci_vendor_id_text.size()); break;
-        case 18: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+        case 15: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->pci_subsystem_vendor_text.c_str(),
                      row->pci_subsystem_vendor_text.size()); break;
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);

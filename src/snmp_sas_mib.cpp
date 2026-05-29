@@ -28,22 +28,19 @@ TABLE_LAST_CHANGE_HANDLER(sas_bgscan_last_change_handler, ts_sas_bgscan)
 
 // ---------------------------------------------------------------------------
 // SAS info table
-// INDEX { smartmonDeviceIndex, smartmonSasInfoIndex(col 15, NOT-ACCESSIBLE) }
+// INDEX { smartmonDeviceIndex, smartmonSasInfoIndex(col 12, NOT-ACCESSIBLE) }
 // col 1  = vendor
 // col 2  = product
 // col 3  = revision
 // col 4  = compliance
-// col 5  = serialNumber
-// col 6  = wwn
-// col 7  = scsiModelName
-// col 8  = rotationRate
-// col 9  = formFactor
-// col 10 = logicalBlockSize
-// col 11 = physicalBlockSize
-// col 12 = userCapacityBytes
-// col 13 = powerCycles
-// col 14 = powerOnHours
-// col 15 = infoIndex (NOT-ACCESSIBLE, index)
+// col 5  = rotationRate
+// col 6  = formFactor
+// col 7  = logicalBlockSize
+// col 8  = physicalBlockSize
+// col 9  = userCapacityBytes
+// col 10 = powerCycles
+// col 11 = powerOnHours
+// col 12 = infoIndex (NOT-ACCESSIBLE, index)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -89,30 +86,21 @@ sas_info_handler(netsnmp_mib_handler *,
         case 4:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->compliance.c_str(),
                      row->compliance.size()); break;
-        case 5:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->serial_number.c_str(),
-                     row->serial_number.size()); break;
-        case 6:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->wwn.c_str(),
-                     row->wwn.size()); break;
-        case 7:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                     (u_char*)row->scsi_model_name.c_str(),
-                     row->scsi_model_name.size()); break;
-        case 8:  { u_long v = row->rotation_rate;
+        case 5:  { u_long v = row->rotation_rate;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 9:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+        case 6:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->form_factor.c_str(),
                      row->form_factor.size()); break;
-        case 10: { u_long v = row->logical_block_size;
+        case 7:  { u_long v = row->logical_block_size;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 11: { u_long v = row->physical_block_size;
+        case 8:  { u_long v = row->physical_block_size;
                    snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
                        (u_char*)&v, sizeof(v)); break; }
-        case 12: set_counter64(req, row->user_capacity_bytes); break;
-        case 13: set_counter64(req, row->power_cycles); break;
-        case 14: set_counter64(req, row->power_on_hours); break;
+        case 9:  set_counter64(req, row->user_capacity_bytes); break;
+        case 10: set_counter64(req, row->power_cycles); break;
+        case 11: set_counter64(req, row->power_on_hours); break;
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }

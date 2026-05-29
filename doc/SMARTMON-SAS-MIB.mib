@@ -130,28 +130,6 @@ smartmonSasCompliance OBJECT-TYPE
     DESCRIPTION "SCSI compliance level string, for example SPC-4."
     ::= { smartmonSasInfoEntry 4 }
 
-smartmonSasSerialNumber OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Drive serial number."
-    ::= { smartmonSasInfoEntry 5 }
-
-smartmonSasWwn OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "World Wide Name as a 64-bit hex string (e.g. 0x5000c500a7f9a768),
-                 matching the Linux /dev/disk/by-id/wwn-0x... symlink format."
-    ::= { smartmonSasInfoEntry 6 }
-
-smartmonSasScsiModelName OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Full SCSI model name string."
-    ::= { smartmonSasInfoEntry 7 }
-
 smartmonSasRotationRate OBJECT-TYPE
     SYNTAX      Unsigned32
     UNITS       "RPM"
