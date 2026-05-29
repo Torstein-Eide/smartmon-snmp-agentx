@@ -29,8 +29,7 @@ smartmonSataMIB MODULE-IDENTITY
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl ATA/SATA output.
 
-         TODO: 1.3.6.1.4.1.9999.1.1 is a placeholder enterprise OID;
-         replace it with an assigned IANA PEN before publication."
+         Enterprise OID: 1.3.6.1.4.1.65891.1.1 (IANA PEN 65891)."
     DESCRIPTION
         "The SMARTMON-SATA-MIB exposes ATA/SATA drive health, identity,
          SMART attributes, error log, and self-test log information
@@ -2153,18 +2152,27 @@ smartmonSataDevStatValue OBJECT-TYPE
 
 smartmonSataDevStatFlagsValue OBJECT-TYPE
     SYNTAX      BITS {
-                    supported(0),
-                    valid(1),
-                    supportsNotification(2),
-                    normalized(7)
-                }
+                supported(0),                 -- 0x80
+                valid(1),                     -- 0x40
+                normalized(2),                -- 0x20
+                supportsDsn(3),               -- 0x10
+                monitoredConditionMet(4),     -- 0x08
+                readThenInitialize(5),        -- 0x04
+                reserved6(6),                 -- 0x02
+                reserved7(7)                  -- 0x01
+            }
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Flags byte for this statistic.  Bit layout follows ACS Device
-         Statistics flags (ACS-3 section 7.8): bit 0 (MSB) = supported,
-         bit 1 = valid, bit 2 = supportsNotification, bit 7 (LSB) = normalized.
-         (ata_device_statistics.pages[].table[].flags.value)"
+        "// Get flags (supported flag already checked above)
+            bool valid                   = !!(flags & (1 << 6)); // bit 1, 0x40
+            bool normalized              = !!(flags & (1 << 5)); // bit 2, 0x20
+            bool supports_dsn            = !!(flags & (1 << 4)); // bit 3, 0x10, ACS-3
+            bool monitored_condition_met = !!(flags & (1 << 3)); // bit 4, 0x08, ACS-3
+            // TODO: bit 2, 0x04: READ THEN INITIALIZE SUPPORTED (ACS-5) 5
+            unsigned char reserved_flags = flags & ((1 << 3) - 1); // bits 0..2, 0x07 6 7 
+                    
+                    (ata_device_statistics.pages[].table[].flags.value)"
     ::= { smartmonSataDevStatEntry 6 }
 
 -- --------------------------------------------------------------------------
@@ -2552,9 +2560,7 @@ smartmonSataDevStatGroup OBJECT-GROUP
         smartmonSataDevStatPageName,
         smartmonSataDevStatName,
         smartmonSataDevStatValue,
-        smartmonSataDevStatFlagsValue,
-        smartmonSataDevStatValid,
-        smartmonSataDevStatNormalized
+        smartmonSataDevStatFlagsValue
     }
     STATUS current
     DESCRIPTION "ATA Device Statistics log objects."
