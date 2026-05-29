@@ -80,7 +80,7 @@ nvme_health_get_next(void **loop_ctx, void **data_ctx,
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
     // Index 1: smartmonDeviceIndex
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     // Index 2: smartmonNvmeHealthIndex (always 1 per device)
     v = 1;
@@ -168,9 +168,9 @@ nvme_st_get_next(void **loop_ctx, void **data_ctx,
     CacheNvmeSelfTestRow &row = g_cache.nvme_selftests[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.entry_index;
+    v = row.entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -257,7 +257,7 @@ nvme_ctrl_get_next(void **loop_ctx, void **data_ctx,
     CacheNvmeControllerRow &row = g_cache.nvme_controllers[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // controllerIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -341,9 +341,9 @@ nvme_ns_get_next(void **loop_ctx, void **data_ctx,
     CacheNvmeNamespaceRow &row = g_cache.nvme_namespaces[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.namespace_id;
+    v = row.namespace_id;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -414,9 +414,9 @@ nvme_el_get_next(void **loop_ctx, void **data_ctx,
     CacheNvmeErrorLogRow &row = g_cache.nvme_error_log[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.entry_index;
+    v = row.entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -508,7 +508,7 @@ nvme_cap_get_next(void **loop_ctx, void **data_ctx,
     CacheNvmeCapabilityRow &row = g_cache.nvme_capabilities[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // capabilityIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -588,9 +588,9 @@ nvme_ps_get_next(void **loop_ctx, void **data_ctx,
     CacheNvmePowerStateRow &row = g_cache.nvme_power_states[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.state_index;
+    v = row.state_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -673,12 +673,12 @@ nvme_lba_get_next(void **loop_ctx, void **data_ctx,
     CacheNvmeLbaFormatRow &row = g_cache.nvme_lba_formats[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = (u_long)row.namespace_id;
+    v = row.namespace_id;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
-    v = (u_long)row.format_id;
+    v = row.format_id;
     snmp_set_var_typed_value(put_idx->next_variable->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;

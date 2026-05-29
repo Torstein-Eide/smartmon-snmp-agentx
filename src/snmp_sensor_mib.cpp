@@ -47,10 +47,10 @@ sensor_get_next(void **loop_ctx, void **data_ctx,
         syslog(LOG_DEBUG, "sensor_mib: get_next → dev_idx=%u sensor_idx=%u name='%s'",
                row.device_index, row.sensor_index, row.name.c_str());
     // Index component 1: smartmonDeviceIndex
-    u_long v = (u_long)row.device_index;
+    uint32_t v = row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     // Index component 2: smartmonSensorIndex
-    v = (u_long)row.sensor_index;
+    v = row.sensor_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
