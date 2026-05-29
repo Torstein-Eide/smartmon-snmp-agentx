@@ -4,6 +4,7 @@
 #include "agentxd_config.h"
 #include "agentxd_cache.h"
 #include "agentxd_datasrc.h"
+#include "agentxd_systemd.h"
 
 #include "snmp_common_mib.h"
 #include "snmp_nvme_mib.h"
@@ -17,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cstdint>
 #include <syslog.h>
 #include <unistd.h>
 #include <sys/select.h>
@@ -24,6 +26,8 @@
 #include <net-snmp/net-snmp-config.h>
 #include <net-snmp/net-snmp-includes.h>
 #include <net-snmp/agent/net-snmp-agent-includes.h>
+
+#include <systemd/sd-daemon.h>
 
 // ---------------------------------------------------------------------------
 // AgentX init
@@ -82,14 +86,23 @@ bool agentxd_loop_run(volatile sig_atomic_t *exit_flag,
                       const AgentxConfig &cfg) {
     time_t last_staleness = time(nullptr);
 
+    // Watchdog: send WATCHDOG=1 at half the configured interval
+    uint64_t wdog_usec = 0;
+    bool use_watchdog = (sd_watchdog_enabled(0, &wdog_usec) > 0);
+    struct timespec last_wdog = {0, 0};
+    if (use_watchdog)
+        clock_gettime(CLOCK_MONOTONIC, &last_wdog);
+
     while (!*exit_flag) {
         if (*reload_flag) {
             *reload_flag = 0;
             syslog(LOG_INFO, "SIGHUP — rescanning %s", cfg.state_dir.c_str());
+            sd_notify(0, "RELOADING=1");
             agentxd_datasrc_shutdown();
             g_cache.clear();   // discard stale device rows from before the rescan
             if (!agentxd_datasrc_init(cfg.state_dir))
                 syslog(LOG_WARNING, "Rescan failed — serving empty cache until next SIGHUP");
+            agentxd_sd_notify_status();
         }
 
         fd_set fdset;
@@ -123,6 +136,7 @@ bool agentxd_loop_run(volatile sig_atomic_t *exit_flag,
             if (ifd >= 0 && FD_ISSET(ifd, &fdset)) {
                 FD_CLR(ifd, &fdset);
                 agentxd_datasrc_handle_events();
+                agentxd_sd_notify_status();
             }
             // Let net-snmp process AgentX traffic (GET, GETNEXT, keepalive)
             snmp_read(&fdset);
@@ -138,6 +152,18 @@ bool agentxd_loop_run(volatile sig_atomic_t *exit_flag,
         if (now - last_staleness >= 60) {
             agentxd_datasrc_check_staleness(cfg.cache_timeout);
             last_staleness = now;
+        }
+
+        // Watchdog keepalive
+        if (use_watchdog) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t elapsed = (uint64_t)(ts.tv_sec - last_wdog.tv_sec) * 1000000ULL
+                             + (uint64_t)(ts.tv_nsec - last_wdog.tv_nsec) / 1000ULL;
+            if (elapsed >= wdog_usec / 2) {
+                sd_notify(0, "WATCHDOG=1");
+                last_wdog = ts;
+            }
         }
     }
     return true;

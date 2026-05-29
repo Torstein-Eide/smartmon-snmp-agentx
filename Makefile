@@ -6,6 +6,7 @@ PREFIX ?= /usr/local
 SYSCONFDIR ?= /etc
 SBINDIR ?= $(PREFIX)/sbin
 BUILDDIR ?= .build
+OBJDIR := $(BUILDDIR)/obj
 BINDIR := $(BUILDDIR)
 TARGET := $(BINDIR)/smartmon-snmp-agentxd
 
@@ -20,6 +21,7 @@ AGENTXD_CPPFLAGS := \
 
 SOURCES := $(sort $(wildcard src/*.cpp))
 HEADERS := $(sort $(wildcard src/*.h))
+OBJECTS := $(patsubst src/%.cpp,$(OBJDIR)/%.o,$(SOURCES))
 
 .PHONY: all check-deps test clean install
 
@@ -30,9 +32,13 @@ check-deps:
 	@command -v $(NET_SNMP_CONFIG) >/dev/null 2>&1 || { echo "ERROR: net-snmp-config not found. Install libsnmp-dev." >&2; exit 1; }
 	@test -n "$(SNMP_AGENT_LIBS)" || { echo "ERROR: net-snmp-config --agent-libs returned no linker flags." >&2; exit 1; }
 
-$(TARGET): $(SOURCES) $(HEADERS) | check-deps
+$(OBJDIR)/%.o: src/%.cpp $(HEADERS) | check-deps
+	mkdir -p $(OBJDIR)
+	$(CXX) $(CPPFLAGS) $(AGENTXD_CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJECTS)
 	mkdir -p $(BINDIR)
-	$(CXX) $(CPPFLAGS) $(AGENTXD_CPPFLAGS) $(CXXFLAGS) $(SOURCES) -o $@ $(LDFLAGS) $(SNMP_AGENT_LIBS) -lsqlite3
+	$(CXX) $(LDFLAGS) $(OBJECTS) -o $@ $(SNMP_AGENT_LIBS) -lsqlite3 -lsystemd
 
 test:
 	$(MAKE) -C tests test

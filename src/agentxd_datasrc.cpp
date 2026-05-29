@@ -2356,11 +2356,13 @@ static void scan_state_dir() {
     }
     closedir(d);
     s_initial_scan_done = true;
+    long scan_ms = elapsed_ms(t0);
+    g_cache.last_scan_time = time(nullptr);
+    g_cache.last_scan_ms   = static_cast<uint32_t>(scan_ms < 0 ? 0 : scan_ms);
     if (g_verbosity >= 1)
         syslog(LOG_DEBUG, "datasrc: scan done: %d file(s) found, %d accepted — sensors=%zu ts_sensor=%ld elapsed=%ldms",
                n_total, n_accepted,
-               g_cache.sensors.size(), (long)g_cache.ts_sensor,
-               elapsed_ms(t0));
+               g_cache.sensors.size(), (long)g_cache.ts_sensor, scan_ms);
 }
 
 // ---------------------------------------------------------------------------

@@ -927,7 +927,7 @@ static void test_farm_sensors(const char *path) {
     for (const auto &s : g_cache.sensors)
         if (s.device_index == idx) rows.push_back(&s);
 
-    CHECK_EQ(rows.size(), 5u);  // temp(1) + 12V(3) + 5V(4) + humidity(5) + motor(6)
+    CHECK_EQ(rows.size(), 6u);  // temp(1) + wear(2) + 12V(3) + 5V(4) + humidity(5) + motor(6)
 
     // Temperature at sensor_index 1
     bool found_temp = false;
@@ -945,7 +945,7 @@ static void test_farm_sensors(const char *path) {
         if (s->sensor_index != 3) continue;
         found_12v = true;
         CHECK_STR(s->name, "12V Supply");
-        CHECK_EQ(s->value, 12187);
+        CHECK_EQ(s->value, 12189);
         CHECK_EQ(s->type, 6);   // voltsDC
         CHECK_EQ(s->scale, 8);  // milli
         break;

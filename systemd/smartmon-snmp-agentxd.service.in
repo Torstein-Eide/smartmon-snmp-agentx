@@ -8,10 +8,11 @@ Requires=snmpd.service
 Wants=smartmon-collect.timer
 
 [Service]
-Type=exec
+Type=notify
 ExecStart=@sbindir@/smartmon-snmp-agentxd -f -c @sysconfdir@/smartmontools/snmp-agentxd.conf
 Restart=on-failure
 RestartSec=10
+WatchdogSec=30
 
 # ------------------------------------------------------------------ #
 # Security hardening                                                 #

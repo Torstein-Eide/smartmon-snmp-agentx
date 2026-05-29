@@ -722,6 +722,10 @@ struct AgentxCache {
     time_t  ts_sas_bgscan         { 0 };
     time_t  ts_sensor             { 0 };
 
+    // Last full directory scan stats — set by datasrc after each scan
+    time_t    last_scan_time { 0 };   // wall-clock time scan completed
+    uint32_t  last_scan_ms   { 0 };   // duration of that scan in ms
+
     // FNV-1a hashes of each table's vector content — used to gate ts_* updates
     uint64_t table_hashes[TABLE_COUNT] {};
 

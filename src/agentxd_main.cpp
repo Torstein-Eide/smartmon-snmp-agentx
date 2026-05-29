@@ -1,9 +1,12 @@
 // agentxd_main.cpp — entry point for smartmon-snmp-agentxd
 
+#include "agentxd_cache.h"
 #include "agentxd_config.h"
 #include "agentxd_datasrc.h"
 #include "agentxd_loop.h"
 #include "agentxd_state_db.h"
+#include "agentxd_systemd.h"
+#include "version.h"
 
 #include <csignal>
 #include <cstdio>
@@ -13,6 +16,8 @@
 #include <syslog.h>
 #include <unistd.h>
 #include <sys/stat.h>
+
+#include <systemd/sd-daemon.h>
 
 #ifndef AGENTXD_SYSCONFDIR
 #define AGENTXD_SYSCONFDIR "/etc/smartmontools"
@@ -79,6 +84,7 @@ static void usage(const char *prog)
         "  -f        Run in foreground (do not daemonise)\n"
         "  -v        Verbose: log scan flow and device load summaries\n"
         "  -vv       Very verbose: add per-sensor detail and SNMP iterator calls\n"
+        "  -V        Print version and exit\n"
         "  -h        Show this help\n",
         prog, default_config_path);
 }
@@ -89,11 +95,12 @@ int main(int argc, char *argv[])
     bool foreground = false;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:fhv")) != -1) {
+    while ((opt = getopt(argc, argv, "c:fhvV")) != -1) {
         switch (opt) {
         case 'c': config_path = optarg; break;
         case 'f': foreground = true;    break;
         case 'v': ++g_verbosity;        break;
+        case 'V': printf("smartmon-snmp-agentxd " AGENTXD_VERSION "\n"); return EXIT_SUCCESS;
         case 'h': usage(argv[0]); return EXIT_SUCCESS;
         default:  usage(argv[0]); return EXIT_FAILURE;
         }
@@ -110,6 +117,8 @@ int main(int argc, char *argv[])
     AgentxConfig cfg;
     cfg.foreground = foreground;
 
+    sd_notify(0, "STATUS=v" AGENTXD_VERSION " starting up...");
+
     if (!agentxd_config_load(config_path, cfg)) {
         syslog(LOG_ERR, "Configuration error — exiting.");
         return EXIT_FAILURE;
@@ -125,6 +134,8 @@ int main(int argc, char *argv[])
            "agentx_socket='%s', cache_timeout=%us",
            cfg.state_dir.c_str(), cfg.agentx_socket.c_str(), cfg.cache_timeout);
 
+    sd_notify(0, "STATUS=v" AGENTXD_VERSION " config loaded, loading device data...");
+
     // Open and restore persisted table-change timestamps (optional)
     state_db_open(cfg.state_db_path);
     state_db_load();
@@ -136,6 +147,8 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    sd_notify(0, "STATUS=v" AGENTXD_VERSION " connecting to SNMP master...");
+
     // Initialise AgentX connection and register MIB tables
     if (!agentxd_loop_init(cfg)) {
         syslog(LOG_ERR, "AgentX initialisation failed — exiting.");
@@ -146,9 +159,13 @@ int main(int argc, char *argv[])
 
     syslog(LOG_INFO, "AgentX registered, entering main loop.");
 
+    sd_notify(0, "READY=1");
+    agentxd_sd_notify_status();
+
     // Main select loop — runs until SIGTERM/SIGINT
     bool clean_exit = agentxd_loop_run(&g_exit_signal, &g_reload_signal, cfg);
 
+    sd_notify(0, "STOPPING=1\nSTATUS=v" AGENTXD_VERSION " shutting down");
     syslog(LOG_INFO, "Shutting down.");
     agentxd_loop_shutdown();
     agentxd_datasrc_shutdown();

@@ -1,8 +1,12 @@
-# ci/Dockerfile.debian11 - reproducible Debian 11 export build.
+# ci/Dockerfile.debian11 - Debian 11 build environment for smartmon-snmp-agentxd.
 #
-# This image intentionally builds against Debian 11 distro net-snmp packages so
-# exported binaries do not accidentally link against /usr/local libraries from a
-# developer workstation.
+# This image only installs the toolchain; it contains no source and runs no
+# compilation.  Use build_debian11_export.sh to mount the repo and /out at
+# runtime so artifacts land directly on the host without a docker cp step.
+#
+# Intentionally built against Debian 11 distro packages so exported binaries
+# do not accidentally link against /usr/local libraries from a developer
+# workstation.
 
 FROM debian:11-slim
 
@@ -14,32 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         g++ \
         libsnmp-dev \
         libsqlite3-dev \
+        libsystemd-dev \
         make \
         snmp \
         snmpd \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . /src
-
 WORKDIR /src
-
-RUN make clean \
-    && make BUILDDIR=/out SYSCONFDIR=/etc NET_SNMP_CONFIG=/usr/bin/net-snmp-config \
-    && make -C tests test \
-    && file /out/smartmon-snmp-agentxd | tee /out/file.txt \
-    && ldd /out/smartmon-snmp-agentxd | tee /out/ldd.txt \
-    && ! grep -q '/usr/local' /out/ldd.txt \
-    && dpkg-query -W \
-        g++ \
-        libsnmp-dev \
-        libsnmp40 \
-        make \
-        snmp \
-        snmpd \
-        > /out/packages.txt \
-    && { \
-        echo "Built in: debian:11-slim"; \
-        echo "Compiler: $(g++ --version | head -n 1)"; \
-        echo "net-snmp-config: $(command -v net-snmp-config)"; \
-        echo "net-snmp libs: $(net-snmp-config --agent-libs)"; \
-    } > /out/build-info.txt
