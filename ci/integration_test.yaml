@@ -294,10 +294,10 @@ sections:
       - {label: "col9  smartAvailable = 1",      col: 9,  expected: "INTEGER: 1"}
       - {label: "col10 smartEnabled = 1",        col: 10, expected: "INTEGER: 1"}
       - {label: "col11 trimSupported = 2",       col: 11, expected: "INTEGER: 2"}
-      - {label: "col46 sctHistOpLimitMin = 0",   col: 46, expected: "INTEGER: 0"}
-      - {label: "col47 sctHistOpLimitMax = 0",   col: 47, expected: "INTEGER: 0"}
-      - {label: "col48 sctHistLimitMin = 0",     col: 48, expected: "INTEGER: 0"}
-      - {label: "col49 sctHistLimitMax = 0",     col: 49, expected: "INTEGER: 0"}
+      - {label: "col63 sctHistOpLimitMin = 0",   col: 63, expected: "INTEGER: 0"}
+      - {label: "col64 sctHistOpLimitMax = 0",   col: 64, expected: "INTEGER: 0"}
+      - {label: "col65 sctHistLimitMin = 0",     col: 65, expected: "INTEGER: 0"}
+      - {label: "col66 sctHistLimitMax = 0",     col: 66, expected: "INTEGER: 0"}
 
   - name: "SATA Health"
     walk: "sata"

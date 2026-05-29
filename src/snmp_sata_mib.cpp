@@ -229,52 +229,52 @@ sata_info_handler(netsnmp_mib_handler *,
         case 33: { long v = row->cap_gp_logging ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 34: { long v = row->sct_error_recovery ? 1 : 2;
+        case 40: { long v = row->cap_exec_offline_immediate ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 35: { long v = row->sct_feature_control ? 1 : 2;
+        case 41: { long v = row->cap_offline_aborted_on_cmd ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 36: { long v = row->sct_data_table ? 1 : 2;
+        case 42: { long v = row->cap_offline_surface_scan ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 37: { long v = row->cap_exec_offline_immediate ? 1 : 2;
-                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
-                       (u_char*)&v, sizeof(v)); break; }
-        case 38: { long v = row->cap_offline_aborted_on_cmd ? 1 : 2;
-                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
-                       (u_char*)&v, sizeof(v)); break; }
-        case 39: { long v = row->cap_offline_surface_scan ? 1 : 2;
-                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
-                       (u_char*)&v, sizeof(v)); break; }
-        case 40: { u_long v = row->error_log_revision;
+        case 50: { u_long v = row->error_log_revision;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 41: { u_long v = row->error_log_sectors;
+        case 51: { u_long v = row->error_log_sectors;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 42: { u_long v = row->selftest_log_revision;
+        case 52: { u_long v = row->selftest_log_revision;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 43: { u_long v = row->selftest_log_sectors;
+        case 53: { u_long v = row->selftest_log_sectors;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 44: { u_long v = row->pending_defects_size;
+        case 54: { u_long v = row->pending_defects_size;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 45: { long v = row->cap_attr_autosave ? 1 : 2;
+        case 55: { long v = row->cap_attr_autosave ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 46: { long v = row->sct_hist_op_limit_min;
+        case 60: { long v = row->sct_error_recovery ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 47: { long v = row->sct_hist_op_limit_max;
+        case 61: { long v = row->sct_feature_control ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 48: { long v = row->sct_hist_limit_min;
+        case 62: { long v = row->sct_data_table ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 49: { long v = row->sct_hist_limit_max;
+        case 63: { long v = row->sct_hist_op_limit_min;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 64: { long v = row->sct_hist_op_limit_max;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 65: { long v = row->sct_hist_limit_min;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 66: { long v = row->sct_hist_limit_max;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
@@ -1332,7 +1332,7 @@ void register_sata_mib() {
         oid_sata_selftest_last_change,  OID_LEN(oid_sata_selftest_last_change),  HANDLER_CAN_RONLY));
 
     // SATA table iterator registrations
-    REG_TABLE_U("smartmonSataInfoTable",      sata_info_handler,   oid_sata_info_table,      sata_info_get_next,    1, 49);
+    REG_TABLE_U("smartmonSataInfoTable",      sata_info_handler,   oid_sata_info_table,      sata_info_get_next,    1, 66);
     REG_TABLE_U("smartmonSataHealthTable",    sata_health_handler, oid_sata_health_table,    sata_health_get_next,  1, 20);
     REG_TABLE_UU("smartmonSataErrorLogTable", sata_el_handler,     oid_sata_error_log_table, sata_el_get_next,      2, 12);
     REG_TABLE_UU("smartmonSataAttrTable",     sata_attr_handler,   oid_sata_attr_table,      sata_attr_get_next,    2, 11);

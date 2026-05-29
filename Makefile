@@ -11,7 +11,7 @@ BINDIR := $(BUILDDIR)
 TARGET := $(BINDIR)/smartmon-snmp-agentxd
 
 CPPFLAGS ?=
-CXXFLAGS ?= -std=c++14 -O2 -Wall
+CXXFLAGS ?= -std=c++17 -O2 -Wall
 LDFLAGS ?=
 SNMP_AGENT_LIBS := $(shell $(NET_SNMP_CONFIG) --agent-libs 2>/dev/null)
 

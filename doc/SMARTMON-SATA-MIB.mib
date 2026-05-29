@@ -24,7 +24,7 @@ IMPORTS
         FROM SMARTMON-COMMON-MIB;
 
 smartmonSataMIB MODULE-IDENTITY
-    LAST-UPDATED "202605270000Z"
+    LAST-UPDATED "202605290000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl ATA/SATA output.
@@ -59,13 +59,21 @@ smartmonSataMIB MODULE-IDENTITY
           temperature readings over time.
 
          This MIB requires SMARTMON-TC-MIB and SMARTMON-COMMON-MIB."
+    REVISION "202605290000Z"
+    DESCRIPTION
+        "Regroup smartmonSataInfoTable columns into logical decades:
+         1-29 identity/geometry (unchanged); 30-33 non-SCT/non-offline
+         capability flags; 40-42 offline capability flags (was 37-39);
+         50-55 log structure + pending defects + autosave (was 40-45);
+         60-62 SCT capability flags (was 34-36); 63-66 SCT temperature
+         history limits (was 46-49)."
     REVISION "202605270000Z"
     DESCRIPTION
         "Remove smartmonSataModelFamily, smartmonSataModelName,
          smartmonSataSerialNumber, smartmonSataFirmwareVersion,
          smartmonSataWwn from smartmonSataInfoTable; these are now
          exposed in smartmonDeviceTable (SMARTMON-COMMON-MIB cols 10-14).
-         Remaining info columns renumbered 1-45.  Notification varbinds
+         Remaining info columns renumbered 1-33, 40-42, 50-55, 60-66.  Notification varbinds
          updated to reference smartmonDeviceModelName and
          smartmonDeviceSerialNumber."
     REVISION "202605210200Z"
@@ -330,22 +338,26 @@ SmartmonSataInfoEntry ::= SEQUENCE {
     smartmonSataSelfTestPollingExtendedMinutes   Unsigned32,
     smartmonSataSelfTestPollingConveyanceMinutes Unsigned32,
     smartmonSataCapabilitySelfTestsSupported     TruthValue,
+
     smartmonSataCapabilityConveyanceSupported    TruthValue,
     smartmonSataCapabilitySelectiveSupported     TruthValue,
     smartmonSataCapabilityErrorLoggingSupported  TruthValue,
     smartmonSataCapabilityGpLoggingSupported     TruthValue,
-    smartmonSataSctErrorRecoverySupported        TruthValue,
-    smartmonSataSctFeatureControlSupported       TruthValue,
-    smartmonSataSctDataTableSupported            TruthValue,
+
     smartmonSataCapabilityExecOfflineImmediate   TruthValue,
     smartmonSataCapabilityOfflineAbortedOnCmd    TruthValue,
     smartmonSataCapabilityOfflineSurfaceScan     TruthValue,
+
     smartmonSataErrorLogRevision                 Unsigned32,
     smartmonSataErrorLogSectors                  Unsigned32,
     smartmonSataSelfTestLogRevision              Unsigned32,
     smartmonSataSelfTestLogSectors               Unsigned32,
     smartmonSataPendingDefectsSize               Unsigned32,
     smartmonSataCapabilityAttrAutosave           TruthValue,
+
+    smartmonSataSctErrorRecoverySupported        TruthValue,
+    smartmonSataSctFeatureControlSupported       TruthValue,
+    smartmonSataSctDataTableSupported            TruthValue,
     smartmonSataSctHistOpLimitMin                Integer32,
     smartmonSataSctHistOpLimitMax                Integer32,
     smartmonSataSctHistLimitMin                  Integer32,
@@ -544,7 +556,7 @@ smartmonSataAttrRevision OBJECT-TYPE
     ::= { smartmonSataInfoEntry 24 }
 
 -- Capability and log-structure fields (static; polled on the 8-hour
--- InfoEntry schedule).  OIDs 25-45.
+-- InfoEntry schedule).  OIDs 25-33, 40-42, 50-55, 60-66.
 
 smartmonSataOfflineCollectionCompletionSecs OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -631,33 +643,6 @@ smartmonSataCapabilityGpLoggingSupported OBJECT-TYPE
          (ata_smart_data.capabilities.gp_logging_supported)."
     ::= { smartmonSataInfoEntry 33 }
 
-smartmonSataSctErrorRecoverySupported OBJECT-TYPE
-    SYNTAX      TruthValue
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Whether SCT Error Recovery Control is supported
-         (ata_sct_capabilities.error_recovery_control_supported)."
-    ::= { smartmonSataInfoEntry 34 }
-
-smartmonSataSctFeatureControlSupported OBJECT-TYPE
-    SYNTAX      TruthValue
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Whether SCT Feature Control is supported
-         (ata_sct_capabilities.feature_control_supported)."
-    ::= { smartmonSataInfoEntry 35 }
-
-smartmonSataSctDataTableSupported OBJECT-TYPE
-    SYNTAX      TruthValue
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Whether SCT Data Table is supported
-         (ata_sct_capabilities.data_table_supported)."
-    ::= { smartmonSataInfoEntry 36 }
-
 smartmonSataCapabilityExecOfflineImmediate OBJECT-TYPE
     SYNTAX      TruthValue
     MAX-ACCESS  read-only
@@ -665,7 +650,7 @@ smartmonSataCapabilityExecOfflineImmediate OBJECT-TYPE
     DESCRIPTION
         "Whether Execute Offline Immediate is supported
          (ata_smart_data.capabilities.exec_offline_immediate_supported)."
-    ::= { smartmonSataInfoEntry 37 }
+    ::= { smartmonSataInfoEntry 40 }
 
 smartmonSataCapabilityOfflineAbortedOnCmd OBJECT-TYPE
     SYNTAX      TruthValue
@@ -675,7 +660,7 @@ smartmonSataCapabilityOfflineAbortedOnCmd OBJECT-TYPE
         "Whether offline data collection is aborted upon receipt of a
          new command
          (ata_smart_data.capabilities.offline_is_aborted_upon_new_cmd)."
-    ::= { smartmonSataInfoEntry 38 }
+    ::= { smartmonSataInfoEntry 41 }
 
 smartmonSataCapabilityOfflineSurfaceScan OBJECT-TYPE
     SYNTAX      TruthValue
@@ -684,7 +669,7 @@ smartmonSataCapabilityOfflineSurfaceScan OBJECT-TYPE
     DESCRIPTION
         "Whether offline surface scan is supported
          (ata_smart_data.capabilities.offline_surface_scan_supported)."
-    ::= { smartmonSataInfoEntry 39 }
+    ::= { smartmonSataInfoEntry 42 }
 
 smartmonSataErrorLogRevision OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -693,7 +678,7 @@ smartmonSataErrorLogRevision OBJECT-TYPE
     DESCRIPTION
         "Revision number of the extended SMART error log
          (ata_smart_error_log.extended.revision)."
-    ::= { smartmonSataInfoEntry 40 }
+    ::= { smartmonSataInfoEntry 50 }
 
 smartmonSataErrorLogSectors OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -702,7 +687,7 @@ smartmonSataErrorLogSectors OBJECT-TYPE
     DESCRIPTION
         "Number of sectors occupied by the extended SMART error log
          (ata_smart_error_log.extended.sectors)."
-    ::= { smartmonSataInfoEntry 41 }
+    ::= { smartmonSataInfoEntry 51 }
 
 smartmonSataSelfTestLogRevision OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -711,7 +696,7 @@ smartmonSataSelfTestLogRevision OBJECT-TYPE
     DESCRIPTION
         "Revision number of the extended self-test log
          (ata_smart_self_test_log.extended.revision)."
-    ::= { smartmonSataInfoEntry 42 }
+    ::= { smartmonSataInfoEntry 52 }
 
 smartmonSataSelfTestLogSectors OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -720,7 +705,7 @@ smartmonSataSelfTestLogSectors OBJECT-TYPE
     DESCRIPTION
         "Number of sectors occupied by the extended self-test log
          (ata_smart_self_test_log.extended.sectors)."
-    ::= { smartmonSataInfoEntry 43 }
+    ::= { smartmonSataInfoEntry 53 }
 
 smartmonSataPendingDefectsSize OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -729,7 +714,7 @@ smartmonSataPendingDefectsSize OBJECT-TYPE
     DESCRIPTION
         "Maximum number of defects the pending defects log can store
          (ata_pending_defects_log.size).  Zero if the log is absent."
-    ::= { smartmonSataInfoEntry 44 }
+    ::= { smartmonSataInfoEntry 54 }
 
 smartmonSataCapabilityAttrAutosave OBJECT-TYPE
     SYNTAX      TruthValue
@@ -738,7 +723,34 @@ smartmonSataCapabilityAttrAutosave OBJECT-TYPE
     DESCRIPTION
         "Whether SMART attribute autosave is currently enabled
          (ata_smart_data.capabilities.attribute_autosave_enabled)."
-    ::= { smartmonSataInfoEntry 45 }
+    ::= { smartmonSataInfoEntry 55 }
+
+smartmonSataSctErrorRecoverySupported OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Whether SCT Error Recovery Control is supported
+         (ata_sct_capabilities.error_recovery_control_supported)."
+    ::= { smartmonSataInfoEntry 60 }
+
+smartmonSataSctFeatureControlSupported OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Whether SCT Feature Control is supported
+         (ata_sct_capabilities.feature_control_supported)."
+    ::= { smartmonSataInfoEntry 61 }
+
+smartmonSataSctDataTableSupported OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Whether SCT Data Table is supported
+         (ata_sct_capabilities.data_table_supported)."
+    ::= { smartmonSataInfoEntry 62 }
 
 smartmonSataSctHistOpLimitMin OBJECT-TYPE
     SYNTAX      Integer32
@@ -748,7 +760,7 @@ smartmonSataSctHistOpLimitMin OBJECT-TYPE
     DESCRIPTION
         "Minimum SCT operating temperature limit
          (ata_sct_temperature_history.temperature.op_limit_min)."
-    ::= { smartmonSataInfoEntry 46 }
+    ::= { smartmonSataInfoEntry 63 }
 
 smartmonSataSctHistOpLimitMax OBJECT-TYPE
     SYNTAX      Integer32
@@ -758,7 +770,7 @@ smartmonSataSctHistOpLimitMax OBJECT-TYPE
     DESCRIPTION
         "Maximum SCT operating temperature limit
          (ata_sct_temperature_history.temperature.op_limit_max)."
-    ::= { smartmonSataInfoEntry 47 }
+    ::= { smartmonSataInfoEntry 64 }
 
 smartmonSataSctHistLimitMin OBJECT-TYPE
     SYNTAX      Integer32
@@ -768,7 +780,7 @@ smartmonSataSctHistLimitMin OBJECT-TYPE
     DESCRIPTION
         "Minimum SCT temperature history plotting limit
          (ata_sct_temperature_history.temperature.limit_min)."
-    ::= { smartmonSataInfoEntry 48 }
+    ::= { smartmonSataInfoEntry 65 }
 
 smartmonSataSctHistLimitMax OBJECT-TYPE
     SYNTAX      Integer32
@@ -778,7 +790,7 @@ smartmonSataSctHistLimitMax OBJECT-TYPE
     DESCRIPTION
         "Maximum SCT temperature history plotting limit
          (ata_sct_temperature_history.temperature.limit_max)."
-    ::= { smartmonSataInfoEntry 49 }
+    ::= { smartmonSataInfoEntry 66 }
 
 -- --------------------------------------------------------------------------
 -- SATA SMART health table  (.4 RowCount, .5 LastChange, .6 Table)
