@@ -35,9 +35,8 @@ device_get_next(void **loop_ctx, void **data_ctx,
     CacheDeviceRow &row = g_cache.devices[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    u_long uval = (u_long)row.index;
-    snmp_set_var_typed_value(put_idx, ASN_UNSIGNED,
-                             (u_char*)&uval, sizeof(uval));
+    uint32_t uval = row.index;
+    snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&uval, sizeof(uval));
     return put_idx;
 }
 

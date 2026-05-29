@@ -592,10 +592,14 @@ static bool state_dir_has_json(const std::string &dir) {
 // ---------------------------------------------------------------------------
 
 // FNV-1a 32-bit hash used to derive a stable smartmonDeviceIndex from serial+model.
+// Result is capped to 31 bits: net-snmp's table iterator silently drops GETNEXT
+// results for OID sub-identifiers >= 2^31.  31 bits still gives ~2 billion unique
+// indices — ample for any realistic drive count.
 static uint32_t fnv1a32(const std::string &s) {
     uint32_t h = 2166136261u;
     for (unsigned char c : s)
         h = (h ^ c) * 16777619u;
+    h &= 0x7FFFFFFFu;
     return h ? h : 1u;
 }
 
@@ -2484,6 +2488,10 @@ static void scan_state_dir() {
         process_json_file(s_state_dir + "/" + name);
     }
     closedir(d);
+    std::sort(g_cache.devices.begin(), g_cache.devices.end(),
+              [](const CacheDeviceRow &a, const CacheDeviceRow &b) {
+                  return a.index < b.index;
+              });
     s_initial_scan_done = true;
     long scan_ms = elapsed_ms(t0);
     g_cache.last_scan_time = time(nullptr);
