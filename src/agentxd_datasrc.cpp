@@ -732,6 +732,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
                     r.lba           = e["lba"]["value"].as_uint64();
                     r.nsid          = static_cast<uint32_t>(e["nsid"].as_uint64());
                     r.parm_error_location = static_cast<uint32_t>(e["parameter_error_location"].as_uint64());
+                    r.error_timestamp = now;
                     g_cache.nvme_error_log.push_back(r);
                 }
             }

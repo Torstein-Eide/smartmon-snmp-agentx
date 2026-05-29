@@ -116,8 +116,9 @@ sections:
       - {label: "SATA pollExitStatus = 0",  oid: ".2.1.3.1.7.{sata}",   expected: "Gauge32: 0"}
       - {label: "SAS path",                 oid: ".2.1.3.1.3.{sas}",    expected: 'STRING: ".*"'}
       - {label: "SAS type = 3",             oid: ".2.1.3.1.4.{sas}",    expected: "INTEGER: 3"}
-      - {label: "SAS pollResult = 1",       oid: ".2.1.3.1.6.{sas}",    expected: "INTEGER: 1"}
+      - {label: "SAS pollResult = 1",        oid: ".2.1.3.1.6.{sas}",    expected: "INTEGER: 1"}
       - {label: "SAS pollExitStatus = 0",   oid: ".2.1.3.1.7.{sas}",    expected: "Gauge32: 0"}
+      - {label: "pollFailureThreshold = 1", oid: ".2.1.7.0",             expected: "Gauge32: 1"}
 
   # ---------------------------------------------------------------------------
   # NVMe — Samsung 980 PRO 1TB
@@ -247,8 +248,9 @@ sections:
       - {label: "errlog[1] col10 statusCode = 5",           col: 10, expected: "Gauge32: 5"}
       - {label: "errlog[1] col11 statusCodeType = 0",       col: 11, expected: "Gauge32: 0"}
       - {label: "errlog[1] col12 doNotRetry = 2 (false)",   col: 12, expected: "INTEGER: 2"}
-      - {label: "errlog[1] col13 statusString",             col: 13, expected: 'STRING: "Invalid Field in Command"'}
-      - {label: "errlog[1] col14 phaseTag = 2 (false)",     col: 14, expected: "INTEGER: 2"}
+      - {label: "errlog[1] col13 statusString",                        col: 13, expected: 'STRING: "Invalid Field in Command"'}
+      - {label: "errlog[1] col14 phaseTag = 2 (false)",              col: 14, expected: "INTEGER: 2"}
+      - {label: "errlog[1] col15 errorTimestamp (DateAndTime)",      col: 15, expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
 
   - name: "NVMe Capability"
     walk: "nvme"
@@ -357,6 +359,31 @@ sections:
       - {label: "errlog[1] col5  compRegError = 4",      col: 5,  expected: "Gauge32: 4"}
       - {label: "errlog[1] col7  lba = 43981",           col: 7,  expected: "Counter64: 43981"}
       - {label: "errlog[1] col12 stateValue = 15",       col: 12, expected: "INTEGER: 15"}
+
+  # smartSATAChanges subtree (.4.1.2) — change-tracking tables
+  # BySubindex table (.4.1.2.3) not tested: no error-cmd or dev-stat rows in
+  # the default SATA fixture.
+
+  - name: "SATA Change Metadata"
+    walk: "sata"
+    # No device index in the index — use oid: directly.
+    tests:
+      - {label: "12 metadata rows (one per tracked table)", type: rows, oid_regex: '\.4\.1\.2\.1\.1\.2\.', min: 12}
+      - {label: "tableId=1 name = smartmonSataInfoTable",   oid: ".4.1.2.1.1.2.1", expected: 'STRING: "smartmonSataInfoTable"'}
+      - {label: "tableId=1 rowCount >= 1",                  oid: ".4.1.2.1.1.3.1", expected: "Gauge32: [1-9][0-9]*"}
+      - {label: "tableId=1 lastChange (DateAndTime)",       oid: ".4.1.2.1.1.4.1", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
+      - {label: "tableId=3 name = smartmonSataAttrTable",   oid: ".4.1.2.1.1.2.3", expected: 'STRING: "smartmonSataAttrTable"'}
+      - {label: "tableId=6 name = smartmonSataSelfTestTable", oid: ".4.1.2.1.1.2.6", expected: 'STRING: "smartmonSataSelfTestTable"'}
+
+  - name: "SATA Change By Device"
+    walk: "sata"
+    device: sata
+    tests:
+      - {label: "by-device table rows >= 12",        type: rows, oid_regex: '\.4\.1\.2\.2\.1\.2\.', min: 12}
+      - {label: "device D, tableId=1 rowCount = 1",  oid: ".4.1.2.2.1.2.{D}.1", expected: "Gauge32: 1"}
+      - {label: "device D, tableId=1 lastChange",    oid: ".4.1.2.2.1.3.{D}.1", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
+      - {label: "device D, tableId=3 rowCount >= 1", oid: ".4.1.2.2.1.2.{D}.3", expected: "Gauge32: [1-9][0-9]*"}
+      - {label: "device D, tableId=6 rowCount >= 1", oid: ".4.1.2.2.1.2.{D}.6", expected: "Gauge32: [1-9][0-9]*"}
 
   # ---------------------------------------------------------------------------
   # SAS — SEAGATE ST4000NM0023

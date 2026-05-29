@@ -93,6 +93,7 @@ struct CacheNvmeSelfTestRow {
     uint32_t    segment_number { 0 };
     uint32_t    status_code_type { 0 };
     uint32_t    status_code      { 0 };
+    time_t      estimated_completion { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -125,6 +126,7 @@ struct CacheSataSelfTestRow {
     uint32_t    remaining_pct { 0 };
     uint64_t    lifetime_hours { 0 };
     uint64_t    lba_first_error { 0 };
+    time_t      estimated_completion { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -298,6 +300,7 @@ struct CacheNvmeErrorLogRow {
     bool        do_not_retry  { false };
     bool        phase_tag     { false };
     std::string status_string;
+    time_t      error_timestamp { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -599,6 +602,7 @@ struct CacheSasBgScanRow {
     uint64_t    scans_performed  { 0 };
     uint64_t    medium_scans     { 0 };
     std::string scan_results;
+    time_t      estimated_completion { 0 };
 };
 
 // --------------------------------------------------------------------

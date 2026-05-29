@@ -163,7 +163,10 @@ static const oid oid_notif_nvme_selftest_failed[]  = { SMARTMON_ENT, 3, 2, 2 };
 // .4.1.18 = smartmonSataSelfTestTable
 
 static const oid oid_sata_info_row_count[]         = { SMARTMON_ENT, 4, 1, 1 };
-static const oid oid_sata_info_last_change[]       = { SMARTMON_ENT, 4, 1, 2 };
+// .4.1.2 is now the smartSATAChanges OBJECT IDENTIFIER subtree (replaces old sata_info_last_change scalar)
+static const oid oid_sata_change_metadata_table[]    = { SMARTMON_ENT, 4, 1, 2, 1 };
+static const oid oid_sata_change_by_device_table[]   = { SMARTMON_ENT, 4, 1, 2, 2 };
+static const oid oid_sata_change_by_subindex_table[] = { SMARTMON_ENT, 4, 1, 2, 3 };
 static const oid oid_sata_info_table[]             = { SMARTMON_ENT, 4, 1, 3 };
 static const oid oid_sata_health_row_count[]       = { SMARTMON_ENT, 4, 1, 4 };
 static const oid oid_sata_health_last_change[]     = { SMARTMON_ENT, 4, 1, 5 };

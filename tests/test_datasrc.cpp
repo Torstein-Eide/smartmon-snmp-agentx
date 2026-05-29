@@ -6,6 +6,7 @@
 #include "test_util.h"
 
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>

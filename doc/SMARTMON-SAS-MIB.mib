@@ -15,7 +15,8 @@ IMPORTS
     SmartmonLogicalBlockAddress, smartmonRoot
         FROM SMARTMON-TC-MIB
     smartmonDeviceIndex, smartmonDevicePath,
-    smartmonDeviceLastPollTime
+    smartmonDeviceLastPollTime,
+    smartmonDeviceModelName, smartmonDeviceSerialNumber
         FROM SMARTMON-COMMON-MIB;
 
 smartmonSasMIB MODULE-IDENTITY
@@ -35,6 +36,14 @@ smartmonSasMIB MODULE-IDENTITY
          available.
 
          This MIB requires SMARTMON-TC-MIB and SMARTMON-COMMON-MIB."
+    REVISION "202605270000Z"
+    DESCRIPTION
+        "Remove smartmonSasSerialNumber, smartmonSasWwn, and
+         smartmonSasScsiModelName from smartmonSasInfoTable; these are now
+         exposed in smartmonDeviceTable (SMARTMON-COMMON-MIB cols 12, 14, 11).
+         Remaining info columns renumbered 1-12.  Notification varbinds
+         updated to reference smartmonDeviceModelName and
+         smartmonDeviceSerialNumber."
     REVISION "202605180000Z"
     DESCRIPTION "Initial draft."
     ::= { smartmonRoot 5 }
@@ -90,9 +99,6 @@ SmartmonSasInfoEntry ::= SEQUENCE {
     smartmonSasProduct             DisplayString,
     smartmonSasRevision            DisplayString,
     smartmonSasCompliance          DisplayString,
-    smartmonSasSerialNumber        DisplayString,
-    smartmonSasWwn                 DisplayString,
-    smartmonSasScsiModelName       DisplayString,
     smartmonSasRotationRate        Unsigned32,
     smartmonSasFormFactor          DisplayString,
     smartmonSasLogicalBlockSize    Unsigned32,
@@ -138,14 +144,14 @@ smartmonSasRotationRate OBJECT-TYPE
     DESCRIPTION
         "Nominal rotation rate in RPM.  Zero indicates a solid-state
          device or that the value is not reported."
-    ::= { smartmonSasInfoEntry 8 }
+    ::= { smartmonSasInfoEntry 5 }
 
 smartmonSasFormFactor OBJECT-TYPE
     SYNTAX      DisplayString
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION "Form factor name as reported by smartctl."
-    ::= { smartmonSasInfoEntry 9 }
+    ::= { smartmonSasInfoEntry 6 }
 
 smartmonSasLogicalBlockSize OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -153,7 +159,7 @@ smartmonSasLogicalBlockSize OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION "Logical block size in bytes."
-    ::= { smartmonSasInfoEntry 10 }
+    ::= { smartmonSasInfoEntry 7 }
 
 smartmonSasPhysicalBlockSize OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -161,7 +167,7 @@ smartmonSasPhysicalBlockSize OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION "Physical block size in bytes."
-    ::= { smartmonSasInfoEntry 11 }
+    ::= { smartmonSasInfoEntry 8 }
 
 smartmonSasUserCapacityBytes OBJECT-TYPE
     SYNTAX      CounterBasedGauge64
@@ -169,14 +175,14 @@ smartmonSasUserCapacityBytes OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION "Total user-addressable capacity in bytes."
-    ::= { smartmonSasInfoEntry 12 }
+    ::= { smartmonSasInfoEntry 9 }
 
 smartmonSasPowerCycles OBJECT-TYPE
     SYNTAX      CounterBasedGauge64
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION "Number of power cycles, if reported."
-    ::= { smartmonSasInfoEntry 13 }
+    ::= { smartmonSasInfoEntry 10 }
 
 smartmonSasPowerOnHours OBJECT-TYPE
     SYNTAX      CounterBasedGauge64
@@ -184,14 +190,14 @@ smartmonSasPowerOnHours OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION "Power-on hours, if reported."
-    ::= { smartmonSasInfoEntry 14 }
+    ::= { smartmonSasInfoEntry 11 }
 
 smartmonSasInfoIndex OBJECT-TYPE
     SYNTAX      Unsigned32 (1..4294967295)
     MAX-ACCESS  not-accessible
     STATUS      current
     DESCRIPTION "Local index for SAS/SCSI identity entries within a device."
-    ::= { smartmonSasInfoEntry 15 }
+    ::= { smartmonSasInfoEntry 12 }
 
 -- --------------------------------------------------------------------------
 -- SAS health table  (.4 RowCount, .5 LastChange, .6 Table)
@@ -594,8 +600,8 @@ smartmonSasBgScanEstimatedCompletionTime OBJECT-TYPE
 
 smartmonSasHealthFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonSasScsiModelName,
-        smartmonSasSerialNumber,
+        smartmonDeviceModelName,
+        smartmonDeviceSerialNumber,
         smartmonDevicePath,
         smartmonSasHealthOverallStatus,
         smartmonDeviceLastPollTime
@@ -607,8 +613,8 @@ smartmonSasHealthFailed NOTIFICATION-TYPE
 
 smartmonSasSelfTestFailed NOTIFICATION-TYPE
     OBJECTS {
-        smartmonSasScsiModelName,
-        smartmonSasSerialNumber,
+        smartmonDeviceModelName,
+        smartmonDeviceSerialNumber,
         smartmonDevicePath,
         smartmonSasSelfTestType,
         smartmonSasSelfTestResult,
@@ -623,8 +629,8 @@ smartmonSasSelfTestFailed NOTIFICATION-TYPE
 
 smartmonSasUncorrectedErrorsIncreased NOTIFICATION-TYPE
     OBJECTS {
-        smartmonSasScsiModelName,
-        smartmonSasSerialNumber,
+        smartmonDeviceModelName,
+        smartmonDeviceSerialNumber,
         smartmonDevicePath,
         smartmonSasErrorDirection,
         smartmonSasUncorrectedErrors,
@@ -672,9 +678,6 @@ smartmonSasInfoGroup OBJECT-GROUP
         smartmonSasProduct,
         smartmonSasRevision,
         smartmonSasCompliance,
-        smartmonSasSerialNumber,
-        smartmonSasWwn,
-        smartmonSasScsiModelName,
         smartmonSasRotationRate,
         smartmonSasFormFactor,
         smartmonSasLogicalBlockSize,

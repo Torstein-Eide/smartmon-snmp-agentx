@@ -195,7 +195,12 @@ SmartmonDeviceEntry ::= SEQUENCE {
     smartmonDeviceLastPollResult     SmartmonPollResult,
     smartmonDeviceLastPollExitStatus Unsigned32,
     smartmonDevicePhysicalIndex      PhysicalIndexOrZero,
-    smartmonDeviceUris               OCTET STRING
+    smartmonDeviceUris               OCTET STRING,
+    smartmonDeviceModelFamily        DisplayString,
+    smartmonDeviceModelName          DisplayString,
+    smartmonDeviceSerialNumber       DisplayString,
+    smartmonDeviceFirmwareVersion    DisplayString,
+    smartmonDeviceWwn                DisplayString
 }
 
 smartmonDeviceIndex OBJECT-TYPE
@@ -465,7 +470,12 @@ smartmonDeviceGroup OBJECT-GROUP
         smartmonDeviceLastPollResult,
         smartmonDeviceLastPollExitStatus,
         smartmonDevicePhysicalIndex,
-        smartmonDeviceUris
+        smartmonDeviceUris,
+        smartmonDeviceModelFamily,
+        smartmonDeviceModelName,
+        smartmonDeviceSerialNumber,
+        smartmonDeviceFirmwareVersion,
+        smartmonDeviceWwn
     }
     STATUS current
     DESCRIPTION

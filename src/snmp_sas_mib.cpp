@@ -52,7 +52,7 @@ sas_info_get_next(void **loop_ctx, void **data_ctx,
     CacheSasInfoRow &row = g_cache.sas_info[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    uint32_t v = row.device_index;
+    u_long v = (u_long)row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // infoIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -116,6 +116,7 @@ sas_info_handler(netsnmp_mib_handler *,
 // col 4  = bgScanMediumScansPerformed
 // col 5  = bgScanScanResults
 // col 6  = bgScanIndex (NOT-ACCESSIBLE, index)
+// col 7  = bgScanEstimatedCompletionTime (DateAndTime, not instantiated when 0)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -127,7 +128,7 @@ sas_bgscan_get_next(void **loop_ctx, void **data_ctx,
     CacheSasBgScanRow &row = g_cache.sas_bgscan[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    uint32_t v = row.device_index;
+    u_long v = (u_long)row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // bgScanIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -160,6 +161,14 @@ sas_bgscan_handler(netsnmp_mib_handler *,
         case 5:  snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                      (u_char*)row->scan_results.c_str(),
                      row->scan_results.size()); break;
+        case 7:  if (row->estimated_completion == 0) {
+                     netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
+                 } else {
+                     uint8_t dt[8];
+                     snmp_encode_date_time(row->estimated_completion, dt);
+                     snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                         dt, sizeof(dt));
+                 } break;
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }
@@ -186,7 +195,7 @@ sas_health_get_next(void **loop_ctx, void **data_ctx,
     CacheSasHealthRow &row = g_cache.sas_health[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    uint32_t v = row.device_index;
+    u_long v = (u_long)row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     v = 1;  // healthIndex = 1 per device
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
@@ -249,7 +258,7 @@ sas_ec_get_next(void **loop_ctx, void **data_ctx,
     CacheSasErrorCounterRow &row = g_cache.sas_error_counters[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    uint32_t v = row.device_index;
+    u_long v = (u_long)row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     long dir = (long)row.direction;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_INTEGER,
@@ -305,9 +314,9 @@ sas_st_get_next(void **loop_ctx, void **data_ctx,
     CacheSasSelfTestRow &row = g_cache.sas_selftests[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = &row;
-    uint32_t v = row.device_index;
+    u_long v = (u_long)row.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = row.entry_index;
+    v = (u_long)row.entry_index;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED,
                              (u_char*)&v, sizeof(v));
     return put_idx;
@@ -385,8 +394,8 @@ void register_sas_mib() {
         oid_sas_bgscan_last_change,       OID_LEN(oid_sas_bgscan_last_change),       HANDLER_CAN_RONLY));
 
     // SAS table iterator registrations
-    REG_TABLE_UU("smartmonSasInfoTable",             sas_info_handler,   oid_sas_info_table,          sas_info_get_next,   1, 14);
-    REG_TABLE_UU("smartmonSasBackgroundScanTable",   sas_bgscan_handler, oid_sas_bgscan_table,        sas_bgscan_get_next, 1,  5);
+    REG_TABLE_UU("smartmonSasInfoTable",             sas_info_handler,   oid_sas_info_table,          sas_info_get_next,   1, 11);
+    REG_TABLE_UU("smartmonSasBackgroundScanTable",   sas_bgscan_handler, oid_sas_bgscan_table,        sas_bgscan_get_next, 1,  7);
     REG_TABLE_UU("smartmonSasHealthTable",           sas_health_handler, oid_sas_health_table,        sas_health_get_next, 1,  5);
     // Error counter index 2 is INTEGER (direction), not UNSIGNED
     REG_TABLE_UI("smartmonSasErrorCounterTable",     sas_ec_handler,     oid_sas_error_counter_table, sas_ec_get_next,     2,  8);
