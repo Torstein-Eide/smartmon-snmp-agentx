@@ -16,6 +16,7 @@ IMPORTS
     SmartmonAtaVersion, SmartmonAtaMinorVersion, SmartmonAtaFormFactor,
     SmartmonSataVersion, SmartmonAtaDeviceState, SmartmonAtaApmLevel,
     SmartmonAtaLogAddress, SmartmonAtaDevStatPage, SmartmonAtaOfflineStatus,
+    SmartmonAtaSelfTestExecStatus,
     SmartmonLogicalBlockAddress, smartmonRoot
         FROM SMARTMON-TC-MIB
     smartmonDeviceIndex, smartmonDevicePath,
@@ -894,12 +895,13 @@ smartmonSataOfflineCollectionStatusValue OBJECT-TYPE
     ::= { smartmonSataHealthEntry 2 }
 
 smartmonSataSelfTestExecutionStatusValue OBJECT-TYPE
-    SYNTAX      Unsigned32
+    SYNTAX      SmartmonAtaSelfTestExecStatus
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Raw self-test execution status byte
-         (ata_smart_data.self_test.status.value)."
+        "Self-test execution status code (bits 7:4 of
+         ata_smart_data.self_test.status.value).  The remaining percentage
+         is reported separately in smartmonSataSelfTestExecutionRemainingPct."
     ::= { smartmonSataHealthEntry 3 }
 
 smartmonSataPowerCycles OBJECT-TYPE

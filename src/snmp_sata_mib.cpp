@@ -345,8 +345,8 @@ sata_health_handler(netsnmp_mib_handler *,
         case 2:  { long v = row->offline_status_value;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 3:  { u_long v = row->selftest_status_value;
-                   snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
+        case 3:  { long v = (long)row->selftest_status_value;
+                   snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
         case 4:  set_counter64(req, row->power_cycles); break;
         case 5:  set_counter64(req, row->power_on_hours); break;

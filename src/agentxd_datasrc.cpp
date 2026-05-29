@@ -1531,7 +1531,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             const JVal &odc = smart["offline_data_collection"];
             h.offline_status_value = static_cast<uint32_t>(odc["status"]["value"].as_uint64());
             const JVal &st = smart["self_test"];
-            h.selftest_status_value = static_cast<uint32_t>(st["status"]["value"].as_uint64());
+            h.selftest_status_value = (static_cast<uint32_t>(st["status"]["value"].as_uint64()) >> 4) & 0xFu;
             h.selftest_status_remaining_pct = static_cast<uint32_t>(
                 st["status"]["remaining_percent"].as_uint64());
             if (h.selftest_status_remaining_pct > 0) {

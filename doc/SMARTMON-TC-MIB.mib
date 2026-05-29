@@ -482,6 +482,26 @@ SmartmonAtaOfflineStatus ::= TEXTUAL-CONVENTION
         abortedFatalError(6)
     }
 
+SmartmonAtaSelfTestExecStatus ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "ATA self-test execution status code from bits 7:4 of
+         ata_smart_data.self_test.status.value (ATA-8 table 58).
+         Bits 3:0 of the raw byte encode remaining percentage / 10 and are
+         reported separately as smartmonSataSelfTestExecutionRemainingPct."
+    SYNTAX INTEGER {
+        completed(0),
+        abortedByHost(1),
+        interruptedByReset(2),
+        fatalError(3),
+        failedUnknownElement(4),
+        failedElectricalElement(5),
+        failedServoElement(6),
+        failedReadElement(7),
+        failedHandlingDamage(8),
+        inProgress(15)
+    }
+
 SmartmonScsiErrorDirection ::= TEXTUAL-CONVENTION
     STATUS      current
     DESCRIPTION
