@@ -70,9 +70,9 @@ device_table_handler(netsnmp_mib_handler *,
             break;
         }
         case COL_DEV_LAST_POLL: {
-            uint8_t dt[8];
-            snmp_encode_date_time(row->last_poll_time, dt);
-            snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR, dt, 8);
+            uint8_t dt[11];
+            snmp_encode_date_time({row->last_poll_time, 0}, dt);
+            snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR, dt, sizeof(dt));
             break;
         }
         case COL_DEV_POLL_RESULT: {

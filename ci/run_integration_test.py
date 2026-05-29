@@ -25,6 +25,16 @@ SNMP_STABLE_OUTPUT_ARGS = ["-OenU", "-Ih"]
 # ---------------------------------------------------------------------------
 _COLOUR = sys.stdout.isatty() and not os.environ.get("NOCOLOR")
 
+def _plain_len(s: str) -> int:
+    """Visible length of s (strips ANSI escape codes)."""
+    return len(re.sub(r'\033\[[0-9;]*m', '', s))
+
+def _overwrite_prefix(prev_plain_len: int) -> str:
+    """ANSI prefix to overwrite a previously printed line of prev_plain_len visible chars."""
+    cols = shutil.get_terminal_size((80, 24)).columns
+    rows_up = max(0, (prev_plain_len - 1) // cols) if prev_plain_len else 0
+    return (f"\033[{rows_up}A\r\033[J" if rows_up else "\r\033[K")
+
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _COLOUR else text
 
@@ -359,7 +369,8 @@ def run_stability_check(check: dict, live_fixtures: Path,
                         walk_defs: dict, output_dir: Path,
                         snmp_env: dict[str, str],
                         walk_files: dict[str, Path],
-                        verbose: bool) -> tuple[int, int, int, int, list[str]]:
+                        verbose: bool,
+                        progress_fn=None) -> tuple[int, int, int, int, list[str]]:
     """Apply JSON mutations to a fixture one by one.  For each mutation verify
     that exactly the expected LastChange OID advances and all others stay stable.
 
@@ -405,16 +416,21 @@ def run_stability_check(check: dict, live_fixtures: Path,
             data = json.loads(fixture_path.read_bytes())
             _set_json_path(data, mut["json_path"], mut["new_value"])
             fixture_path.write_text(json.dumps(data))
-            time.sleep(wait_sec)
 
             walk_suffix = walk_defs.get(walk_label, "")
-            result = subprocess.run(
-                ["snmpwalk", "-v2c", "-c", community, *SNMP_STABLE_OUTPUT_ARGS,
-                 f"127.0.0.1:{snmp_port}", f"{ent_oid}{walk_suffix}"],
-                capture_output=True, text=True, env=snmp_env,
-            )
             new_walk_path = output_dir / f"snmpwalk-stability-{safe_check}-{mut_idx}.txt"
-            new_walk_path.write_text(result.stdout + result.stderr)
+            before_expected = before.get(expected_oid)
+            for _attempt in range(10):
+                time.sleep(wait_sec)
+                result = subprocess.run(
+                    ["snmpwalk", "-v2c", "-c", community, *SNMP_STABLE_OUTPUT_ARGS,
+                     f"127.0.0.1:{snmp_port}", f"{ent_oid}{walk_suffix}"],
+                    capture_output=True, text=True, env=snmp_env,
+                )
+                new_walk_path.write_text(result.stdout + result.stderr)
+                after_expected = extract_oid_value(new_walk_path, ent_oid, expected_oid)
+                if after_expected != before_expected:
+                    break
 
             symbols: list[str] = []
             mut_oid_failed = 0
@@ -457,11 +473,17 @@ def run_stability_check(check: dict, live_fixtures: Path,
             else:
                 mut_failed += 1
 
-            print(f"  {''.join(symbols)}  {_dim(label)}")
+            if verbose:
+                print(f"  {''.join(symbols)}  {_dim(label)}")
+            if progress_fn:
+                progress_fn(mut_passed, mut_failed, oid_passed, oid_failed)
             before = {oid: extract_oid_value(new_walk_path, ent_oid, oid) for oid in resolved}
 
     finally:
-        fixture_path.write_bytes(original_bytes)
+        try:
+            fixture_path.write_bytes(original_bytes)
+        except OSError:
+            pass  # temp dir already removed by cleanup() on signal
 
     return mut_passed, mut_failed, oid_passed, oid_failed, failures
 
@@ -487,19 +509,51 @@ def run_stability_checks(cfg: dict, live_fixtures: Path,
             print_section_result(name, 0, 0, 1, skip_reason, [])
             total_skip += 1
             continue
-        mp, mf, op, of, failures = run_stability_check(
-            check, live_fixtures, ent_oid, all_indices,
-            snmp_port, community, walk_defs, output_dir, snmp_env,
-            walk_files, verbose,
-        )
-        mut_total = mp + mf
-        oid_total = op + of
-        parts = [f"{mp}/{mut_total} Passed", f"({op}/{oid_total} subtest passed)"]
-        if mf:
-            parts.append(_red(f"{mf} FAILED"))
+
         width = 28
         padded = f"--- {name} ---".ljust(width)
-        print(f"{padded}  [{', '.join(parts)}]")
+
+        use_live = _COLOUR and not verbose
+        prev_len = [0]
+        total_muts = len(check.get("mutations", []))
+
+        if use_live:
+            def _make_progress(padded=padded, total_muts=total_muts):
+                def _progress(mp, mf, op, of):
+                    ot = op + of
+                    ps = _green(f"{mp}/{total_muts}") if mf == 0 else _red(f"{mp}/{total_muts}")
+                    ss = _green(f"{op}/{ot}") if of == 0 else _red(f"{op}/{ot}")
+                    line = f"{padded}  [{ps} Passed, ({ss} subtest)]"
+                    prefix = _overwrite_prefix(prev_len[0])
+                    print(f"{prefix}{line}", end='', flush=True)
+                    prev_len[0] = _plain_len(line)
+                return _progress
+            progress_fn = _make_progress()
+        else:
+            progress_fn = None
+
+        try:
+            mp, mf, op, of, failures = run_stability_check(
+                check, live_fixtures, ent_oid, all_indices,
+                snmp_port, community, walk_defs, output_dir, snmp_env,
+                walk_files, verbose, progress_fn=progress_fn,
+            )
+        except BaseException:
+            if use_live:
+                print(flush=True)  # settle terminal line before traceback/exit
+            raise
+        mut_total = mp + mf
+        oid_total = op + of
+        passed_str = _green(f"{mp}/{mut_total} Passed") if mf == 0 else _red(f"{mp}/{mut_total} Passed")
+        sub_str = _green(f"({op}/{oid_total} subtest passed)") if of == 0 else _red(f"({op}/{oid_total} subtest passed)")
+        parts = [passed_str, sub_str]
+        if mf:
+            parts.append(_red(f"{mf} FAILED"))
+        final_line = f"{padded}  [{', '.join(parts)}]"
+        if use_live:
+            print(f"{_overwrite_prefix(prev_len[0])}{final_line}")
+        else:
+            print(final_line)
         total_pass += mp
         total_fail += mf
         if failures:

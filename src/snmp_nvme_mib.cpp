@@ -219,8 +219,8 @@ nvme_st_handler(netsnmp_mib_handler *,
         case 12: if (row->estimated_completion == 0) {
                      netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
                  } else {
-                     uint8_t dt[8];
-                     snmp_encode_date_time(row->estimated_completion, dt);
+                     uint8_t dt[11];
+                     snmp_encode_date_time({row->estimated_completion, 0}, dt);
                      snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                          dt, sizeof(dt));
                  } break;
@@ -474,8 +474,8 @@ nvme_el_handler(netsnmp_mib_handler *,
         case 14: { long v = row->phase_tag ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
-        case 15: { uint8_t dt[8];
-                   snmp_encode_date_time(row->error_timestamp, dt);
+        case 15: { uint8_t dt[11];
+                   snmp_encode_date_time({row->error_timestamp, 0}, dt);
                    snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                        dt, sizeof(dt)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);

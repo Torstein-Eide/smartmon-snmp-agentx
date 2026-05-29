@@ -303,12 +303,12 @@ static uint64_t hash_vector_for_device(const std::vector<Row> &vec, uint32_t dev
 }
 
 // Update a ts_* field only when the table content hash changed, and persist.
-static void update_table_ts(int tid, time_t &ts, uint64_t &prev_hash,
-                             uint64_t new_hash, time_t now_ts) {
+static void update_table_ts(int tid, struct timespec &ts, uint64_t &prev_hash,
+                             uint64_t new_hash, struct timespec now_ts) {
     if (new_hash == prev_hash) return;
     prev_hash = new_hash;
     ts        = now_ts;
-    state_db_update(tid, new_hash, now_ts);
+    state_db_update(tid, new_hash, now_ts.tv_sec);
 }
 
 } // namespace
@@ -666,7 +666,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
 
     // Sensor rows: composite temperature, available spare, percentage used,
     // then per-sensor temperatures from temperature_sensors[]
-    time_t now = time(nullptr);
+    struct timespec now {}; clock_gettime(CLOCK_REALTIME, &now);
     {
         uint32_t sidx = 1;
 
@@ -687,7 +687,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
             sr.value         = static_cast<int32_t>(temp_val.as_int64());
             sr.oper_status   = 1;   // ok
             sr.units_display = "Celsius";
-            sr.timestamp     = now;
+            sr.timestamp     = now.tv_sec;
             {
                 const JVal &thr = root["nvme_composite_temperature_threshold"];
                 if (!thr.is_null()) {
@@ -725,7 +725,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
             sr.value           = static_cast<int32_t>(h.available_spare_pct);
             sr.oper_status     = 1;
             sr.units_display   = "percent";
-            sr.timestamp       = now;
+            sr.timestamp       = now.tv_sec;
             sr.has_low_critical = true;
             sr.low_critical     = static_cast<int32_t>(h.available_spare_thresh);
             sr.has_low_warning  = true;
@@ -749,7 +749,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
             sr.value         = static_cast<int32_t>(h.percentage_used);
             sr.oper_status   = 1;
             sr.units_display = "percent";
-            sr.timestamp     = now;
+            sr.timestamp     = now.tv_sec;
             if (g_verbosity >= 2)
                 syslog(LOG_DEBUG, "datasrc: NVMe dev_idx=%u: sensor[3] PercentageUsed value=%d%%",
                        dev_idx, sr.value);
@@ -780,7 +780,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
                 sr.value         = static_cast<int32_t>(tv.as_int64());
                 sr.oper_status   = 1;
                 sr.units_display = "Celsius";
-                sr.timestamp     = now;
+                sr.timestamp     = now.tv_sec;
                 if (!thr.is_null()) {
                     const JVal &warn = thr["warning"];
                     if (!warn.is_null()) {
@@ -1010,7 +1010,7 @@ static void parse_nvme(uint32_t dev_idx, const JVal &root) {
                     r.lba           = e["lba"]["value"].as_uint64();
                     r.nsid          = static_cast<uint32_t>(e["nsid"].as_uint64());
                     r.parm_error_location = static_cast<uint32_t>(e["parameter_error_location"].as_uint64());
-                    r.error_timestamp = now;
+                    r.error_timestamp = now.tv_sec;
                     g_cache.nvme_error_log.push_back(r);
                 }
             }
@@ -1774,7 +1774,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
 
     // Update last-change timestamps only when content hash changed
     {
-        time_t now_ts = time(nullptr);
+        struct timespec now_ts {}; clock_gettime(CLOCK_REALTIME, &now_ts);
         auto &hv = g_cache.table_hashes;
         update_table_ts(TABLE_DEVICE,        g_cache.ts_device_table,        hv[TABLE_DEVICE],        hash_vector(g_cache.devices),              now_ts);
         update_table_ts(TABLE_SATA_INFO,     g_cache.ts_sata_info,           hv[TABLE_SATA_INFO],     hash_vector(g_cache.sata_info),            now_ts);
@@ -1799,7 +1799,7 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
                 if (new_h != prev) {
                     prev = new_h;
                     g_cache.ts_sata_by_dev[key] = now_ts;
-                    state_db_update_by_dev(dev_idx, tid, new_h, now_ts);
+                    state_db_update_by_dev(dev_idx, tid, new_h, now_ts.tv_sec);
                 }
             };
             upd_by_dev( 1, hash_vector_for_device(g_cache.sata_info,             dev_idx));
@@ -1815,21 +1815,26 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             upd_by_dev(11, hash_vector_for_device(g_cache.sata_dev_stats,        dev_idx));
             upd_by_dev(12, hash_vector_for_device(g_cache.sata_pending_defects,  dev_idx));
         }
-        // Per-row BySubindex timestamps for devstat — each row advances independently.
+        // Per-page BySubindex timestamps for devstat — each page advances when any of its rows change.
         // errcmd BySubindex reuses ts_sata_by_dev[key|5] set above.
-        for (const auto &r : g_cache.sata_dev_stats) {
-            if (r.device_index != dev_idx) continue;
-            uint64_t key = sata_devstat_row_key(dev_idx, r.page_num, r.offset);
-            TableHasher rh;
-            hash_row(rh, r);
-            uint64_t new_h = rh.value();
-            auto &prev = g_cache.hash_sata_devstat_by_row[key];
-            if (new_h != prev) {
-                prev = new_h;
-                g_cache.ts_sata_devstat_by_row[key] = now_ts;
-                state_db_update_devstat_row(dev_idx, r.page_num, r.offset, new_h, now_ts);
+        {
+            std::unordered_map<uint32_t, TableHasher> page_hashers;
+            for (const auto &r : g_cache.sata_dev_stats) {
+                if (r.device_index != dev_idx) continue;
+                hash_row(page_hashers[r.page_num], r);
+            }
+            for (auto &[page_num, hasher] : page_hashers) {
+                uint64_t key = ((uint64_t)dev_idx << 32) | page_num;
+                uint64_t new_h = hasher.value();
+                auto &prev = g_cache.hash_sata_devstat_by_page[key];
+                if (new_h != prev) {
+                    prev = new_h;
+                    g_cache.ts_sata_devstat_by_page[key] = now_ts;
+                    state_db_update_devstat_page(dev_idx, page_num, new_h, now_ts.tv_sec);
+                }
             }
         }
+        g_cache.rebuild_sata_subidx_unique(dev_idx);
     }
 }
 
@@ -1938,7 +1943,7 @@ static void parse_scsi(uint32_t dev_idx, const JVal &root) {
 
     // Update last-change timestamps only when content hash changed
     {
-        time_t now_ts = time(nullptr);
+        struct timespec now_ts {}; clock_gettime(CLOCK_REALTIME, &now_ts);
         auto &hv = g_cache.table_hashes;
         update_table_ts(TABLE_DEVICE,      g_cache.ts_device_table,    hv[TABLE_DEVICE],      hash_vector(g_cache.devices),           now_ts);
         update_table_ts(TABLE_SAS_INFO,    g_cache.ts_sas_info,        hv[TABLE_SAS_INFO],    hash_vector(g_cache.sas_info),          now_ts);
@@ -2362,7 +2367,7 @@ static void scan_state_dir() {
     if (g_verbosity >= 1)
         syslog(LOG_DEBUG, "datasrc: scan done: %d file(s) found, %d accepted — sensors=%zu ts_sensor=%ld elapsed=%ldms",
                n_total, n_accepted,
-               g_cache.sensors.size(), (long)g_cache.ts_sensor, scan_ms);
+               g_cache.sensors.size(), (long)g_cache.ts_sensor.tv_sec, scan_ms);
 }
 
 // ---------------------------------------------------------------------------

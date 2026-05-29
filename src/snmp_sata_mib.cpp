@@ -620,8 +620,8 @@ sata_st_handler(netsnmp_mib_handler *,
         case 8:  if (row->estimated_completion == 0) {
                      netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
                  } else {
-                     uint8_t dt[8];
-                     snmp_encode_date_time(row->estimated_completion, dt);
+                     uint8_t dt[11];
+                     snmp_encode_date_time({row->estimated_completion, 0}, dt);
                      snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                          dt, sizeof(dt));
                  } break;
@@ -1081,7 +1081,7 @@ sata_pending_def_handler(netsnmp_mib_handler *,
 // ---------------------------------------------------------------------------
 
 // Table IDs 1-12 map to SATA cache vectors.
-struct SataTableMeta { const char *name; size_t row_count; time_t last_change; };
+struct SataTableMeta { const char *name; size_t row_count; struct timespec last_change; };
 static SataTableMeta sata_table_meta_for(uint32_t tid) {
     switch (tid) {
     case  1: return {"smartmonSataInfoTable",          g_cache.sata_info.size(),            g_cache.ts_sata_info};
@@ -1096,7 +1096,7 @@ static SataTableMeta sata_table_meta_for(uint32_t tid) {
     case 10: return {"smartmonSataLogDirTable",        g_cache.sata_log_dir.size(),         g_cache.ts_sata_log_dir};
     case 11: return {"smartmonSataDevStatTable",       g_cache.sata_dev_stats.size(),       g_cache.ts_sata_dev_stat};
     case 12: return {"smartmonSataPendingDefectsTable",g_cache.sata_pending_defects.size(), g_cache.ts_sata_pending_defects};
-    default: return {"", 0, 0};
+    default: return {"", 0, {}};
     }
 }
 
@@ -1159,7 +1159,7 @@ sata_change_meta_handler(netsnmp_mib_handler *,
         case 3:  { u_long v = (u_long)m.row_count;
                    snmp_set_var_typed_value(req->requestvb, ASN_UNSIGNED,
                        (u_char*)&v, sizeof(v)); break; }
-        case 4:  { uint8_t dt[8]; snmp_encode_date_time(m.last_change, dt);
+        case 4:  { uint8_t dt[11]; snmp_encode_date_time(m.last_change, dt);
                    snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                        dt, sizeof(dt)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
@@ -1215,8 +1215,8 @@ sata_change_by_dev_handler(netsnmp_mib_handler *,
                        (u_char*)&v, sizeof(v)); break; }
         case 3:  { uint64_t key = ((uint64_t)dev_idx << 32) | (uint64_t)table_id;
                    auto it = g_cache.ts_sata_by_dev.find(key);
-                   time_t ts = (it != g_cache.ts_sata_by_dev.end()) ? it->second : m.last_change;
-                   uint8_t dt[8]; snmp_encode_date_time(ts, dt);
+                   struct timespec ts = (it != g_cache.ts_sata_by_dev.end()) ? it->second : m.last_change;
+                   uint8_t dt[11]; snmp_encode_date_time(ts, dt);
                    snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                        dt, sizeof(dt)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
@@ -1237,37 +1237,19 @@ static netsnmp_variable_list *
 sata_change_by_subidx_get_next(void **loop_ctx, void **data_ctx,
                                netsnmp_variable_list *put_idx,
                                netsnmp_iterator_info *) {
-    size_t idx         = (size_t)(uintptr_t)*loop_ctx;
-    size_t errcmd_size = g_cache.sata_error_cmds.size();
-    size_t devstat_size= g_cache.sata_dev_stats.size();
-    if (idx >= errcmd_size + devstat_size) return nullptr;
+    size_t idx = (size_t)(uintptr_t)*loop_ctx;
+    if (idx >= g_cache.sata_subidx_unique.size()) return nullptr;
 
-    uint32_t dev_idx, table_id, sub1, sub2;
-    if (idx < errcmd_size) {
-        const CacheSataErrorCmdRow &r = g_cache.sata_error_cmds[idx];
-        dev_idx  = r.device_index;
-        table_id = 5;
-        sub1     = r.error_entry_index;
-        sub2     = r.cmd_index;
-    } else {
-        const CacheSataDevStatRow &r = g_cache.sata_dev_stats[idx - errcmd_size];
-        dev_idx  = r.device_index;
-        table_id = 11;
-        sub1     = r.page_num;
-        sub2     = r.offset;
-    }
+    const SataSubidxUniqueRow &entry = g_cache.sata_subidx_unique[idx];
     *loop_ctx = (void*)(uintptr_t)(idx + 1);
     *data_ctx = (void*)(uintptr_t)idx;
 
-    u_long v = dev_idx;
+    u_long v = entry.device_index;
     snmp_set_var_typed_value(put_idx, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = table_id;
+    v = entry.table_id;
     snmp_set_var_typed_value(put_idx->next_variable, ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = sub1;
+    v = entry.sub1;
     snmp_set_var_typed_value(put_idx->next_variable->next_variable,
-                             ASN_UNSIGNED, (u_char*)&v, sizeof(v));
-    v = sub2;
-    snmp_set_var_typed_value(put_idx->next_variable->next_variable->next_variable,
                              ASN_UNSIGNED, (u_char*)&v, sizeof(v));
     return put_idx;
 }
@@ -1281,22 +1263,20 @@ sata_change_by_subidx_handler(netsnmp_mib_handler *,
     for (netsnmp_request_info *req = requests; req; req = req->next) {
         netsnmp_table_request_info *tinfo = netsnmp_extract_table_info(req);
         size_t idx = (size_t)(uintptr_t)netsnmp_extract_iterator_context(req);
-        if (!tinfo) continue;
-        size_t errcmd_size = g_cache.sata_error_cmds.size();
-        time_t ts;
-        if (idx < errcmd_size) {
-            uint32_t dev = g_cache.sata_error_cmds[idx].device_index;
-            uint64_t key = ((uint64_t)dev << 32) | 5;
+        if (!tinfo || idx >= g_cache.sata_subidx_unique.size()) continue;
+        const SataSubidxUniqueRow &entry = g_cache.sata_subidx_unique[idx];
+        struct timespec ts;
+        if (entry.table_id == 5) {
+            uint64_t key = ((uint64_t)entry.device_index << 32) | 5;
             auto it = g_cache.ts_sata_by_dev.find(key);
             ts = (it != g_cache.ts_sata_by_dev.end()) ? it->second : g_cache.ts_sata_error_cmd;
         } else {
-            const CacheSataDevStatRow &dr = g_cache.sata_dev_stats[idx - errcmd_size];
-            uint64_t key = sata_devstat_row_key(dr.device_index, dr.page_num, dr.offset);
-            auto it = g_cache.ts_sata_devstat_by_row.find(key);
-            ts = (it != g_cache.ts_sata_devstat_by_row.end()) ? it->second : g_cache.ts_sata_dev_stat;
+            uint64_t key = ((uint64_t)entry.device_index << 32) | entry.sub1;
+            auto it = g_cache.ts_sata_devstat_by_page.find(key);
+            ts = (it != g_cache.ts_sata_devstat_by_page.end()) ? it->second : g_cache.ts_sata_dev_stat;
         }
         switch (tinfo->colnum) {
-        case 4:  { uint8_t dt[8]; snmp_encode_date_time(ts, dt);
+        case 4:  { uint8_t dt[11]; snmp_encode_date_time(ts, dt);
                    snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                        dt, sizeof(dt)); break; }
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
@@ -1322,17 +1302,9 @@ void register_sata_mib() {
     REG_TABLE_UU("smartSATAChangeByDeviceTable",
                  sata_change_by_dev_handler, oid_sata_change_by_device_table,
                  sata_change_by_dev_get_next, 2, 3);
-    {
-        static const int _idx4[] = { ASN_UNSIGNED, ASN_UNSIGNED,
-                                     ASN_UNSIGNED, ASN_UNSIGNED, 0 };
-        register_table_ronly("smartSATAChangeBySubindexTable",
-                             sata_change_by_subidx_handler,
-                             oid_sata_change_by_subindex_table,
-                             OID_LEN(oid_sata_change_by_subindex_table),
-                             snmp_table_get_first,
-                             sata_change_by_subidx_get_next,
-                             4, 4, _idx4);
-    }
+    REG_TABLE_UUU("smartSATAChangeBySubindexTable",
+                  sata_change_by_subidx_handler, oid_sata_change_by_subindex_table,
+                  sata_change_by_subidx_get_next, 3, 4);
 
     netsnmp_register_scalar(netsnmp_create_handler_registration(
         "sataHealthTableRowCount",      sata_health_row_count_handler,

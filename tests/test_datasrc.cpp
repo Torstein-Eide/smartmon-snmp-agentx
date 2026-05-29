@@ -109,7 +109,7 @@ bool  state_db_open(const std::string &)                                    { re
 void  state_db_load()                                                        {}
 void  state_db_update(int, uint64_t, time_t)                                 {}
 void  state_db_update_by_dev(uint32_t, uint32_t, uint64_t, time_t)          {}
-void  state_db_update_devstat_row(uint32_t, uint32_t, uint32_t, uint64_t, time_t) {}
+void  state_db_update_devstat_page(uint32_t, uint32_t, uint64_t, time_t)         {}
 void  state_db_remove_device(uint32_t)                                       {}
 void  state_db_close()                                                        {}
 
@@ -693,41 +693,50 @@ static void test_sata_multidevice_stable_hashes(const char *path_a, const char *
     uint64_t snap[TABLE_COUNT];
     for (int i = 0; i < TABLE_COUNT; i++) snap[i] = g_cache.table_hashes[i];
 
-    time_t ts_snap_info    = g_cache.ts_sata_info;
-    time_t ts_snap_health  = g_cache.ts_sata_health;
-    time_t ts_snap_attr    = g_cache.ts_sata_attr;
-    time_t ts_snap_errlog  = g_cache.ts_sata_error_log;
-    time_t ts_snap_errcmd  = g_cache.ts_sata_error_cmd;
-    time_t ts_snap_selftest= g_cache.ts_sata_selftest;
-    time_t ts_snap_erc     = g_cache.ts_sata_erc;
-    time_t ts_snap_phy     = g_cache.ts_sata_phy_event;
-    time_t ts_snap_seltest = g_cache.ts_sata_selective_test;
-    time_t ts_snap_pending = g_cache.ts_sata_pending_defects;
-    time_t ts_snap_logdir  = g_cache.ts_sata_log_dir;
-    time_t ts_snap_devstat = g_cache.ts_sata_dev_stat;
+    struct timespec ts_snap_info    = g_cache.ts_sata_info;
+    struct timespec ts_snap_health  = g_cache.ts_sata_health;
+    struct timespec ts_snap_attr    = g_cache.ts_sata_attr;
+    struct timespec ts_snap_errlog  = g_cache.ts_sata_error_log;
+    struct timespec ts_snap_errcmd  = g_cache.ts_sata_error_cmd;
+    struct timespec ts_snap_selftest= g_cache.ts_sata_selftest;
+    struct timespec ts_snap_erc     = g_cache.ts_sata_erc;
+    struct timespec ts_snap_phy     = g_cache.ts_sata_phy_event;
+    struct timespec ts_snap_seltest = g_cache.ts_sata_selective_test;
+    struct timespec ts_snap_pending = g_cache.ts_sata_pending_defects;
+    struct timespec ts_snap_logdir  = g_cache.ts_sata_log_dir;
+    struct timespec ts_snap_devstat = g_cache.ts_sata_dev_stat;
 
     // Per-device hash/ts snapshots for errcmd (tableId=5) via ts_sata_by_dev.
     auto errcmd_key = [](uint32_t dev) -> uint64_t { return ((uint64_t)dev << 32) | 5; };
     uint64_t snap_errcmd_a   = g_cache.hash_sata_by_dev[errcmd_key(idx_a)];
     uint64_t snap_errcmd_b   = g_cache.hash_sata_by_dev[errcmd_key(idx_b)];
-    time_t ts_snap_errcmd_a  = g_cache.ts_sata_by_dev[errcmd_key(idx_a)];
-    time_t ts_snap_errcmd_b  = g_cache.ts_sata_by_dev[errcmd_key(idx_b)];
+    struct timespec ts_snap_errcmd_a  = g_cache.ts_sata_by_dev[errcmd_key(idx_a)];
+    struct timespec ts_snap_errcmd_b  = g_cache.ts_sata_by_dev[errcmd_key(idx_b)];
 
-    // Per-row hash/ts snapshots for devstat (both devices).
+    // Per-page hash/ts snapshots for devstat (both devices).
     std::vector<uint64_t> devstat_keys_a, devstat_keys_b;
     for (const auto &r : g_cache.sata_dev_stats) {
-        if (r.device_index == idx_a) devstat_keys_a.push_back(sata_devstat_row_key(idx_a, r.page_num, r.offset));
-        if (r.device_index == idx_b) devstat_keys_b.push_back(sata_devstat_row_key(idx_b, r.page_num, r.offset));
+        uint64_t k = ((uint64_t)r.device_index << 32) | r.page_num;
+        if (r.device_index == idx_a) devstat_keys_a.push_back(k);
+        if (r.device_index == idx_b) devstat_keys_b.push_back(k);
+    }
+    // Deduplicate (multiple rows per page).
+    {
+        auto dedup = [](std::vector<uint64_t> &v) {
+            std::sort(v.begin(), v.end());
+            v.erase(std::unique(v.begin(), v.end()), v.end());
+        };
+        dedup(devstat_keys_a); dedup(devstat_keys_b);
     }
     std::unordered_map<uint64_t, uint64_t> snap_devstat_hash_a, snap_devstat_hash_b;
-    std::unordered_map<uint64_t, time_t>   snap_devstat_ts_a,   snap_devstat_ts_b;
+    std::unordered_map<uint64_t, struct timespec> snap_devstat_ts_a, snap_devstat_ts_b;
     for (auto k : devstat_keys_a) {
-        snap_devstat_hash_a[k] = g_cache.hash_sata_devstat_by_row[k];
-        snap_devstat_ts_a[k]   = g_cache.ts_sata_devstat_by_row[k];
+        snap_devstat_hash_a[k] = g_cache.hash_sata_devstat_by_page[k];
+        snap_devstat_ts_a[k]   = g_cache.ts_sata_devstat_by_page[k];
     }
     for (auto k : devstat_keys_b) {
-        snap_devstat_hash_b[k] = g_cache.hash_sata_devstat_by_row[k];
-        snap_devstat_ts_b[k]   = g_cache.ts_sata_devstat_by_row[k];
+        snap_devstat_hash_b[k] = g_cache.hash_sata_devstat_by_page[k];
+        snap_devstat_ts_b[k]   = g_cache.ts_sata_devstat_by_page[k];
     }
 
     SECTION("SATA: re-parsing device A unchanged with device B in cache —"
@@ -748,33 +757,33 @@ static void test_sata_multidevice_stable_hashes(const char *path_a, const char *
     CHECK_EQ(g_cache.table_hashes[TABLE_SATA_LOGDIR],   snap[TABLE_SATA_LOGDIR]);
     CHECK_EQ(g_cache.table_hashes[TABLE_SATA_DEVSTAT],  snap[TABLE_SATA_DEVSTAT]);
 
-    CHECK_EQ(g_cache.ts_sata_info,            ts_snap_info);
-    CHECK_EQ(g_cache.ts_sata_health,          ts_snap_health);
-    CHECK_EQ(g_cache.ts_sata_attr,            ts_snap_attr);
-    CHECK_EQ(g_cache.ts_sata_error_log,       ts_snap_errlog);
-    CHECK_EQ(g_cache.ts_sata_error_cmd,       ts_snap_errcmd);
-    CHECK_EQ(g_cache.ts_sata_selftest,        ts_snap_selftest);
-    CHECK_EQ(g_cache.ts_sata_erc,             ts_snap_erc);
-    CHECK_EQ(g_cache.ts_sata_phy_event,       ts_snap_phy);
-    CHECK_EQ(g_cache.ts_sata_selective_test,  ts_snap_seltest);
-    CHECK_EQ(g_cache.ts_sata_pending_defects, ts_snap_pending);
-    CHECK_EQ(g_cache.ts_sata_log_dir,         ts_snap_logdir);
-    CHECK_EQ(g_cache.ts_sata_dev_stat,        ts_snap_devstat);
+    CHECK_EQ_TS(g_cache.ts_sata_info,            ts_snap_info);
+    CHECK_EQ_TS(g_cache.ts_sata_health,          ts_snap_health);
+    CHECK_EQ_TS(g_cache.ts_sata_attr,            ts_snap_attr);
+    CHECK_EQ_TS(g_cache.ts_sata_error_log,       ts_snap_errlog);
+    CHECK_EQ_TS(g_cache.ts_sata_error_cmd,       ts_snap_errcmd);
+    CHECK_EQ_TS(g_cache.ts_sata_selftest,        ts_snap_selftest);
+    CHECK_EQ_TS(g_cache.ts_sata_erc,             ts_snap_erc);
+    CHECK_EQ_TS(g_cache.ts_sata_phy_event,       ts_snap_phy);
+    CHECK_EQ_TS(g_cache.ts_sata_selective_test,  ts_snap_seltest);
+    CHECK_EQ_TS(g_cache.ts_sata_pending_defects, ts_snap_pending);
+    CHECK_EQ_TS(g_cache.ts_sata_log_dir,         ts_snap_logdir);
+    CHECK_EQ_TS(g_cache.ts_sata_dev_stat,        ts_snap_devstat);
 
     // Per-device errcmd (tableId=5) hashes and timestamps must be stable.
     CHECK_EQ(g_cache.hash_sata_by_dev[errcmd_key(idx_a)], snap_errcmd_a);
     CHECK_EQ(g_cache.hash_sata_by_dev[errcmd_key(idx_b)], snap_errcmd_b);
-    CHECK_EQ(g_cache.ts_sata_by_dev[errcmd_key(idx_a)],   ts_snap_errcmd_a);
-    CHECK_EQ(g_cache.ts_sata_by_dev[errcmd_key(idx_b)],   ts_snap_errcmd_b);
+    CHECK_EQ_TS(g_cache.ts_sata_by_dev[errcmd_key(idx_a)],   ts_snap_errcmd_a);
+    CHECK_EQ_TS(g_cache.ts_sata_by_dev[errcmd_key(idx_b)],   ts_snap_errcmd_b);
 
-    // Per-row devstat hashes and timestamps must be stable.
+    // Per-page devstat hashes and timestamps must be stable.
     for (auto k : devstat_keys_a) {
-        CHECK_EQ(g_cache.hash_sata_devstat_by_row[k], snap_devstat_hash_a[k]);
-        CHECK_EQ(g_cache.ts_sata_devstat_by_row[k],   snap_devstat_ts_a[k]);
+        CHECK_EQ(g_cache.hash_sata_devstat_by_page[k], snap_devstat_hash_a[k]);
+        CHECK_EQ_TS(g_cache.ts_sata_devstat_by_page[k],   snap_devstat_ts_a[k]);
     }
     for (auto k : devstat_keys_b) {
-        CHECK_EQ(g_cache.hash_sata_devstat_by_row[k], snap_devstat_hash_b[k]);
-        CHECK_EQ(g_cache.ts_sata_devstat_by_row[k],   snap_devstat_ts_b[k]);
+        CHECK_EQ(g_cache.hash_sata_devstat_by_page[k], snap_devstat_hash_b[k]);
+        CHECK_EQ_TS(g_cache.ts_sata_devstat_by_page[k],   snap_devstat_ts_b[k]);
     }
 
     s_initial_scan_done = prev_scan;

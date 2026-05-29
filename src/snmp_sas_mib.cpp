@@ -164,8 +164,8 @@ sas_bgscan_handler(netsnmp_mib_handler *,
         case 7:  if (row->estimated_completion == 0) {
                      netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
                  } else {
-                     uint8_t dt[8];
-                     snmp_encode_date_time(row->estimated_completion, dt);
+                     uint8_t dt[11];
+                     snmp_encode_date_time({row->estimated_completion, 0}, dt);
                      snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                          dt, sizeof(dt));
                  } break;

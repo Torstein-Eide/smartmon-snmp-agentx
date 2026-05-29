@@ -108,8 +108,8 @@ static void append_string_2idx(netsnmp_variable_list **vars,
 static void append_date_time(netsnmp_variable_list **vars,
                              const oid *col_oid, size_t col_len,
                              uint32_t instance_idx, time_t t) {
-    uint8_t dt[8];
-    snmp_encode_date_time(t, dt);
+    uint8_t dt[11];
+    snmp_encode_date_time({t, 0}, dt);
     std::vector<oid> inst(col_len + 1);
     memcpy(inst.data(), col_oid, col_len * sizeof(oid));
     inst[col_len] = (oid)instance_idx;

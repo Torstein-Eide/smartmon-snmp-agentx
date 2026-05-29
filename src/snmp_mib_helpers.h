@@ -28,7 +28,7 @@ static int fn_name(netsnmp_mib_handler *, netsnmp_handler_registration *, \
 static int fn_name(netsnmp_mib_handler *, netsnmp_handler_registration *, \
                    netsnmp_agent_request_info *reqinfo, netsnmp_request_info *requests) { \
     if (reqinfo->mode != MODE_GET) return SNMP_ERR_NOERROR; \
-    uint8_t dt[8]; snmp_encode_date_time(g_cache.ts_field, dt); \
+    uint8_t dt[11]; snmp_encode_date_time(g_cache.ts_field, dt); \
     snmp_set_var_typed_value(requests->requestvb, ASN_OCTET_STR, dt, sizeof(dt)); \
     return SNMP_ERR_NOERROR; \
 }

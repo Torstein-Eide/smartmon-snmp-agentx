@@ -8,12 +8,18 @@
 #include <unordered_map>
 #include <vector>
 
-// Key for per-row devstat BySubindex tracking: packs (device, page, offset) into uint64_t.
-// page_num and offset are ATA Device Statistics fields; both fit in 16 bits in practice
-// (pages 0-255, offsets multiples of 8 up to ~2040).
-static inline uint64_t sata_devstat_row_key(uint32_t dev, uint32_t page, uint32_t offset) {
-    return ((uint64_t)dev << 32) | ((uint64_t)(page & 0xFFFFu) << 16) | (offset & 0xFFFFu);
+inline bool operator==(const struct timespec &a, const struct timespec &b) {
+    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
 }
+
+// One deduplicated row for the BySubindex change-tracking table.
+// INDEX {device_index, table_id, sub1} where sub1 is error_entry_index (table 5)
+// or page_num (table 11).
+struct SataSubidxUniqueRow {
+    uint32_t device_index;
+    uint32_t table_id;   // 5=errcmd, 11=devstat
+    uint32_t sub1;
+};
 
 // --------------------------------------------------------------------
 // Poll result codes (mirrors SmartmonPollResult TC)
@@ -694,33 +700,33 @@ struct AgentxCache {
     std::vector<CacheSensorRow>          sensors;
 
     // Table metadata — updated by datasrc whenever a table's rows change
-    time_t  ts_device_table       { 0 };
-    time_t  ts_nvme_controller    { 0 };
-    time_t  ts_nvme_namespace     { 0 };
-    time_t  ts_nvme_health        { 0 };
-    time_t  ts_nvme_selftest      { 0 };
-    time_t  ts_nvme_error_log     { 0 };
-    time_t  ts_nvme_capability    { 0 };
-    time_t  ts_nvme_power_state   { 0 };
-    time_t  ts_nvme_lba_format    { 0 };
-    time_t  ts_sata_info          { 0 };
-    time_t  ts_sata_health        { 0 };
-    time_t  ts_sata_attr          { 0 };
-    time_t  ts_sata_error_log     { 0 };
-    time_t  ts_sata_error_cmd     { 0 };
-    time_t  ts_sata_selftest      { 0 };
-    time_t  ts_sata_erc           { 0 };
-    time_t  ts_sata_phy_event     { 0 };
-    time_t  ts_sata_selective_test  { 0 };
-    time_t  ts_sata_pending_defects { 0 };
-    time_t  ts_sata_log_dir         { 0 };
-    time_t  ts_sata_dev_stat      { 0 };
-    time_t  ts_sas_info           { 0 };
-    time_t  ts_sas_health         { 0 };
-    time_t  ts_sas_error_counter  { 0 };
-    time_t  ts_sas_selftest       { 0 };
-    time_t  ts_sas_bgscan         { 0 };
-    time_t  ts_sensor             { 0 };
+    struct timespec  ts_device_table       {};
+    struct timespec  ts_nvme_controller    {};
+    struct timespec  ts_nvme_namespace     {};
+    struct timespec  ts_nvme_health        {};
+    struct timespec  ts_nvme_selftest      {};
+    struct timespec  ts_nvme_error_log     {};
+    struct timespec  ts_nvme_capability    {};
+    struct timespec  ts_nvme_power_state   {};
+    struct timespec  ts_nvme_lba_format    {};
+    struct timespec  ts_sata_info          {};
+    struct timespec  ts_sata_health        {};
+    struct timespec  ts_sata_attr          {};
+    struct timespec  ts_sata_error_log     {};
+    struct timespec  ts_sata_error_cmd     {};
+    struct timespec  ts_sata_selftest      {};
+    struct timespec  ts_sata_erc           {};
+    struct timespec  ts_sata_phy_event     {};
+    struct timespec  ts_sata_selective_test  {};
+    struct timespec  ts_sata_pending_defects {};
+    struct timespec  ts_sata_log_dir         {};
+    struct timespec  ts_sata_dev_stat      {};
+    struct timespec  ts_sas_info           {};
+    struct timespec  ts_sas_health         {};
+    struct timespec  ts_sas_error_counter  {};
+    struct timespec  ts_sas_selftest       {};
+    struct timespec  ts_sas_bgscan         {};
+    struct timespec  ts_sensor             {};
 
     // Last full directory scan stats — set by datasrc after each scan
     time_t    last_scan_time { 0 };   // wall-clock time scan completed
@@ -733,19 +739,26 @@ struct AgentxCache {
     // Key = (device_index << 32) | tableId (1-12).
     // Ensures changing device A's data does not advance device B's ByDevice lastChange.
     // tableId=5 (errcmd) also serves as the BySubindex errcmd timestamp source.
-    std::unordered_map<uint64_t, uint64_t> hash_sata_by_dev;
-    std::unordered_map<uint64_t, time_t>   ts_sata_by_dev;
+    std::unordered_map<uint64_t, uint64_t>      hash_sata_by_dev;
+    std::unordered_map<uint64_t, struct timespec> ts_sata_by_dev;
 
-    // Per-row hashes and timestamps for BySubindex devstat rows.
-    // Use sata_devstat_row_key() to build the key.
-    std::unordered_map<uint64_t, uint64_t> hash_sata_devstat_by_row;
-    std::unordered_map<uint64_t, time_t>   ts_sata_devstat_by_row;
+    // Per-page hashes and timestamps for BySubindex devstat (table 11).
+    // Key = (device_index << 32) | page_num.
+    std::unordered_map<uint64_t, uint64_t>      hash_sata_devstat_by_page;
+    std::unordered_map<uint64_t, struct timespec> ts_sata_devstat_by_page;
+
+    // Deduplicated rows for the BySubindex change-tracking table.
+    // One entry per unique {device_index, table_id, sub1}; rebuilt after each device parse.
+    std::vector<SataSubidxUniqueRow> sata_subidx_unique;
 
     // Remove device row and all sub-table rows for device_index
     void remove_device(uint32_t device_index);
 
     // Remove only sub-table rows (keeps the device row — used on file re-parse)
     void clear_device_data(uint32_t device_index);
+
+    // Rebuild sata_subidx_unique entries for one device (call after parse and on remove).
+    void rebuild_sata_subidx_unique(uint32_t device_index);
 
     // Remove everything — used on SIGHUP before full re-scan
     void clear();

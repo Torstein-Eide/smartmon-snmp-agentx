@@ -107,8 +107,8 @@ sensor_handler(netsnmp_mib_handler *,
         case 9: snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                     (u_char*)row->units_display.c_str(),
                     row->units_display.size()); break;
-        case 10: { uint8_t dt[8];
-                   snmp_encode_date_time(row->timestamp, dt);
+        case 10: { uint8_t dt[11];
+                   snmp_encode_date_time({row->timestamp, 0}, dt);
                    snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
                        dt, sizeof(dt)); break; }
         case 11: { u_long v = (u_long)row->update_rate;
@@ -169,7 +169,7 @@ sensor_row_count_handler(netsnmp_mib_handler *,
     u_long v = (u_long)g_cache.sensors.size();
     if (g_verbosity >= 2)
         syslog(LOG_DEBUG, "sensor_mib: row_count_handler cache=%p sensors.size=%lu ts_sensor=%ld",
-               (void*)&g_cache, v, (long)g_cache.ts_sensor);
+               (void*)&g_cache, v, (long)g_cache.ts_sensor.tv_sec);
     snmp_set_var_typed_value(requests->requestvb, ASN_GAUGE, (u_char*)&v, sizeof(v));
     return SNMP_ERR_NOERROR;
 }
@@ -180,7 +180,7 @@ sensor_last_change_handler(netsnmp_mib_handler *,
                             netsnmp_agent_request_info *reqinfo,
                             netsnmp_request_info *requests) {
     if (reqinfo->mode != MODE_GET) return SNMP_ERR_NOERROR;
-    uint8_t dt[8];
+    uint8_t dt[11];
     snmp_encode_date_time(g_cache.ts_sensor, dt);
     snmp_set_var_typed_value(requests->requestvb, ASN_OCTET_STR, dt, sizeof(dt));
     return SNMP_ERR_NOERROR;

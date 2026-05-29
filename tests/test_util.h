@@ -30,6 +30,20 @@ static int s_pass = 0, s_fail = 0;
         } \
     } while (0)
 
+#define CHECK_EQ_TS(a, b) \
+    do { \
+        auto _a = (a); auto _b = (b); \
+        if (_a == _b) { \
+            ++s_pass; \
+        } else { \
+            ++s_fail; \
+            fprintf(stderr, "FAIL %s:%d: %s == %s  (lhs={%ld,%ld}, rhs={%ld,%ld})\n", \
+                    __FILE__, __LINE__, #a, #b, \
+                    (long)_a.tv_sec, (long)_a.tv_nsec, \
+                    (long)_b.tv_sec, (long)_b.tv_nsec); \
+        } \
+    } while (0)
+
 #define CHECK_STR(a, b) \
     do { \
         std::string _a = (a); std::string _b = (b); \

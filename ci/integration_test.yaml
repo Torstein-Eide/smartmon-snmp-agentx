@@ -260,7 +260,7 @@ sections:
       - {label: "errlog[1] col12 doNotRetry = 2 (false)",   col: 12, expected: "INTEGER: 2"}
       - {label: "errlog[1] col13 statusString",                        col: 13, expected: 'STRING: "Invalid Field in Command"'}
       - {label: "errlog[1] col14 phaseTag = 2 (false)",              col: 14, expected: "INTEGER: 2"}
-      - {label: "errlog[1] col15 errorTimestamp (DateAndTime)",      col: 15, expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
+      - {label: "errlog[1] col15 errorTimestamp (DateAndTime)",      col: 15, expected: 'Hex-STRING: ([0-9A-F]{2} ){11}'}
 
   - name: "NVMe Capability"
     walk: "nvme"
@@ -397,7 +397,7 @@ sections:
       - {label: "12 metadata rows (one per tracked table)", type: rows, oid_regex: '\.4\.1\.2\.1\.1\.2\.', min: 12}
       - {label: "tableId=1 name = smartmonSataInfoTable",   oid: ".4.1.2.1.1.2.1", expected: 'STRING: "smartmonSataInfoTable"'}
       - {label: "tableId=1 rowCount >= 1",                  oid: ".4.1.2.1.1.3.1", expected: "Gauge32: [1-9][0-9]*"}
-      - {label: "tableId=1 lastChange (DateAndTime)",       oid: ".4.1.2.1.1.4.1", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
+      - {label: "tableId=1 lastChange (DateAndTime)",       oid: ".4.1.2.1.1.4.1", expected: 'Hex-STRING: ([0-9A-F]{2} ){11}'}
       - {label: "tableId=3 name = smartmonSataAttrTable",   oid: ".4.1.2.1.1.2.3", expected: 'STRING: "smartmonSataAttrTable"'}
       - {label: "tableId=6 name = smartmonSataSelfTestTable", oid: ".4.1.2.1.1.2.6", expected: 'STRING: "smartmonSataSelfTestTable"'}
 
@@ -407,7 +407,7 @@ sections:
     tests:
       - {label: "by-device table rows >= 12",        type: rows, oid_regex: '\.4\.1\.2\.2\.1\.2\.', min: 12}
       - {label: "device D, tableId=1 rowCount = 1",  oid: ".4.1.2.2.1.2.{D}.1", expected: "Gauge32: 1"}
-      - {label: "device D, tableId=1 lastChange",    oid: ".4.1.2.2.1.3.{D}.1", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
+      - {label: "device D, tableId=1 lastChange",    oid: ".4.1.2.2.1.3.{D}.1", expected: 'Hex-STRING: ([0-9A-F]{2} ){11}'}
       - {label: "device D, tableId=3 rowCount >= 1", oid: ".4.1.2.2.1.2.{D}.3", expected: "Gauge32: [1-9][0-9]*"}
       - {label: "device D, tableId=6 rowCount >= 1", oid: ".4.1.2.2.1.2.{D}.6", expected: "Gauge32: [1-9][0-9]*"}
 
@@ -506,7 +506,7 @@ sections:
     # Scalars sit outside the table, so use explicit oid: rather than a template.
     tests:
       - {label: "rowCount = 23",        oid: ".6.1.1.0", expected: "Gauge32: 23"}
-      - {label: "lastChange timestamp", oid: ".6.1.2.0", expected: 'Hex-STRING: ([0-9A-F]{2} ){8}'}
+      - {label: "lastChange timestamp", oid: ".6.1.2.0", expected: 'Hex-STRING: ([0-9A-F]{2} ){11}'}
 
   - name: "Sensor MIB NVMe"
     walk: "sensor"
@@ -672,205 +672,168 @@ stability_checks:
     wait_seconds: 0.1
     walk: "sata"
     last_change_oids:
-      # BySubindex LastChange — INDEX {deviceIndex, sataDevStat=11, page_num, offset}
-      # page 1 — General Statistics
-      - ".4.1.2.3.1.4.{sata2}.11.1.8"     # Lifetime Power-On Resets
-      - ".4.1.2.3.1.4.{sata2}.11.1.16"    # Power-on Hours
-      - ".4.1.2.3.1.4.{sata2}.11.1.24"    # Logical Sectors Written
-      - ".4.1.2.3.1.4.{sata2}.11.1.32"    # Logical Sectors Read
-      - ".4.1.2.3.1.4.{sata2}.11.1.40"    # Number of Read Commands
-      - ".4.1.2.3.1.4.{sata2}.11.1.48"    # Number of Write Commands
-      - ".4.1.2.3.1.4.{sata2}.11.1.56"    # Number of Random Read Commands
-      # page 3 — Rotating Media Statistics
-      - ".4.1.2.3.1.4.{sata2}.11.3.8"
-      - ".4.1.2.3.1.4.{sata2}.11.3.16"
-      - ".4.1.2.3.1.4.{sata2}.11.3.24"
-      - ".4.1.2.3.1.4.{sata2}.11.3.32"
-      - ".4.1.2.3.1.4.{sata2}.11.3.40"
-      - ".4.1.2.3.1.4.{sata2}.11.3.48"
-      - ".4.1.2.3.1.4.{sata2}.11.3.56"
-      - ".4.1.2.3.1.4.{sata2}.11.3.64"
-      # page 4 — General Errors Statistics
-      - ".4.1.2.3.1.4.{sata2}.11.4.8"
-      - ".4.1.2.3.1.4.{sata2}.11.4.16"
-      - ".4.1.2.3.1.4.{sata2}.11.4.24"
-      # page 5 — Temperature Statistics
-      - ".4.1.2.3.1.4.{sata2}.11.5.8"
-      - ".4.1.2.3.1.4.{sata2}.11.5.16"
-      - ".4.1.2.3.1.4.{sata2}.11.5.24"
-      - ".4.1.2.3.1.4.{sata2}.11.5.32"
-      - ".4.1.2.3.1.4.{sata2}.11.5.40"
-      - ".4.1.2.3.1.4.{sata2}.11.5.48"
-      - ".4.1.2.3.1.4.{sata2}.11.5.56"
-      - ".4.1.2.3.1.4.{sata2}.11.5.64"
-      - ".4.1.2.3.1.4.{sata2}.11.5.72"
-      - ".4.1.2.3.1.4.{sata2}.11.5.80"
-      - ".4.1.2.3.1.4.{sata2}.11.5.88"
-      - ".4.1.2.3.1.4.{sata2}.11.5.96"
-      - ".4.1.2.3.1.4.{sata2}.11.5.104"
-      # page 6 — Transport Statistics
-      - ".4.1.2.3.1.4.{sata2}.11.6.8"
-      - ".4.1.2.3.1.4.{sata2}.11.6.16"
-      - ".4.1.2.3.1.4.{sata2}.11.6.24"
-      # page 255 — Vendor Specific Statistics
-      - ".4.1.2.3.1.4.{sata2}.11.255.8"
-      - ".4.1.2.3.1.4.{sata2}.11.255.16"
-      - ".4.1.2.3.1.4.{sata2}.11.255.24"
+      # BySubindex LastChange — INDEX {deviceIndex, sataDevStat=11, page_num}
+      - ".4.1.2.3.1.4.{sata2}.11.1"    # page 1 — General Statistics
+      - ".4.1.2.3.1.4.{sata2}.11.3"    # page 3 — Rotating Media Statistics
+      - ".4.1.2.3.1.4.{sata2}.11.4"    # page 4 — General Errors Statistics
+      - ".4.1.2.3.1.4.{sata2}.11.5"    # page 5 — Temperature Statistics
+      - ".4.1.2.3.1.4.{sata2}.11.6"    # page 6 — Transport Statistics
+      - ".4.1.2.3.1.4.{sata2}.11.255"  # page 255 — Vendor Specific Statistics
     mutations:
       # page 1
       - label: "p1 offset=8  Lifetime Power-On Resets +1"
         json_path: "ata_device_statistics.pages.0.table.0.value"
         new_value: 58
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1.8"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1"
       - label: "p1 offset=16 Power-on Hours +1"
         json_path: "ata_device_statistics.pages.0.table.1.value"
         new_value: 43451
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1.16"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1"
       - label: "p1 offset=24 Logical Sectors Written +1"
         json_path: "ata_device_statistics.pages.0.table.2.value"
         new_value: 12345679
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1.24"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1"
       - label: "p1 offset=32 Logical Sectors Read +1"
         json_path: "ata_device_statistics.pages.0.table.3.value"
         new_value: 56789013
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1.32"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1"
       - label: "p1 offset=40 Number of Read Commands +1"
         json_path: "ata_device_statistics.pages.0.table.4.value"
         new_value: 3210988
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1.40"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1"
       - label: "p1 offset=48 Number of Write Commands +1"
         json_path: "ata_device_statistics.pages.0.table.5.value"
         new_value: 1234568
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1.48"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1"
       - label: "p1 offset=56 Number of Random Read Commands +1"
         json_path: "ata_device_statistics.pages.0.table.6.value"
         new_value: 987655
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1.56"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.1"
       # page 3
       - label: "p3 offset=8  Spindle Motor Power-on Hours +1"
         json_path: "ata_device_statistics.pages.1.table.0.value"
         new_value: 43202
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.8"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       - label: "p3 offset=16 Head Flying Hours +1"
         json_path: "ata_device_statistics.pages.1.table.1.value"
         new_value: 43101
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.16"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       - label: "p3 offset=24 Head Load Events +1"
         json_path: "ata_device_statistics.pages.1.table.2.value"
         new_value: 1058
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.24"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       - label: "p3 offset=32 Reallocated Logical Sectors +1"
         json_path: "ata_device_statistics.pages.1.table.3.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.32"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       - label: "p3 offset=40 Read Recovery Attempts +1"
         json_path: "ata_device_statistics.pages.1.table.4.value"
         new_value: 4
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.40"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       - label: "p3 offset=48 Mechanical Start Failures +1"
         json_path: "ata_device_statistics.pages.1.table.5.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.48"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       - label: "p3 offset=56 Realloc. Candidate Sectors +1"
         json_path: "ata_device_statistics.pages.1.table.6.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.56"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       - label: "p3 offset=64 High Priority Unload Events +1"
         json_path: "ata_device_statistics.pages.1.table.7.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3.64"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.3"
       # page 4
       - label: "p4 offset=8  Uncorrectable Errors +1"
         json_path: "ata_device_statistics.pages.2.table.0.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.4.8"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.4"
       - label: "p4 offset=16 Resets Between Cmd Acceptance +1"
         json_path: "ata_device_statistics.pages.2.table.1.value"
         new_value: 3
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.4.16"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.4"
       - label: "p4 offset=24 Physical Element Status Changed +1"
         json_path: "ata_device_statistics.pages.2.table.2.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.4.24"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.4"
       # page 5
       - label: "p5 offset=8  Current Temperature +1°C"
         json_path: "ata_device_statistics.pages.3.table.0.value"
         new_value: 29
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.8"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=16 Average Short-Term Temperature +1°C"
         json_path: "ata_device_statistics.pages.3.table.1.value"
         new_value: 28
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.16"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=24 Average Long-Term Temperature +1°C"
         json_path: "ata_device_statistics.pages.3.table.2.value"
         new_value: 27
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.24"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=32 Highest Temperature +1°C"
         json_path: "ata_device_statistics.pages.3.table.3.value"
         new_value: 39
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.32"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=40 Lowest Temperature -1°C"
         json_path: "ata_device_statistics.pages.3.table.4.value"
         new_value: 18
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.40"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=48 Highest Avg Short-Term Temp +1°C"
         json_path: "ata_device_statistics.pages.3.table.5.value"
         new_value: 36
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.48"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=56 Lowest Avg Short-Term Temp -1°C"
         json_path: "ata_device_statistics.pages.3.table.6.value"
         new_value: 20
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.56"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=64 Time in Over-Temperature +1"
         json_path: "ata_device_statistics.pages.3.table.7.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.64"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=72 Max Operating Temperature +1°C"
         json_path: "ata_device_statistics.pages.3.table.8.value"
         new_value: 61
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.72"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=80 Time in Under-Temperature +1"
         json_path: "ata_device_statistics.pages.3.table.9.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.80"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=88 Max Operating Temperature 20°C"
         json_path: "ata_device_statistics.pages.3.table.10.value"
         new_value: 20
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.88"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=96 Vendor Specific Temp Stat +1"
         json_path: "ata_device_statistics.pages.3.table.11.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.96"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       - label: "p5 offset=104 Vendor Specific Temp Stat 2 +1"
         json_path: "ata_device_statistics.pages.3.table.12.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5.104"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.5"
       # page 6
       - label: "p6 offset=8  Hardware Resets +1"
         json_path: "ata_device_statistics.pages.4.table.0.value"
         new_value: 58
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.6.8"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.6"
       - label: "p6 offset=16 ASR Events +1"
         json_path: "ata_device_statistics.pages.4.table.1.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.6.16"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.6"
       - label: "p6 offset=24 Interface CRC Errors +1"
         json_path: "ata_device_statistics.pages.4.table.2.value"
         new_value: 1
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.6.24"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.6"
       # page 255
       - label: "p255 offset=8  Vendor Stat 1 +1"
         json_path: "ata_device_statistics.pages.5.table.0.value"
         new_value: 1001
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.255.8"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.255"
       - label: "p255 offset=16 Vendor Stat 2 +1"
         json_path: "ata_device_statistics.pages.5.table.1.value"
         new_value: 2001
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.255.16"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.255"
       - label: "p255 offset=24 Vendor Stat 3 +1"
         json_path: "ata_device_statistics.pages.5.table.2.value"
         new_value: 3001
-        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.255.24"
+        expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.255"
 
 # ---------------------------------------------------------------------------
 # Notification tests (SNMP trap delivery)
@@ -889,7 +852,7 @@ notifications:
     action: add
     trigger_fixture: "smartd-json.Integration_Discovered_NVMe-DISCOVER01.discover.nvme.json"
     target_fixture:  "smartd-json.Integration_Discovered_NVMe-DISCOVER01.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.4
     expected_traps:
       - {oid_suffix: ".2.3.1", value_pattern: ".*"}
 
@@ -897,14 +860,14 @@ notifications:
     action: remove
     setup_fixture: "smartd-json.Integration_Discovered_NVMe-DISCOVER01.discover.nvme.json"
     target_fixture: "smartd-json.Integration_Discovered_NVMe-DISCOVER01.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".2.3.2", value_pattern: ".*"}
 
   - name: "common DevicePollFailed"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.poll-failed.nvme.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".2.3.3", value_pattern: ".*"}
 
@@ -912,7 +875,7 @@ notifications:
   - name: "nvme HealthFailed"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.failing.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".3.2.1", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{nvme}", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
@@ -921,7 +884,7 @@ notifications:
   - name: "nvme SelfTestFailed"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.selftest-fail.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".3.2.2", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{nvme}", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
@@ -931,7 +894,7 @@ notifications:
   - name: "sata HealthFailed"
     trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.health-fail.ata.json"
     replace_fixture:  "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".4.2.1", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
@@ -940,7 +903,7 @@ notifications:
   - name: "sata AttrFailing"
     trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.attr-fail.ata.json"
     replace_fixture:  "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".4.2.2", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
@@ -949,7 +912,7 @@ notifications:
   - name: "sata SelfTestFailed"
     trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.selftest-fail.ata.json"
     replace_fixture:  "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".4.2.3", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
@@ -960,7 +923,7 @@ notifications:
     skip: "Missing test data"
     trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.health-fail.scsi.json"
     replace_fixture:  "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.scsi.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".5.2.1", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
@@ -970,7 +933,7 @@ notifications:
     skip: "Missing test data"
     trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.selftest-fail.scsi.json"
     replace_fixture:  "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.scsi.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".5.2.2", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
@@ -980,7 +943,7 @@ notifications:
     skip: "Missing test data"
     trigger_fixture: "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.uncorrected.scsi.json"
     replace_fixture:  "smartd-json.SEAGATE_ST4000NM0023_FS-Z1Z0ABCD.scsi.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".5.2.3", value_pattern: ".*"}
       - {oid_suffix: ".2.1.3.1.11.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
@@ -993,28 +956,28 @@ notifications:
   - name: "sensor HighCriticalExceeded"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-high-crit.nvme.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".6.2.1", value_pattern: ".*"}
 
   - name: "sensor HighWarningExceeded"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-high-warn.nvme.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".6.2.2", value_pattern: ".*"}
 
   - name: "sensor LowWarningExceeded"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-low-warn.nvme.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".6.2.3", value_pattern: ".*"}
 
   - name: "sensor LowCriticalExceeded"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.sensor-low-crit.nvme.json"
     replace_fixture:  "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.json"
-    wait_seconds: 3
+    wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".6.2.4", value_pattern: ".*"}
 

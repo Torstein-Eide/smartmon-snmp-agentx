@@ -228,29 +228,27 @@ smartSATAChangeBySubindexTable OBJECT-TYPE
     MAX-ACCESS  not-accessible
     STATUS      current
     DESCRIPTION
-        "Change tracking for SATA tables with two table-specific index
-         components below smartmonDeviceIndex.  This table is used for
-         smartmonSataErrorCmdTable (table ID 5: error index, command index)
-         and smartmonSataDevStatTable (table ID 11: page number, offset)."
+        "Change tracking for SATA tables with one table-specific index
+         component below smartmonDeviceIndex.  This table is used for
+         smartmonSataErrorCmdTable (table ID 5: error index)
+         and smartmonSataDevStatTable (table ID 11: page number)."
     ::= { smartSATAChanges 3 }
 
 smartSATAChangeBySubindexEntry OBJECT-TYPE
     SYNTAX      SmartSATAChangeBySubindexEntry
     MAX-ACCESS  not-accessible
     STATUS      current
-    DESCRIPTION "Change state for one two-dimensional child row."
+    DESCRIPTION "Change state for one subtable group (error entry or statistics page)."
     INDEX {
         smartmonDeviceIndex,
         smartSATAChangeBySubindexTableId,
-        smartSATAChangeSubindex1,
-        smartSATAChangeSubindex2
+        smartSATAChangeSubindex1
     }
     ::= { smartSATAChangeBySubindexTable 1 }
 
 SmartSATAChangeBySubindexEntry ::= SEQUENCE {
     smartSATAChangeBySubindexTableId    Unsigned32,
     smartSATAChangeSubindex1            Unsigned32,
-    smartSATAChangeSubindex2            Unsigned32,
     smartSATAChangeBySubindexLastChange DateAndTime
 }
 
@@ -272,28 +270,18 @@ smartSATAChangeSubindex1 OBJECT-TYPE
     MAX-ACCESS  not-accessible
     STATUS      current
     DESCRIPTION
-        "First table-specific subindex.  For table ID 5 this is
+        "Table-specific subindex.  For table ID 5 this is
          smartmonSataErrorIndex.  For table ID 11 this is
          smartmonSataDevStatPageNum."
     ::= { smartSATAChangeBySubindexEntry 2 }
-
-smartSATAChangeSubindex2 OBJECT-TYPE
-    SYNTAX      Unsigned32
-    MAX-ACCESS  not-accessible
-    STATUS      current
-    DESCRIPTION
-        "Second table-specific subindex.  For table ID 5 this is
-         smartmonSataErrorCmdIndex.  For table ID 11 this is
-         smartmonSataDevStatOffset."
-    ::= { smartSATAChangeBySubindexEntry 3 }
 
 smartSATAChangeBySubindexLastChange OBJECT-TYPE
     SYNTAX      DateAndTime
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Timestamp of the most recent material content change for the indexed
-         child row."
+        "Timestamp of the most recent material content change for any row
+         within the indexed error entry or statistics page."
     ::= { smartSATAChangeBySubindexEntry 4 }
 
 smartmonSataInfoTable OBJECT-TYPE
