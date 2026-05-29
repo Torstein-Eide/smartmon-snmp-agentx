@@ -2,6 +2,7 @@
 
 #include "agentxd_notify.h"
 #include "agentxd_cache.h"
+#include "agentxd_config.h"
 #include "snmp_oids.h"
 
 #include <cstring>
@@ -263,6 +264,9 @@ void notify_device_polling_failed(uint32_t dev_idx, int poll_result) {
                          dev_idx, dev->last_poll_time);
     }
 
+    append_uint32(&vars, oid_poll_failure_threshold,
+                  OID_LEN(oid_poll_failure_threshold),
+                  0, ASN_UNSIGNED, (u_long)g_poll_failure_threshold);
     send_v2trap_timed(vars, "polling_failed");
     snmp_free_varbind(vars);
 }

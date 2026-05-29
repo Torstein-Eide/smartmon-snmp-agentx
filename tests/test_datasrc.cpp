@@ -22,7 +22,8 @@ extern "C" void syslog_stub(int, const char *fmt, ...) {
 }
 
 #define syslog syslog_stub
-int g_verbosity = 0;
+int      g_verbosity             = 0;
+uint32_t g_poll_failure_threshold = 1;
 #include "../src/agentxd_cache.cpp"
 #include "../src/agentxd_json.cpp"
 

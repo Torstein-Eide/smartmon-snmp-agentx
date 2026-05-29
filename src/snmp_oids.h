@@ -52,9 +52,10 @@ static const oid oid_smartmon_enterprise[] = { SMARTMON_ENT };
 static const oid oid_device_row_count[]      = { SMARTMON_ENT, 2, 1, 1 };
 static const oid oid_device_last_change[]    = { SMARTMON_ENT, 2, 1, 2 };
 static const oid oid_device_table[]          = { SMARTMON_ENT, 2, 1, 3 };
-static const oid oid_device_count_nvme[]     = { SMARTMON_ENT, 2, 1, 4 };
-static const oid oid_device_count_ata[]      = { SMARTMON_ENT, 2, 1, 5 };
-static const oid oid_device_count_sas[]      = { SMARTMON_ENT, 2, 1, 6 };
+static const oid oid_device_count_nvme[]         = { SMARTMON_ENT, 2, 1, 4 };
+static const oid oid_device_count_ata[]          = { SMARTMON_ENT, 2, 1, 5 };
+static const oid oid_device_count_sas[]          = { SMARTMON_ENT, 2, 1, 6 };
+static const oid oid_poll_failure_threshold[]    = { SMARTMON_ENT, 2, 1, 7 };
 
 // Notifications
 static const oid oid_notif_device_discovered[]      = { SMARTMON_ENT, 2, 3, 1 };

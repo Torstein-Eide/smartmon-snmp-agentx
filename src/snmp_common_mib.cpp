@@ -2,6 +2,7 @@
 
 #include "snmp_common_mib.h"
 #include "snmp_mib_helpers.h"
+#include "agentxd_config.h"
 
 #include <net-snmp/net-snmp-config.h>
 #include <net-snmp/net-snmp-includes.h>
@@ -168,6 +169,18 @@ device_count_sas_handler(netsnmp_mib_handler *,
     return SNMP_ERR_NOERROR;
 }
 
+static int
+poll_failure_threshold_handler(netsnmp_mib_handler *,
+                                netsnmp_handler_registration *,
+                                netsnmp_agent_request_info *reqinfo,
+                                netsnmp_request_info *requests) {
+    if (reqinfo->mode != MODE_GET) return SNMP_ERR_NOERROR;
+    u_long val = (u_long)g_poll_failure_threshold;
+    snmp_set_var_typed_value(requests->requestvb, ASN_UNSIGNED,
+                             (u_char*)&val, sizeof(val));
+    return SNMP_ERR_NOERROR;
+}
+
 // ---------------------------------------------------------------------------
 // Device table metadata scalar handlers
 // ---------------------------------------------------------------------------
@@ -198,6 +211,10 @@ void register_common_mib() {
     netsnmp_register_scalar(netsnmp_create_handler_registration(
         "smartmonDeviceCountSas",  device_count_sas_handler,
         oid_device_count_sas,  OID_LEN(oid_device_count_sas),  HANDLER_CAN_RONLY));
+    netsnmp_register_scalar(netsnmp_create_handler_registration(
+        "smartmonPollFailureThreshold", poll_failure_threshold_handler,
+        oid_poll_failure_threshold, OID_LEN(oid_poll_failure_threshold), HANDLER_CAN_RONLY));
+
     // Device table (single ASN_UNSIGNED index: smartmonDeviceIndex)
     REG_TABLE_U("smartmonDeviceTable", device_table_handler, oid_device_table,
                 device_get_next, COL_DEV_NAME, COL_DEV_WWN);

@@ -1735,7 +1735,9 @@ static void process_json_file(const std::string &filepath) {
                     continue;
                 row.poll_result = POLL_FAILED;
                 row.poll_exit_status = 1;
-                notify_device_polling_failed(row.index, (int)row.poll_result);
+                ++row.consec_fail_count;
+                if (row.consec_fail_count >= g_poll_failure_threshold)
+                    notify_device_polling_failed(row.index, (int)row.poll_result);
                 break;
             }
         }
