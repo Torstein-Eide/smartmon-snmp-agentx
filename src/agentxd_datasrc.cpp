@@ -157,6 +157,8 @@ static void hash_row(TableHasher &h, const CacheSataHealthRow &r) {
     h.feed(r.sct_temp_power_cycle_max); h.feed(r.sct_temp_lifetime_min);
     h.feed(r.sct_temp_lifetime_max); h.feed(r.sct_temp_under_limit_count);
     h.feed(r.sct_temp_over_limit_count); h.feed(r.sct_smart_status_passed);
+    h.feed(r.selftest_status_remaining_pct); h.feed(r.selftest_estimated_completion);
+    h.feed(r.selftest_estimated_bytes_sec);
 }
 static void hash_row(TableHasher &h, const CacheSataAttrRow &r) {
     h.feed(r.device_index); h.feed(r.attr_id); h.feed(r.name);
@@ -180,7 +182,7 @@ static void hash_row(TableHasher &h, const CacheSataErrorCmdRow &r) {
 static void hash_row(TableHasher &h, const CacheSataSelfTestRow &r) {
     h.feed(r.device_index); h.feed(r.entry_index); h.feed(r.type); h.feed(r.result);
     h.feed(r.passed); h.feed(r.remaining_pct); h.feed(r.lifetime_hours);
-    h.feed(r.lba_first_error); h.feed(r.estimated_completion);
+    h.feed(r.lba_first_error);
 }
 static void hash_row(TableHasher &h, const CacheSataErcRow &r) {
     h.feed(r.device_index); h.feed(r.erc_index); h.feed(r.enabled); h.feed(r.deciseconds);
@@ -1166,7 +1168,11 @@ static void parse_seagate_farm(uint32_t dev_idx, const JVal &farm) {
 }
 
 static void parse_ata(uint32_t dev_idx, const JVal &root) {
+    syslog(LOG_DEBUG, "datasrc: parse_ata dev_idx=%u health_before=%zu",
+           dev_idx, g_cache.sata_health.size());
     g_cache.clear_device_data(dev_idx);
+    syslog(LOG_DEBUG, "datasrc: parse_ata dev_idx=%u health_after_clear=%zu",
+           dev_idx, g_cache.sata_health.size());
 
     const JVal &attrs = root["ata_smart_attributes"]["table"];
     if (!attrs.is_array() && g_verbosity >= 1)
@@ -1516,6 +1522,8 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
     // SATA health
     {
         const JVal &smart = root["ata_smart_data"];
+        if (smart.is_null())
+            syslog(LOG_WARNING, "datasrc: parse_ata dev_idx=%u ata_smart_data missing — no health row", dev_idx);
         if (!smart.is_null()) {
             CacheSataHealthRow h;
             h.device_index         = dev_idx;
@@ -1524,6 +1532,76 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             h.offline_status_value = static_cast<uint32_t>(odc["status"]["value"].as_uint64());
             const JVal &st = smart["self_test"];
             h.selftest_status_value = static_cast<uint32_t>(st["status"]["value"].as_uint64());
+            h.selftest_status_remaining_pct = static_cast<uint32_t>(
+                st["status"]["remaining_percent"].as_uint64());
+            if (h.selftest_status_remaining_pct > 0) {
+                struct timespec ts_now {};
+                clock_gettime(CLOCK_REALTIME, &ts_now);
+                uint64_t now_ns = static_cast<uint64_t>(ts_now.tv_sec) * 1000000000ULL
+                                + static_cast<uint64_t>(ts_now.tv_nsec);
+
+                auto &prog = g_cache.sata_selftest_progress[dev_idx];
+                bool is_new = (prog.start_ns == 0);
+                bool is_falling_edge = (!is_new &&
+                    h.selftest_status_remaining_pct < prog.last_remaining);
+
+                if (is_new) {
+                    // First time seeing this test; resolve polling minutes from log entry type.
+                    const JVal &stlog_ext = root["ata_smart_self_test_log"]["extended"]["table"];
+                    const JVal &stlog_std = root["ata_smart_self_test_log"]["standard"]["table"];
+                    const JVal &tbl = stlog_ext.is_array() ? stlog_ext : stlog_std;
+                    uint32_t polling_min = 0;
+                    if (tbl.is_array() && tbl.size() > 0) {
+                        int type_val = static_cast<int>(tbl[0]["type"]["value"].as_int64());
+                        const JVal &pm = st["polling_minutes"];
+                        if (type_val == 1)      polling_min = static_cast<uint32_t>(pm["short"].as_uint64());
+                        else if (type_val == 2) polling_min = static_cast<uint32_t>(pm["extended"].as_uint64());
+                        else if (type_val == 3) polling_min = static_cast<uint32_t>(pm["conveyance"].as_uint64());
+                        if (polling_min == 0)   polling_min = static_cast<uint32_t>(pm["extended"].as_uint64());
+                    }
+                    prog.start_ns       = now_ns;
+                    prog.last_remaining = h.selftest_status_remaining_pct;
+                    prog.polling_min    = polling_min;
+                    // Only use polling-time estimate when we catch the test at its start (90%).
+                    // If the daemon restarted mid-test (remaining < 90), leave estimate at 0
+                    // until the first falling edge gives us a measured rate.
+                    prog.estimated_completion = (polling_min > 0 &&
+                                                 h.selftest_status_remaining_pct == 90)
+                        ? ts_now.tv_sec + static_cast<time_t>(polling_min) * 60
+                        : 0;
+                    state_db_update_selftest_progress(dev_idx, prog.start_ns,
+                        prog.last_remaining, prog.polling_min, prog.estimated_completion);
+                } else if (is_falling_edge) {
+                    prog.last_remaining = h.selftest_status_remaining_pct;
+                    if (prog.start_ns > 0 && now_ns > prog.start_ns) {
+                        uint64_t elapsed_ns = now_ns - prog.start_ns;
+                        uint32_t pct_done   = 100u - h.selftest_status_remaining_pct;
+                        if (pct_done > 0) {
+                            // elapsed * remaining / pct_done in this order avoids precision
+                            // loss while staying well within uint64 range (~8.6e13 ns max).
+                            uint64_t remaining_ns =
+                                elapsed_ns * h.selftest_status_remaining_pct / pct_done;
+                            prog.estimated_completion = ts_now.tv_sec
+                                + static_cast<time_t>(remaining_ns / 1000000000ULL);
+                        }
+                    }
+                    // else: clock went backward or pct_done==0 — keep previous estimate
+                    state_db_update_selftest_progress(dev_idx, prog.start_ns,
+                        prog.last_remaining, prog.polling_min, prog.estimated_completion);
+                }
+
+                h.selftest_estimated_completion = prog.estimated_completion;
+                if (prog.polling_min > 0) {
+                    uint64_t cap = root["user_capacity"]["bytes"].as_uint64();
+                    h.selftest_estimated_bytes_sec = cap / (static_cast<uint64_t>(prog.polling_min) * 60u);
+                }
+            } else {
+                // Test finished or cancelled — clear any saved progress.
+                if (g_cache.sata_selftest_progress.count(dev_idx)) {
+                    g_cache.sata_selftest_progress.erase(dev_idx);
+                    state_db_clear_selftest_progress(dev_idx);
+                }
+            }
             h.power_cycles         = root["power_cycle_count"].as_uint64();
             h.power_on_hours       = root["power_on_time"]["hours"].as_uint64();
             h.error_log_count      = static_cast<uint32_t>(
@@ -1583,6 +1661,8 @@ static void parse_ata(uint32_t dev_idx, const JVal &root) {
             }
 
             g_cache.sata_health.push_back(h);
+            syslog(LOG_DEBUG, "datasrc: parse_ata dev_idx=%u health row pushed, total=%zu",
+                   dev_idx, g_cache.sata_health.size());
         }
     }
 

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <unordered_set>
+#include <syslog.h>
 
 AgentxCache g_cache;
 
@@ -152,6 +153,8 @@ uint32_t AgentxCache::upsert_device(const std::string &path, DeviceProto proto,
     for (auto &row : devices) {
         if (row.path == path) {
             row.proto = proto;
+            syslog(LOG_DEBUG, "cache: upsert_device existing path='%s' idx=%u",
+                   path.c_str(), row.index);
             return row.index;
         }
     }
@@ -163,6 +166,8 @@ uint32_t AgentxCache::upsert_device(const std::string &path, DeviceProto proto,
         for (const auto &r : devices)
             if (r.index == idx) { taken = true; break; }
         if (!taken) break;
+        syslog(LOG_WARNING, "cache: upsert_device collision at idx=%u for path='%s', trying next",
+               idx, path.c_str());
         ++idx;
     }
     CacheDeviceRow row;
@@ -170,5 +175,7 @@ uint32_t AgentxCache::upsert_device(const std::string &path, DeviceProto proto,
     row.path  = path;
     row.proto = proto;
     devices.push_back(row);
+    syslog(LOG_DEBUG, "cache: upsert_device new path='%s' idx=%u (hint=%u)",
+           path.c_str(), idx, hint_idx);
     return row.index;
 }

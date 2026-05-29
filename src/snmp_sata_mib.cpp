@@ -306,6 +306,9 @@ sata_info_handler(netsnmp_mib_handler *,
 // col 18 = sctTempUnderLimitCount
 // col 19 = sctTempOverLimitCount
 // col 20 = sctSmartStatusPassed
+// col 21 = selfTestExecutionRemainingPct (Gauge32)
+// col 22 = selfTestEstimatedCompletionTime (DateAndTime, not instantiated when 0)
+// col 23 = selfTestEstimatedBytesSec (Counter64, not instantiated when 0)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -392,6 +395,22 @@ sata_health_handler(netsnmp_mib_handler *,
         case 20: { long v = row->sct_smart_status_passed ? 1 : 2;
                    snmp_set_var_typed_value(req->requestvb, ASN_INTEGER,
                        (u_char*)&v, sizeof(v)); break; }
+        case 21: { u_long v = row->selftest_status_remaining_pct;
+                   snmp_set_var_typed_value(req->requestvb, ASN_GAUGE,
+                       (u_char*)&v, sizeof(v)); break; }
+        case 22: if (row->selftest_estimated_completion == 0) {
+                     netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
+                 } else {
+                     uint8_t dt[11];
+                     snmp_encode_date_time({row->selftest_estimated_completion, 0}, dt);
+                     snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
+                         dt, sizeof(dt));
+                 } break;
+        case 23: if (row->selftest_estimated_bytes_sec == 0) {
+                     netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
+                 } else {
+                     set_counter64(req, row->selftest_estimated_bytes_sec);
+                 } break;
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }
@@ -569,7 +588,6 @@ sata_attr_handler(netsnmp_mib_handler *,
 // col 5  = selfTestRemainingPct
 // col 6  = selfTestLifetimeHours
 // col 7  = selfTestLbaFirstError
-// col 8  = selfTestEstimatedCompletionTime (DateAndTime, not instantiated when 0)
 // ---------------------------------------------------------------------------
 
 static netsnmp_variable_list *
@@ -617,14 +635,6 @@ sata_st_handler(netsnmp_mib_handler *,
                        (u_char*)&v, sizeof(v)); break; }
         case 6:  set_counter64(req, row->lifetime_hours); break;
         case 7:  set_counter64(req, row->lba_first_error); break;
-        case 8:  if (row->estimated_completion == 0) {
-                     netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
-                 } else {
-                     uint8_t dt[11];
-                     snmp_encode_date_time({row->estimated_completion, 0}, dt);
-                     snmp_set_var_typed_value(req->requestvb, ASN_OCTET_STR,
-                         dt, sizeof(dt));
-                 } break;
         default: netsnmp_set_request_error(reqinfo, req, SNMP_NOSUCHOBJECT);
         }
     }
@@ -1333,7 +1343,7 @@ void register_sata_mib() {
 
     // SATA table iterator registrations
     REG_TABLE_U("smartmonSataInfoTable",      sata_info_handler,   oid_sata_info_table,      sata_info_get_next,    1, 66);
-    REG_TABLE_U("smartmonSataHealthTable",    sata_health_handler, oid_sata_health_table,    sata_health_get_next,  1, 20);
+    REG_TABLE_U("smartmonSataHealthTable",    sata_health_handler, oid_sata_health_table,    sata_health_get_next,  1, 23);
     REG_TABLE_UU("smartmonSataErrorLogTable", sata_el_handler,     oid_sata_error_log_table, sata_el_get_next,      2, 12);
     REG_TABLE_UU("smartmonSataAttrTable",     sata_attr_handler,   oid_sata_attr_table,      sata_attr_get_next,    2, 11);
 
@@ -1348,7 +1358,7 @@ void register_sata_mib() {
     // SATA error cmd table (3 index columns: deviceIndex + errorLogIndex + cmdIndex)
     REG_TABLE_UUU("smartmonSataErrorCmdTable", sata_errcmd_handler, oid_sata_error_cmd_table, sata_errcmd_get_next, 2, 10);
 
-    REG_TABLE_UU("smartmonSataSelfTestTable",  sata_st_handler,    oid_sata_selftest_table,  sata_st_get_next,      2, 8);
+    REG_TABLE_UU("smartmonSataSelfTestTable",  sata_st_handler,    oid_sata_selftest_table,  sata_st_get_next,      2, 7);
 
     // ERC table
     netsnmp_register_scalar(netsnmp_create_handler_registration(

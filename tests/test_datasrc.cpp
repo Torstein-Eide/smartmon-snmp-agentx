@@ -120,6 +120,9 @@ void  state_db_remove_device(uint32_t)                                       {}
 void  state_db_update_sensor_alarm(uint32_t, uint32_t, int, time_t)         {}
 void  state_db_set_sata_attr_alarm(uint32_t, uint32_t, bool)                {}
 void  state_db_update_sas_uncorrected_baseline(uint32_t, int, uint64_t)     {}
+void  state_db_update_selftest_progress(uint32_t, uint64_t, uint32_t,
+                                        uint32_t, time_t)                    {}
+void  state_db_clear_selftest_progress(uint32_t)                             {}
 void  state_db_close()                                                        {}
 
 #include "../src/agentxd_datasrc.cpp"

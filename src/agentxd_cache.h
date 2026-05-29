@@ -152,7 +152,6 @@ struct CacheSataSelfTestRow {
     uint32_t    remaining_pct { 0 };
     uint64_t    lifetime_hours { 0 };
     uint64_t    lba_first_error { 0 };
-    time_t      estimated_completion { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -430,6 +429,9 @@ struct CacheSataHealthRow {
     uint32_t    sct_temp_under_limit_count { 0 };
     uint32_t    sct_temp_over_limit_count  { 0 };
     bool        sct_smart_status_passed    { false };
+    uint32_t    selftest_status_remaining_pct   { 0 };
+    time_t      selftest_estimated_completion   { 0 };
+    uint64_t    selftest_estimated_bytes_sec    { 0 };
 };
 
 // --------------------------------------------------------------------
@@ -775,6 +777,16 @@ struct AgentxCache {
     // Key = (device_index << 32) | direction.
     // Traps fire only when uncorrected count exceeds this baseline.
     std::unordered_map<uint64_t, uint64_t> sas_uncorrected_baseline;
+
+    // SATA self-test progress state, keyed by device_index.
+    // Persisted to survive daemon restarts during long tests.
+    struct SataSelftestProgress {
+        uint64_t start_ns           { 0 };  // epoch ns when remaining first hit 90
+        uint32_t last_remaining     { 0 };  // remaining_pct at previous parse
+        uint32_t polling_min        { 0 };  // polling minutes for the test type
+        time_t   estimated_completion { 0 };// frozen estimate, updated only on falling edge
+    };
+    std::unordered_map<uint32_t, SataSelftestProgress> sata_selftest_progress;
 
     // Remove device row and all sub-table rows for device_index
     void remove_device(uint32_t device_index);

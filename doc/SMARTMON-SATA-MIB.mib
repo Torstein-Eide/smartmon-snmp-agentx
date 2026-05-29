@@ -849,7 +849,10 @@ SmartmonSataHealthEntry ::= SEQUENCE {
     smartmonSataSctTempLifetimeMax       Integer32,
     smartmonSataSctTempUnderLimitCount   Unsigned32,
     smartmonSataSctTempOverLimitCount    Unsigned32,
-    smartmonSataSctSmartStatusPassed     TruthValue
+    smartmonSataSctSmartStatusPassed     TruthValue,
+    smartmonSataSelfTestExecutionRemainingPct Unsigned32,
+    smartmonSataSelfTestEstimatedCompletionTime DateAndTime,
+    smartmonSataSelfTestEstimatedBytesSec CounterBasedGauge64
 }
 
 smartmonSataHealthOverallStatus OBJECT-TYPE
@@ -1058,6 +1061,39 @@ smartmonSataSctSmartStatusPassed OBJECT-TYPE
         "SMART RETURN STATUS result reported in the SCT Status response
          (ata_sct_status.smart_status.passed)."
     ::= { smartmonSataHealthEntry 20 }
+
+smartmonSataSelfTestExecutionRemainingPct OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "percent"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Remaining percentage of the currently executing self-test, from
+         ata_smart_data.self_test.status.remaining_percent.  Zero when no
+         test is in progress."
+    ::= { smartmonSataHealthEntry 21 }
+
+smartmonSataSelfTestEstimatedCompletionTime OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Estimated wall-clock completion time for the active self-test,
+         computed from remaining_percent and the polling interval for the
+         test type.  Not instantiated when no test is in progress or when
+         the polling interval is unknown."
+    ::= { smartmonSataHealthEntry 22 }
+
+smartmonSataSelfTestEstimatedBytesSec OBJECT-TYPE
+    SYNTAX      CounterBasedGauge64
+    UNITS       "bytes/second"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Estimated scan throughput for the active self-test, computed as
+         user_capacity_bytes divided by the total expected test duration.
+         Not instantiated when no test is in progress."
+    ::= { smartmonSataHealthEntry 23 }
 
 -- --------------------------------------------------------------------------
 -- SATA SMART attributes table  (.7 RowCount, .8 LastChange, .9 Table)
@@ -1574,8 +1610,7 @@ SmartmonSataSelfTestEntry ::= SEQUENCE {
     smartmonSataSelfTestResultPassed  TruthValue,
     smartmonSataSelfTestRemainingPct  Unsigned32,
     smartmonSataSelfTestLifetimeHours CounterBasedGauge64,
-    smartmonSataSelfTestLbaFirstError SmartmonLogicalBlockAddress,
-    smartmonSataSelfTestEstimatedCompletionTime DateAndTime
+    smartmonSataSelfTestLbaFirstError SmartmonLogicalBlockAddress
 }
 
 smartmonSataSelfTestIndex OBJECT-TYPE
@@ -1644,18 +1679,6 @@ smartmonSataSelfTestLbaFirstError OBJECT-TYPE
         "LBA of the first error, if reported
          (ata_smart_self_test_log.extended.table[].lba_first_error)."
     ::= { smartmonSataSelfTestEntry 7 }
-
-smartmonSataSelfTestEstimatedCompletionTime OBJECT-TYPE
-    SYNTAX      DateAndTime
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Estimated wall-clock completion time for an active ATA self-test, if
-         the agent can estimate it from reported remaining percentage and the
-         known self-test polling interval for the test type.  The object is not
-         instantiated for completed log entries or when no meaningful estimate
-         can be calculated."
-    ::= { smartmonSataSelfTestEntry 8 }
 
 -- --------------------------------------------------------------------------
 -- SATA SCT Error Recovery Control table  (.19 RowCount, .20 LastChange, .21 Table)
@@ -2410,7 +2433,10 @@ smartmonSataHealthGroup OBJECT-GROUP
         smartmonSataSctTempLifetimeMax,
         smartmonSataSctTempUnderLimitCount,
         smartmonSataSctTempOverLimitCount,
-        smartmonSataSctSmartStatusPassed
+        smartmonSataSctSmartStatusPassed,
+        smartmonSataSelfTestExecutionRemainingPct,
+        smartmonSataSelfTestEstimatedCompletionTime,
+        smartmonSataSelfTestEstimatedBytesSec
     }
     STATUS current
     DESCRIPTION "ATA/SATA SMART live-state objects (5-minute polling)."
@@ -2474,8 +2500,7 @@ smartmonSataSelfTestGroup OBJECT-GROUP
         smartmonSataSelfTestResultPassed,
         smartmonSataSelfTestRemainingPct,
         smartmonSataSelfTestLifetimeHours,
-        smartmonSataSelfTestLbaFirstError,
-        smartmonSataSelfTestEstimatedCompletionTime
+        smartmonSataSelfTestLbaFirstError
     }
     STATUS current
     DESCRIPTION "ATA SMART self-test log objects."

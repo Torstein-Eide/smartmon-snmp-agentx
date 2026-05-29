@@ -37,5 +37,11 @@ void state_db_set_sata_attr_alarm(uint32_t dev_id, uint32_t attr_id, bool failin
 void state_db_update_sas_uncorrected_baseline(uint32_t dev_id, int direction,
                                               uint64_t uncorrected);
 
+// Persist SATA self-test in-progress state (updated only on falling edge of remaining_pct).
+void state_db_update_selftest_progress(uint32_t dev_id, uint64_t start_ns,
+                                       uint32_t last_remaining, uint32_t polling_min,
+                                       time_t estimated_completion);
+void state_db_clear_selftest_progress(uint32_t dev_id);
+
 // Close the database.
 void state_db_close();

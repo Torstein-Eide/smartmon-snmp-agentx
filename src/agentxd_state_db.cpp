@@ -101,6 +101,13 @@ bool state_db_open(const std::string &path) {
         "  direction   INTEGER NOT NULL,"
         "  uncorrected INTEGER NOT NULL,"
         "  PRIMARY KEY (dev_id, direction)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS sata_selftest_progress ("
+        "  dev_id               INTEGER PRIMARY KEY,"
+        "  start_ns             INTEGER NOT NULL,"
+        "  last_remaining       INTEGER NOT NULL,"
+        "  polling_min          INTEGER NOT NULL,"
+        "  estimated_completion INTEGER NOT NULL"
         ");";
     char *errmsg = nullptr;
     if (sqlite3_exec(g_db, sql, nullptr, nullptr, &errmsg) != SQLITE_OK) {
@@ -256,6 +263,26 @@ void state_db_load() {
         sqlite3_finalize(stmt);
         syslog(LOG_INFO, "state_db: loaded %u SAS uncorrected baseline(s)", n);
     }
+
+    // Load SATA self-test progress state.
+    const char *sql7 =
+        "SELECT dev_id, start_ns, last_remaining, polling_min, estimated_completion"
+        " FROM sata_selftest_progress;";
+    if (sqlite3_prepare_v2(g_db, sql7, -1, &stmt, nullptr) == SQLITE_OK) {
+        unsigned n = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t dev  = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            AgentxCache::SataSelftestProgress p;
+            p.start_ns            = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
+            p.last_remaining      = static_cast<uint32_t>(sqlite3_column_int64(stmt, 2));
+            p.polling_min         = static_cast<uint32_t>(sqlite3_column_int64(stmt, 3));
+            p.estimated_completion= static_cast<time_t>(sqlite3_column_int64(stmt, 4));
+            g_cache.sata_selftest_progress[dev] = p;
+            ++n;
+        }
+        sqlite3_finalize(stmt);
+        syslog(LOG_INFO, "state_db: loaded %u self-test progress state(s)", n);
+    }
 }
 
 void state_db_update(int table_id, uint64_t hash, time_t ts) {
@@ -351,14 +378,44 @@ void state_db_update_sas_uncorrected_baseline(uint32_t dev_id, int direction,
     sqlite3_finalize(stmt);
 }
 
+void state_db_update_selftest_progress(uint32_t dev_id, uint64_t start_ns,
+                                       uint32_t last_remaining, uint32_t polling_min,
+                                       time_t estimated_completion) {
+    if (!g_db) return;
+    const char *sql =
+        "INSERT OR REPLACE INTO sata_selftest_progress"
+        " (dev_id, start_ns, last_remaining, polling_min, estimated_completion)"
+        " VALUES (?, ?, ?, ?, ?);";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(start_ns));
+    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(last_remaining));
+    sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(polling_min));
+    sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(estimated_completion));
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+void state_db_clear_selftest_progress(uint32_t dev_id) {
+    if (!g_db) return;
+    const char *sql = "DELETE FROM sata_selftest_progress WHERE dev_id = ?;";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(dev_id));
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
 void state_db_remove_device(uint32_t dev_id) {
     if (!g_db) return;
     const char *sqls[] = {
         "DELETE FROM sata_by_dev_state       WHERE dev_id = ?;",
         "DELETE FROM sata_devstat_page_state WHERE dev_id = ?;",
         "DELETE FROM sensor_alarm_state      WHERE dev_id = ?;",
-        "DELETE FROM sata_attr_alarm         WHERE dev_id = ?;",
-        "DELETE FROM sas_uncorrected_baseline WHERE dev_id = ?;",
+        "DELETE FROM sata_attr_alarm          WHERE dev_id = ?;",
+        "DELETE FROM sas_uncorrected_baseline  WHERE dev_id = ?;",
+        "DELETE FROM sata_selftest_progress    WHERE dev_id = ?;",
     };
     for (const char *sql : sqls) {
         sqlite3_stmt *stmt = nullptr;
