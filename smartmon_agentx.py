@@ -302,6 +302,15 @@ def _string(v) -> tuple:
 def _integer(v) -> tuple:
     return ("integer", str(int(v) if v is not None else 0))
 
+def _bits(val: int, nbits: int = 8) -> tuple:
+    """Encode an integer as an SNMP BITS OCTET STRING (MSB of first byte = bit 0)."""
+    nbytes = (nbits + 7) // 8
+    data = bytearray(nbytes)
+    for i in range(nbits):
+        if int(val) & (1 << i):
+            data[i // 8] |= 0x80 >> (i % 8)
+    return ("bits", bytes(data))
+
 def _encode_datetimeval(dt: datetime) -> bytes:
     """Encode datetime as RFC 2579 DateAndTime (11-byte OCTET STRING with UTC offset)."""
     if dt.tzinfo is None:
@@ -552,7 +561,7 @@ def _add_nvme_health(add, dev: dict, d_idx: int) -> None:
     overall  = 1 if smart_ok else (2 if smart_ok is False else 0)
 
     add(T+(1,  d_idx, hi), *_integer(overall))
-    add(T+(2,  d_idx, hi), *_gauge(h["critical_warning"]))
+    add(T+(2,  d_idx, hi), *_bits(h["critical_warning"], nbits=6))
     # cols 3-6 omitted (reserved/commented-out in MIB)
     add(T+(7,  d_idx, hi), *_counter64(h["data_units_read"]))
     add(T+(8,  d_idx, hi), *_counter64(h["data_units_written"]))
@@ -568,8 +577,13 @@ def _add_nvme_health(add, dev: dict, d_idx: int) -> None:
     add(T+(18, d_idx, hi), *_counter64(h["num_err_log_entries"]))
     add(T+(19, d_idx, hi), *_counter64(h["warning_temp_time"]))
     add(T+(20, d_idx, hi), *_counter64(h["critical_comp_time"]))
-    add(T+(22, d_idx, hi), *_gauge(0))        # currentSelfTestOperationValue
-    add(T+(23, d_idx, hi), *_string(""))
+    st_log = dev["raw"].get("nvme_self_test_log") or {}
+    cur_st = st_log.get("current_self_test") or {}
+    cur_code = cur_st.get("code") or {}
+    st_val = int(cur_code.get("value", 0))
+    st_str = str(cur_code.get("string") or "No self-test in progress")
+    add(T+(22, d_idx, hi), *_gauge(st_val))
+    add(T+(23, d_idx, hi), *_string(st_str))
 
 
 # --------------------------------------------------------------------------
@@ -878,6 +892,8 @@ def _make_value(agent: Any, snmp_type: str, value: object) -> Any:
     if snmp_type == "datetimeval":
         raw = _encode_datetimeval(value) if isinstance(value, datetime) else b""
         return agent.OctetString(raw)
+    if snmp_type == "bits":
+        return agent.OctetString(value if isinstance(value, bytes) else bytes(value))
     raise ValueError(f"unsupported SNMP type {snmp_type!r}")
 
 
@@ -888,7 +904,7 @@ def _make_scalar(agent: Any, oidstr: str, snmp_type: str) -> Any:
         return agent.Unsigned32(oidstr=oidstr, writable=False)
     if snmp_type == "integer":
         return agent.Integer32(oidstr=oidstr, writable=False)
-    if snmp_type in ("string", "datetimeval"):
+    if snmp_type in ("string", "datetimeval", "bits"):
         return agent.OctetString(oidstr=oidstr, writable=False)
     raise ValueError(f"unsupported scalar type {snmp_type!r}")
 
@@ -937,7 +953,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
         "entry_prefix": _full((3, 1, 15, 1)),
         "indexes": 2,
         "columns": {
-            1: "integer", 2: "gauge",
+            1: "integer", 2: "bits",
             7: "counter64", 8: "counter64", 9: "counter64", 10: "counter64",
             11: "counter64", 12: "counter64", 13: "counter64", 14: "counter64",
             15: "counter64", 16: "counter64", 17: "counter64", 18: "counter64",
@@ -1009,7 +1025,7 @@ def _register_tables(agent: Any) -> Dict[str, Any]:
     tables = {}
     for name, defn in TABLE_DEFINITIONS.items():
         columns = [
-            (col, _make_value(agent, snmp_type, "" if snmp_type in ("string", "datetimeval") else 0))
+            (col, _make_value(agent, snmp_type, "" if snmp_type in ("string", "datetimeval", "bits") else 0))
             for col, snmp_type in defn["columns"].items()
         ]
         tables[name] = agent.Table(
@@ -1042,6 +1058,8 @@ def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
             continue
         if snmp_type == "datetimeval":
             scalar.update(_encode_datetimeval(value) if isinstance(value, datetime) else b"")
+        elif snmp_type == "bits":
+            scalar.update(value if isinstance(value, bytes) else bytes(value))
         elif snmp_type == "string":
             scalar.update(_as_text(value).encode())
         else:
@@ -1069,7 +1087,7 @@ def _publish_tables(agent: Any, tables: Dict[str, Any]) -> None:
         for indexes in sorted(rows):
             row = table.addRow([agent.Unsigned32(idx) for idx in indexes])
             for col, snmp_type in columns.items():
-                vtype, val = rows[indexes].get(col, (snmp_type, "" if snmp_type in ("string", "datetimeval") else 0))
+                vtype, val = rows[indexes].get(col, (snmp_type, "" if snmp_type in ("string", "datetimeval", "bits") else 0))
                 row.setRowCell(col, _make_value(agent, vtype, val))
 
 
