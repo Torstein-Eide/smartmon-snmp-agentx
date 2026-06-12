@@ -1624,6 +1624,60 @@ def _add_sata_logdir(add, dev: dict, d_idx: int,
 # SATA device statistics table  (.4.1.40.1)
 # --------------------------------------------------------------------------
 
+def _farm_strip_prefix(parent: str, child: str) -> str:
+    """Strip longest common _-word prefix of child that matches parent (C++ logic)."""
+    sep = 0
+    for i in range(min(len(parent), len(child))):
+        if parent[i] != child[i]:
+            break
+        if child[i] == '_':
+            sep = i + 1
+    return child[sep:] if sep else child
+
+
+_FARM_PAGES = [
+    ("page_0_log_header",             100, "FARM Log Header"),
+    ("page_1_drive_information",      101, "FARM Drive Information"),
+    ("page_2_workload_statistics",    102, "FARM Workload Statistics"),
+    ("page_3_error_statistics",       103, "FARM Error Statistics"),
+    ("page_4_environment_statistics", 104, "FARM Environment Statistics"),
+    ("page_5_reliability_statistics", 105, "FARM Reliability Statistics"),
+]
+
+
+def _add_sata_farm(add, raw: dict, d_idx: int) -> int:
+    T    = (4, 1, 40, 1)
+    farm = raw.get("seagate_farm_log") or {}
+    if not farm.get("supported"):
+        return 0
+    count = 0
+    for pg_key, pg_num, pg_name in _FARM_PAGES:
+        page_obj = farm.get(pg_key)
+        if not isinstance(page_obj, dict):
+            continue
+        offset = 1
+        for key, val in page_obj.items():
+            if isinstance(val, (int, float)):
+                add(T+(3, d_idx, pg_num, offset), *_string(pg_name))
+                add(T+(4, d_idx, pg_num, offset), *_string(key))
+                add(T+(5, d_idx, pg_num, offset), *_counter64(int(val)))
+                add(T+(6, d_idx, pg_num, offset), *_bits(0, nbits=8))
+                offset += 1
+                count  += 1
+            elif isinstance(val, dict):
+                for child_key, child_val in val.items():
+                    if not isinstance(child_val, (int, float)):
+                        continue
+                    short = _farm_strip_prefix(key, child_key)
+                    add(T+(3, d_idx, pg_num, offset), *_string(pg_name))
+                    add(T+(4, d_idx, pg_num, offset), *_string(f"{key}.{short}"))
+                    add(T+(5, d_idx, pg_num, offset), *_counter64(int(child_val)))
+                    add(T+(6, d_idx, pg_num, offset), *_bits(0, nbits=8))
+                    offset += 1
+                    count  += 1
+    return count
+
+
 def _add_sata_devstat(add, dev: dict, d_idx: int) -> int:
     T     = (4, 1, 40, 1)
     pages = (dev["raw"].get("ata_device_statistics") or {}).get("pages") or []
@@ -1642,6 +1696,7 @@ def _add_sata_devstat(add, dev: dict, d_idx: int) -> int:
             add(T+(5, d_idx, page_num, offset), *_counter64(raw_v))
             add(T+(6, d_idx, page_num, offset), *_bits(fval, nbits=8))
             count += 1
+    count += _add_sata_farm(add, dev["raw"], d_idx)
     return count
 
 
