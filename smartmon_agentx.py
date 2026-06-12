@@ -1468,20 +1468,19 @@ def _add_sata_errorlog(add, dev: dict, d_idx: int) -> int:
     T       = (4, 1, 12, 1)
     entries = ((dev["raw"].get("ata_smart_error_log") or {}).get("extended") or {}).get("table") or []
     for i, e in enumerate(entries):
-        ei   = i + 1
-        comp = e.get("completion_registers") or {}
-        lba  = int(comp.get("lba", 0) or 0)
+        ei  = i + 1
+        lba = int(e.get("lba", 0) or 0)
         add(T+(2,  d_idx, ei), *_gauge(int(e.get("error_number", 0) or 0)))
         add(T+(3,  d_idx, ei), *_counter64(int(e.get("lifetime_hours", 0) or 0)))
-        add(T+(4,  d_idx, ei), *_string(str(e.get("error_description") or "")))
-        add(T+(5,  d_idx, ei), *_gauge(int(comp.get("error", 0) or 0)))
-        add(T+(6,  d_idx, ei), *_gauge(int(comp.get("status", 0) or 0)))
+        add(T+(4,  d_idx, ei), *_string(str(e.get("description") or "")))
+        add(T+(5,  d_idx, ei), *_gauge(int(e.get("completion_register_error", 0) or 0)))
+        add(T+(6,  d_idx, ei), *_gauge(int(e.get("completion_register_status", 0) or 0)))
         add(T+(7,  d_idx, ei), *_counter64(lba & 0xFFFFFFFFFFFFFFFF))
-        add(T+(8,  d_idx, ei), *_gauge(int(comp.get("command", 0) or 0)))
-        add(T+(9,  d_idx, ei), *_gauge(int(comp.get("count", 0) or 0)))
-        add(T+(10, d_idx, ei), *_gauge(int(comp.get("device", 0) or 0)))
-        add(T+(11, d_idx, ei), *_gauge(int(comp.get("features", 0) or 0)))
-        add(T+(12, d_idx, ei), *_integer(int((e.get("device_state") or {}).get("value", 0) or 0) & 0xF))
+        add(T+(8,  d_idx, ei), *_gauge(int(e.get("register_command", 0) or 0)))
+        add(T+(9,  d_idx, ei), *_gauge(int(e.get("register_count", 0) or 0)))
+        add(T+(10, d_idx, ei), *_gauge(int(e.get("register_device", 0) or 0)))
+        add(T+(11, d_idx, ei), *_gauge(int(e.get("register_feature", 0) or 0)))
+        add(T+(12, d_idx, ei), *_integer(int((e.get("state") or {}).get("value", 0) or 0) & 0xF))
     return len(entries)
 
 
@@ -1534,7 +1533,7 @@ def _add_sata_selftest(add, dev: dict, d_idx: int) -> int:
         add(T+(4, d_idx, si), *_truthvalue(bool(status.get("passed", False))))
         add(T+(5, d_idx, si), *_gauge(int(status.get("remaining_percent", 0) or 0)))
         add(T+(6, d_idx, si), *_counter64(int(e.get("lifetime_hours", 0) or 0)))
-        add(T+(7, d_idx, si), *_counter64(int(e.get("lba_first_error", 0) or 0) & 0xFFFFFFFFFFFFFFFF))
+        add(T+(7, d_idx, si), *_counter64(int(e.get("lba_of_first_error", 0) or 0) & 0xFFFFFFFFFFFFFFFF))
     return len(entries)
 
 
