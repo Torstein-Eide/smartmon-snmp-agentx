@@ -337,6 +337,30 @@ def _map(table: dict, s) -> int:
     return table.get(str(s).lower().strip(), 0)
 
 
+_PCI_VENDORS: Optional[Dict[int, str]] = None
+_PCI_IDS_PATH = "/usr/share/misc/pci.ids"
+
+def _pci_vendor_name(vendor_id: int) -> str:
+    """Return vendor name from pci.ids for the given numeric ID, or ''."""
+    global _PCI_VENDORS
+    if _PCI_VENDORS is None:
+        _PCI_VENDORS = {}
+        try:
+            with open(_PCI_IDS_PATH, errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("#") or line.startswith("\t") or not line.strip():
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        try:
+                            _PCI_VENDORS[int(parts[0], 16)] = parts[1].strip()
+                        except ValueError:
+                            pass
+        except OSError:
+            pass
+    return _PCI_VENDORS.get(vendor_id, "")
+
+
 def _fnv1a_32(data: bytes) -> int:
     """32-bit FNV-1a hash; always returns a value in 1..4294967294."""
     h = 0x811c9dc5
@@ -408,13 +432,20 @@ _st = _State()
 
 # Table prefix tuples for fingerprinting (full OID prefix of each table entry)
 _TABLE_PREFIXES = {
-    "device":      _full((2, 1, 3, 1)),
-    "nvme_health": _full((3, 1, 15, 1)),
-    "sata_health": _full((4, 1, 6, 1)),
-    "sata_attr":   _full((4, 1, 9, 1)),
-    "sas_health":  _full((5, 1, 6, 1)),
-    "sas_err":     _full((5, 1, 9, 1)),
-    "sensor":      _full((6, 1, 3, 1)),
+    "device":           _full((2, 1, 3, 1)),
+    "nvme_controller":  _full((3, 1, 3, 1)),
+    "nvme_namespace":   _full((3, 1, 6, 1)),
+    "nvme_power_state": _full((3, 1, 9, 1)),
+    "nvme_lba_format":  _full((3, 1, 12, 1)),
+    "nvme_health":      _full((3, 1, 15, 1)),
+    "nvme_selftest":    _full((3, 1, 18, 1)),
+    "nvme_errlog":      _full((3, 1, 21, 1)),
+    "nvme_capability":  _full((3, 1, 24, 1)),
+    "sata_health":      _full((4, 1, 6, 1)),
+    "sata_attr":        _full((4, 1, 9, 1)),
+    "sas_health":       _full((5, 1, 6, 1)),
+    "sas_err":          _full((5, 1, 9, 1)),
+    "sensor":           _full((6, 1, 3, 1)),
 }
 
 
@@ -440,17 +471,31 @@ def _build(devices: list, ts: datetime,
     add((2, 1, 6, 0), *_gauge(n_sas))         # smartmonDeviceCountSas
     add((2, 1, 7, 0), *_gauge(_st.poll_failure_threshold))  # smartmonPollFailureThreshold
 
-    # ---- Protocol-subtree scalars ----
-    add((3, 1, 13, 0), *_gauge(n_nvme))       # smartmonNvmeHealthTableRowCount
-    add((4, 1, 4, 0),  *_gauge(n_ata))        # smartmonSataHealthTableRowCount
-    add((4, 1, 7, 0),  *_gauge(0))            # smartmonSataAttrTableRowCount (filled per-device below)
-    add((5, 1, 4, 0),  *_gauge(n_sas))        # smartmonSasHealthTableRowCount
-    add((5, 1, 7, 0),  *_gauge(n_sas * 2))    # smartmonSasErrorCounterTableRowCount (read+write per dev)
-    add((6, 1, 1, 0),  *_gauge(0))            # smartmonSensorTableRowCount (filled below)
+    # ---- Protocol-subtree scalars (placeholders filled after device loop) ----
+    add((3, 1, 1, 0),  *_gauge(0))            # nvmeControllerTableRowCount
+    add((3, 1, 4, 0),  *_gauge(0))            # nvmeNamespaceTableRowCount
+    add((3, 1, 7, 0),  *_gauge(0))            # nvmePowerStateTableRowCount
+    add((3, 1, 10, 0), *_gauge(0))            # nvmeLbaFormatTableRowCount
+    add((3, 1, 13, 0), *_gauge(n_nvme))       # nvmeHealthTableRowCount
+    add((3, 1, 16, 0), *_gauge(0))            # nvmeSelfTestTableRowCount
+    add((3, 1, 19, 0), *_gauge(0))            # nvmeErrorLogTableRowCount
+    add((3, 1, 22, 0), *_gauge(0))            # nvmeCapabilityTableRowCount
+    add((4, 1, 4, 0),  *_gauge(n_ata))        # sataHealthTableRowCount
+    add((4, 1, 7, 0),  *_gauge(0))            # sataAttrTableRowCount
+    add((5, 1, 4, 0),  *_gauge(n_sas))        # sasHealthTableRowCount
+    add((5, 1, 7, 0),  *_gauge(n_sas * 2))    # sasErrorCounterTableRowCount
+    add((6, 1, 1, 0),  *_gauge(0))            # sensorTableRowCount
 
     used_d_idx: set = set()
-    n_sata_attrs  = 0
-    n_sensors     = 0
+    n_sata_attrs   = 0
+    n_sensors      = 0
+    n_nvme_ctrl    = 0
+    n_nvme_ns      = 0
+    n_nvme_ps      = 0
+    n_nvme_lba     = 0
+    n_nvme_st      = 0
+    n_nvme_el      = 0
+    n_nvme_cap     = 0
 
     for dev in sorted(devices, key=lambda d: (d["serial_number"], d["model_name"])):
         d_idx = _device_index(dev, used_d_idx)
@@ -461,6 +506,13 @@ def _build(devices: list, ts: datetime,
         proto = dev["protocol"]
         if proto == "nvme":
             _add_nvme_health(add, dev, d_idx)
+            n_nvme_ctrl += _add_nvme_controller(add, dev, d_idx)
+            n_nvme_ns   += _add_nvme_namespaces(add, dev, d_idx)
+            n_nvme_ps   += _add_nvme_power_states(add, dev, d_idx)
+            n_nvme_lba  += _add_nvme_lba_formats(add, dev, d_idx)
+            n_nvme_st   += _add_nvme_selftests(add, dev, d_idx)
+            n_nvme_el   += _add_nvme_errlogs(add, dev, d_idx)
+            n_nvme_cap  += _add_nvme_capability(add, dev, d_idx)
         elif proto in ("ata", "sat"):
             _add_sata_health(add, dev, d_idx)
             n_sata_attrs += _add_sata_attrs(add, dev, d_idx)
@@ -470,21 +522,39 @@ def _build(devices: list, ts: datetime,
 
         n_sensors += _add_sensors(add, dev, d_idx)
 
-    # Patch correct counts now that per-device builders have run
-    entries[:] = [e for e in entries if e[0] != _full((4, 1, 7, 0))
-                                     and e[0] != _full((6, 1, 1, 0))]
-    add((4, 1, 7, 0), *_gauge(n_sata_attrs))
-    add((6, 1, 1, 0), *_gauge(n_sensors))
+    # Patch count scalars computed during the device loop
+    _PATCH = {
+        _full((3, 1, 1, 0)),  _full((3, 1, 4, 0)),  _full((3, 1, 7, 0)),
+        _full((3, 1, 10, 0)), _full((3, 1, 16, 0)), _full((3, 1, 19, 0)),
+        _full((3, 1, 22, 0)), _full((4, 1, 7, 0)),  _full((6, 1, 1, 0)),
+    }
+    entries[:] = [e for e in entries if e[0] not in _PATCH]
+    add((3, 1, 1, 0),  *_gauge(n_nvme_ctrl))
+    add((3, 1, 4, 0),  *_gauge(n_nvme_ns))
+    add((3, 1, 7, 0),  *_gauge(n_nvme_ps))
+    add((3, 1, 10, 0), *_gauge(n_nvme_lba))
+    add((3, 1, 16, 0), *_gauge(n_nvme_st))
+    add((3, 1, 19, 0), *_gauge(n_nvme_el))
+    add((3, 1, 22, 0), *_gauge(n_nvme_cap))
+    add((4, 1, 7, 0),  *_gauge(n_sata_attrs))
+    add((6, 1, 1, 0),  *_gauge(n_sensors))
 
     # ---- Fingerprint tables; advance LastChange only when content changes ----
     _LC_MAP = {
-        "device":      (2, 1, 2, 0),
-        "nvme_health": (3, 1, 14, 0),
-        "sata_health": (4, 1, 5, 0),
-        "sata_attr":   (4, 1, 8, 0),
-        "sas_health":  (5, 1, 5, 0),
-        "sas_err":     (5, 1, 8, 0),
-        "sensor":      (6, 1, 2, 0),
+        "device":           (2, 1, 2, 0),
+        "nvme_controller":  (3, 1, 2, 0),
+        "nvme_namespace":   (3, 1, 5, 0),
+        "nvme_power_state": (3, 1, 8, 0),
+        "nvme_lba_format":  (3, 1, 11, 0),
+        "nvme_health":      (3, 1, 14, 0),
+        "nvme_selftest":    (3, 1, 17, 0),
+        "nvme_errlog":      (3, 1, 20, 0),
+        "nvme_capability":  (3, 1, 23, 0),
+        "sata_health":      (4, 1, 5, 0),
+        "sata_attr":        (4, 1, 8, 0),
+        "sas_health":       (5, 1, 5, 0),
+        "sas_err":          (5, 1, 8, 0),
+        "sensor":           (6, 1, 2, 0),
     }
     for tname, lc_suffix in _LC_MAP.items():
         fp = _table_fingerprint(entries, _TABLE_PREFIXES[tname])
@@ -584,6 +654,184 @@ def _add_nvme_health(add, dev: dict, d_idx: int) -> None:
     st_str = str(cur_code.get("string") or "No self-test in progress")
     add(T+(22, d_idx, hi), *_gauge(st_val))
     add(T+(23, d_idx, hi), *_string(st_str))
+
+
+# --------------------------------------------------------------------------
+# NVMe controller table  (.3.1.3.1)
+# --------------------------------------------------------------------------
+
+def _add_nvme_controller(add, dev: dict, d_idx: int) -> int:
+    T   = (3, 1, 3, 1)
+    raw = dev["raw"]
+    ci  = 1   # single controller per device
+    pv  = raw.get("nvme_pci_vendor") or {}
+    vid = int(pv.get("id", 0))
+    sid = int(pv.get("subsystem_id", 0))
+    ver = raw.get("nvme_version") or {}
+    add(T+(1,  d_idx, ci), *_gauge(vid))
+    add(T+(2,  d_idx, ci), *_gauge(int(raw.get("nvme_ieee_oui_identifier", 0) or 0)))
+    add(T+(3,  d_idx, ci), *_counter64(int(raw.get("nvme_total_capacity", 0) or 0)))
+    add(T+(4,  d_idx, ci), *_counter64(int(raw.get("nvme_unallocated_capacity", 0) or 0)))
+    add(T+(5,  d_idx, ci), *_gauge(int(raw.get("nvme_controller_id", 0) or 0)))
+    add(T+(6,  d_idx, ci), *_string(str(ver.get("string", "") or "")))
+    add(T+(7,  d_idx, ci), *_gauge(int(raw.get("nvme_number_of_namespaces", 0) or 0)))
+    add(T+(8,  d_idx, ci), *_gauge(0))   # maxDataTransferPages — not in smartd state
+    add(T+(12, d_idx, ci), *_gauge(sid))
+    add(T+(13, d_idx, ci), *_gauge(int(ver.get("value", 0) or 0)))
+    add(T+(14, d_idx, ci), *_string(_pci_vendor_name(vid)))
+    add(T+(15, d_idx, ci), *_string(_pci_vendor_name(sid)))
+    return 1
+
+
+# --------------------------------------------------------------------------
+# NVMe namespace table  (.3.1.6.1)
+# --------------------------------------------------------------------------
+
+def _add_nvme_namespaces(add, dev: dict, d_idx: int) -> int:
+    T   = (3, 1, 6, 1)
+    raw = dev["raw"]
+    namespaces = raw.get("nvme_namespaces") or []
+    for ns in namespaces:
+        ns_id = int(ns.get("id", 0))
+        size  = ns.get("size") or {}
+        cap   = ns.get("capacity") or {}
+        util  = ns.get("utilization") or {}
+        add(T+(1,  d_idx, ns_id), *_gauge(ns_id))
+        add(T+(2,  d_idx, ns_id), *_counter64(int(size.get("bytes", 0) or 0)))
+        add(T+(3,  d_idx, ns_id), *_counter64(int(cap.get("bytes", 0) or 0)))
+        add(T+(4,  d_idx, ns_id), *_counter64(int(util.get("bytes", 0) or 0)))
+        add(T+(5,  d_idx, ns_id), *_gauge(int(ns.get("formatted_lba_size", 0) or 0)))
+        add(T+(6,  d_idx, ns_id), *_string(str(ns.get("eui64") or "")))
+        add(T+(7,  d_idx, ns_id), *_string(str(ns.get("nguid") or "")))
+        add(T+(8,  d_idx, ns_id), *_counter64(int(size.get("blocks", 0) or 0)))
+        add(T+(9,  d_idx, ns_id), *_counter64(int(cap.get("blocks", 0) or 0)))
+        add(T+(10, d_idx, ns_id), *_counter64(int(util.get("blocks", 0) or 0)))
+    return len(namespaces)
+
+
+# --------------------------------------------------------------------------
+# NVMe power state table  (.3.1.9.1)
+# --------------------------------------------------------------------------
+
+def _add_nvme_power_states(add, dev: dict, d_idx: int) -> int:
+    T      = (3, 1, 9, 1)
+    raw    = dev["raw"]
+    states = raw.get("nvme_power_states") or []
+    for ps_id, ps in enumerate(states):
+        mp  = ps.get("max_power") or {}
+        upw = int(mp.get("units_per_watt", 1) or 1)
+        mw  = int(mp.get("value", 0) or 0) * 1000 // upw
+        operational = not bool(ps.get("non_operational_state", False))
+        add(T+(2,  d_idx, ps_id), *_integer(1 if operational else 2))   # TruthValue
+        add(T+(3,  d_idx, ps_id), *_gauge(mw))
+        add(T+(6,  d_idx, ps_id), *_gauge(int(ps.get("relative_read_latency", 0) or 0)))
+        add(T+(7,  d_idx, ps_id), *_gauge(int(ps.get("relative_read_throughput", 0) or 0)))
+        add(T+(8,  d_idx, ps_id), *_gauge(int(ps.get("relative_write_latency", 0) or 0)))
+        add(T+(9,  d_idx, ps_id), *_gauge(int(ps.get("relative_write_throughput", 0) or 0)))
+        add(T+(10, d_idx, ps_id), *_gauge(int(ps.get("entry_latency_us", 0) or 0)))
+        add(T+(11, d_idx, ps_id), *_gauge(int(ps.get("exit_latency_us", 0) or 0)))
+    return len(states)
+
+
+# --------------------------------------------------------------------------
+# NVMe LBA format table  (.3.1.12.1)  INDEX { deviceIndex, namespaceId, lbaFormatId }
+# --------------------------------------------------------------------------
+
+def _add_nvme_lba_formats(add, dev: dict, d_idx: int) -> int:
+    T     = (3, 1, 12, 1)
+    raw   = dev["raw"]
+    count = 0
+    for ns in (raw.get("nvme_namespaces") or []):
+        ns_id = int(ns.get("id", 0))
+        for fmt_id, fmt in enumerate(ns.get("lba_formats") or []):
+            current = 1 if fmt.get("formatted") else 2
+            add(T+(2, d_idx, ns_id, fmt_id), *_integer(current))
+            add(T+(3, d_idx, ns_id, fmt_id), *_gauge(int(fmt.get("data_bytes", 0) or 0)))
+            add(T+(4, d_idx, ns_id, fmt_id), *_gauge(int(fmt.get("metadata_bytes", 0) or 0)))
+            add(T+(5, d_idx, ns_id, fmt_id), *_gauge(int(fmt.get("relative_performance", 0) or 0)))
+            count += 1
+    return count
+
+
+# --------------------------------------------------------------------------
+# NVMe self-test log table  (.3.1.18.1)
+# --------------------------------------------------------------------------
+
+_NVME_ST_TYPE = {1: 1, 2: 2, 14: 255}   # short, extended, vendor-specific
+
+def _add_nvme_selftests(add, dev: dict, d_idx: int) -> int:
+    T       = (3, 1, 18, 1)
+    raw     = dev["raw"]
+    st_log  = raw.get("nvme_self_test_log") or {}
+    entries = st_log.get("table") or []
+    for i, e in enumerate(entries):
+        st_idx  = i + 1
+        code    = e.get("self_test_code") or {}
+        result  = e.get("self_test_result") or {}
+        st_type = _NVME_ST_TYPE.get(int(code.get("value", 0)), 255)
+        add(T+(2,  d_idx, st_idx), *_gauge(st_idx))
+        add(T+(3,  d_idx, st_idx), *_integer(st_type))
+        add(T+(4,  d_idx, st_idx), *_integer(int(result.get("value", 0) or 0)))
+        add(T+(5,  d_idx, st_idx), *_string(str(result.get("string") or "")))
+        add(T+(6,  d_idx, st_idx), *_counter64(int(e.get("power_on_hours", 0) or 0)))
+        add(T+(7,  d_idx, st_idx), *_counter64(int(e.get("failing_lba", 0) or 0) & 0xFFFFFFFFFFFFFFFF))
+        add(T+(8,  d_idx, st_idx), *_gauge(int(e.get("nsid", 0) or 0) & 0xFFFFFFFF))
+        add(T+(9,  d_idx, st_idx), *_gauge(int(e.get("segment_number", 0) or 0)))
+        add(T+(10, d_idx, st_idx), *_gauge(int(e.get("status_code_type", 0) or 0)))
+        add(T+(11, d_idx, st_idx), *_gauge(int(e.get("status_code", 0) or 0)))
+    return len(entries)
+
+
+# --------------------------------------------------------------------------
+# NVMe error log table  (.3.1.21.1)
+# --------------------------------------------------------------------------
+
+def _add_nvme_errlogs(add, dev: dict, d_idx: int) -> int:
+    T       = (3, 1, 21, 1)
+    raw     = dev["raw"]
+    el      = raw.get("nvme_error_information_log") or {}
+    entries = el.get("table") or []
+    poll_ts = dev.get("poll_time") or datetime.now(timezone.utc)
+    for i, e in enumerate(entries):
+        el_idx = i + 1
+        sf = e.get("status_field") or {}
+        lba_v = (e.get("lba") or {}).get("value", 0)
+        add(T+(2,  d_idx, el_idx), *_counter64(int(e.get("error_count", 0) or 0)))
+        add(T+(3,  d_idx, el_idx), *_gauge(int(e.get("submission_queue_id", 0) or 0)))
+        add(T+(4,  d_idx, el_idx), *_gauge(int(e.get("command_id", 0) or 0)))
+        add(T+(5,  d_idx, el_idx), *_gauge(int(sf.get("value", 0) or 0)))
+        add(T+(6,  d_idx, el_idx), *_gauge(int(e.get("parameter_error_location", 0) or 0)))
+        add(T+(7,  d_idx, el_idx), *_counter64(int(lba_v or 0) & 0xFFFFFFFFFFFFFFFF))
+        add(T+(8,  d_idx, el_idx), *_gauge(int(e.get("nsid", 0) or 0)))
+        add(T+(9,  d_idx, el_idx), *_gauge(0))   # vendor_specific_info — not in smartd state
+        add(T+(10, d_idx, el_idx), *_gauge(int(sf.get("status_code", 0) or 0)))
+        add(T+(11, d_idx, el_idx), *_gauge(int(sf.get("status_code_type", 0) or 0)))
+        add(T+(12, d_idx, el_idx), *_integer(2 if not sf.get("do_not_retry") else 1))
+        add(T+(13, d_idx, el_idx), *_string(str(sf.get("string") or "")))
+        add(T+(14, d_idx, el_idx), *_integer(2 if not sf.get("phase_tag") else 1))
+        add(T+(15, d_idx, el_idx), *_datetimeval(poll_ts))
+    return len(entries)
+
+
+# --------------------------------------------------------------------------
+# NVMe capability table  (.3.1.24.1)
+# --------------------------------------------------------------------------
+
+def _add_nvme_capability(add, dev: dict, d_idx: int) -> int:
+    T   = (3, 1, 24, 1)
+    raw = dev["raw"]
+    ci  = 1
+    cap = raw.get("nvme_capabilities") or {}
+    add(T+(1, d_idx, ci), *_gauge(int(cap.get("firmware_update_raw", 0) or 0)))
+    add(T+(2, d_idx, ci), *_gauge(int(cap.get("firmware_slot_count", 0) or 0)))
+    add(T+(3, d_idx, ci), *_integer(1 if cap.get("firmware_reset_required") else 2))
+    add(T+(4, d_idx, ci), *_gauge(int(cap.get("optional_admin_commands_raw", 0) or 0)))
+    add(T+(5, d_idx, ci), *_gauge(int(cap.get("optional_nvm_commands_raw", 0) or 0)))
+    add(T+(6, d_idx, ci), *_gauge(int(cap.get("log_page_attributes_raw", 0) or 0)))
+    add(T+(7, d_idx, ci), *_string(str(cap.get("optional_admin_commands_text") or "")))
+    add(T+(8, d_idx, ci), *_string(str(cap.get("optional_nvm_commands_text") or "")))
+    add(T+(9, d_idx, ci), *_string(str(cap.get("log_page_attributes_text") or "")))
+    return 1
 
 
 # --------------------------------------------------------------------------
@@ -781,39 +1029,50 @@ def _extract_sensors(dev: dict) -> List[dict]:
     sensors: List[dict] = []
 
     def sensor(idx, stype, name, source, scale, precision, value, status,
-               units_display, hi_crit=None, hi_warn=None):
+               units_display, hi_crit=None, hi_warn=None, lo_warn=None, lo_crit=None):
         sensors.append({
             "idx": idx, "type": stype, "name": name, "source": source,
             "scale": scale, "precision": precision, "value": value,
             "status": status, "units_display": units_display,
             "hi_crit": hi_crit, "hi_warn": hi_warn,
+            "lo_warn": lo_warn, "lo_crit": lo_crit,
             "timestamp": poll_time,
         })
 
     temp = raw.get("temperature") or {}
     t_current = temp.get("current")
-    if t_current is not None:
-        t_crit = temp.get("op_limit") or temp.get("limit_max") or 70
-        sensor(1, 3, "temperature", "temperature.current",
-               9, 0, int(t_current), 1, "C",
-               hi_crit=int(t_crit), hi_warn=int(t_crit) - 5)
 
     if proto == "nvme":
         h = raw.get("nvme_smart_health_information_log") or {}
+        h_temp = h.get("temperature")
+        if h_temp is not None:
+            t_crit = int(temp.get("op_limit") or temp.get("limit_max") or 70)
+            sensor(1, 3, "Composite",
+                   "nvme_smart_health_information_log.temperature",
+                   9, 0, int(h_temp), 1, "Celsius",
+                   hi_crit=t_crit, hi_warn=t_crit - 5)
         spare = h.get("available_spare")
         if spare is not None:
-            sensor(2, 10, "available_spare", "nvme_smart_health_information_log.available_spare",
-                   9, 0, int(spare), 1, "%")
+            thr = int(h.get("available_spare_threshold") or 10)
+            sensor(2, 10, "Available Spare",
+                   "nvme_smart_health_information_log.available_spare",
+                   9, 0, int(spare), 1, "percent",
+                   lo_warn=thr + 10, lo_crit=thr)
         pct_used = h.get("percentage_used")
         if pct_used is not None:
-            sensor(3, 10, "percentage_used", "nvme_smart_health_information_log.percentage_used",
-                   9, 0, int(pct_used), 1, "%")
-        # Per-sensor temperatures (sensor1 onwards in the NVMe log)
-        for i, t_val in enumerate(h.get("temperature_sensors") or [], start=1):
+            sensor(3, 10, "Percentage Used",
+                   "nvme_smart_health_information_log.percentage_used",
+                   9, 0, int(pct_used), 1, "percent")
+        for i, t_val in enumerate(h.get("temperature_sensors") or [], start=0):
             if t_val is not None:
-                sensor(10 + i, 3, f"temperature_sensor{i}",
+                sensor(10 + i, 3, f"Sensor {i + 1}",
                        f"nvme_smart_health_information_log.temperature_sensors[{i}]",
-                       9, 0, int(t_val), 1, "C")
+                       9, 0, int(t_val), 1, "Celsius")
+    elif t_current is not None:
+        t_crit = int(temp.get("op_limit") or temp.get("limit_max") or 70)
+        sensor(1, 3, "temperature", "temperature.current",
+               9, 0, int(t_current), 1, "C",
+               hi_crit=t_crit, hi_warn=t_crit - 5)
 
     return sensors
 
@@ -827,7 +1086,7 @@ def _add_sensors(add, dev: dict, d_idx: int) -> int:
         add(T+(3,  d_idx, si), *_string(s["name"]))
         add(T+(4,  d_idx, si), *_string(s["source"]))
         add(T+(5,  d_idx, si), *_integer(s["scale"]))
-        add(T+(6,  d_idx, si), *_gauge(s["precision"]))
+        add(T+(6,  d_idx, si), *_integer(s["precision"]))
         add(T+(7,  d_idx, si), *_integer(s["value"]))
         add(T+(8,  d_idx, si), *_integer(s["status"]))
         add(T+(9,  d_idx, si), *_string(s["units_display"]))
@@ -835,8 +1094,8 @@ def _add_sensors(add, dev: dict, d_idx: int) -> int:
         add(T+(11, d_idx, si), *_gauge(0))                  # updateRate
         add(T+(12, d_idx, si), *_integer(s["hi_crit"] or 0))
         add(T+(13, d_idx, si), *_integer(s["hi_warn"] or 0))
-        add(T+(14, d_idx, si), *_integer(0))                 # loWarn
-        add(T+(15, d_idx, si), *_integer(0))                 # loCrit
+        add(T+(14, d_idx, si), *_integer(s["lo_warn"] or 0))
+        add(T+(15, d_idx, si), *_integer(s["lo_crit"] or 0))
     return len(sensors)
 
 
@@ -880,6 +1139,19 @@ def _as_text(value: object, limit: int = 1023) -> str:
     return text if len(text) <= limit else text[:limit]
 
 
+def _binary_octetstring(agent: Any, raw: bytes) -> Any:
+    """OctetString for binary data that may contain null bytes.
+
+    ctypes.create_string_buffer stores .value as a null-terminated C string, so
+    the library computes _data_size = len(value) which stops at the first 0x00.
+    Writing via .raw bypasses that and we fix _data_size manually.
+    """
+    obj = agent.OctetString()
+    obj._cvar.raw = raw.ljust(len(obj._cvar.raw), b'\x00')
+    obj._data_size = len(raw)
+    return obj
+
+
 def _make_value(agent: Any, snmp_type: str, value: object) -> Any:
     if snmp_type == "counter64":
         return agent.Counter64(max(0, _as_int(value)))
@@ -891,9 +1163,9 @@ def _make_value(agent: Any, snmp_type: str, value: object) -> Any:
         return agent.OctetString(_as_text(value))
     if snmp_type == "datetimeval":
         raw = _encode_datetimeval(value) if isinstance(value, datetime) else b""
-        return agent.OctetString(raw)
+        return _binary_octetstring(agent, raw)
     if snmp_type == "bits":
-        return agent.OctetString(value if isinstance(value, bytes) else bytes(value))
+        return _binary_octetstring(agent, value if isinstance(value, bytes) else b"")
     raise ValueError(f"unsupported SNMP type {snmp_type!r}")
 
 
@@ -919,8 +1191,22 @@ def _scalar_definitions() -> Dict[Oid, str]:
         _full((2, 1, 6, 0)): "gauge",    # deviceCountSas
         _full((2, 1, 7, 0)): "gauge",    # pollFailureThreshold
         # NVMe scalars
+        _full((3, 1, 1, 0)):  "gauge",   # nvmeControllerTableRowCount
+        _full((3, 1, 2, 0)):  "string",  # nvmeControllerTableLastChange
+        _full((3, 1, 4, 0)):  "gauge",   # nvmeNamespaceTableRowCount
+        _full((3, 1, 5, 0)):  "string",  # nvmeNamespaceTableLastChange
+        _full((3, 1, 7, 0)):  "gauge",   # nvmePowerStateTableRowCount
+        _full((3, 1, 8, 0)):  "string",  # nvmePowerStateTableLastChange
+        _full((3, 1, 10, 0)): "gauge",   # nvmeLbaFormatTableRowCount
+        _full((3, 1, 11, 0)): "string",  # nvmeLbaFormatTableLastChange
         _full((3, 1, 13, 0)): "gauge",   # nvmeHealthTableRowCount
         _full((3, 1, 14, 0)): "string",  # nvmeHealthTableLastChange
+        _full((3, 1, 16, 0)): "gauge",   # nvmeSelfTestTableRowCount
+        _full((3, 1, 17, 0)): "string",  # nvmeSelfTestTableLastChange
+        _full((3, 1, 19, 0)): "gauge",   # nvmeErrorLogTableRowCount
+        _full((3, 1, 20, 0)): "string",  # nvmeErrorLogTableLastChange
+        _full((3, 1, 22, 0)): "gauge",   # nvmeCapabilityTableRowCount
+        _full((3, 1, 23, 0)): "string",  # nvmeCapabilityTableLastChange
         # SATA scalars
         _full((4, 1, 4, 0)): "gauge",    # sataHealthTableRowCount
         _full((4, 1, 5, 0)): "string",   # sataHealthTableLastChange
@@ -948,6 +1234,44 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
             10: "string", 11: "string", 12: "string", 13: "string", 14: "string",
         },
     },
+    "nvme_controller": {
+        "oid_suffix": (3, 1, 3),
+        "entry_prefix": _full((3, 1, 3, 1)),
+        "indexes": 2,
+        "columns": {
+            1: "gauge", 2: "gauge", 3: "counter64", 4: "counter64",
+            5: "gauge", 6: "string", 7: "gauge", 8: "gauge",
+            12: "gauge", 13: "gauge", 14: "string", 15: "string",
+        },
+    },
+    "nvme_namespace": {
+        "oid_suffix": (3, 1, 6),
+        "entry_prefix": _full((3, 1, 6, 1)),
+        "indexes": 2,
+        "columns": {
+            1: "gauge",
+            2: "counter64", 3: "counter64", 4: "counter64",
+            5: "gauge", 6: "string", 7: "string",
+            8: "counter64", 9: "counter64", 10: "counter64",
+        },
+    },
+    "nvme_power_state": {
+        "oid_suffix": (3, 1, 9),
+        "entry_prefix": _full((3, 1, 9, 1)),
+        "indexes": 2,
+        "columns": {
+            2: "integer", 3: "gauge", 6: "gauge", 7: "gauge",
+            8: "gauge", 9: "gauge", 10: "gauge", 11: "gauge",
+        },
+    },
+    "nvme_lba_format": {
+        "oid_suffix": (3, 1, 12),
+        "entry_prefix": _full((3, 1, 12, 1)),
+        "indexes": 3,
+        "columns": {
+            2: "integer", 3: "gauge", 4: "gauge", 5: "gauge",
+        },
+    },
     "nvme_health": {
         "oid_suffix": (3, 1, 15),
         "entry_prefix": _full((3, 1, 15, 1)),
@@ -959,6 +1283,37 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
             15: "counter64", 16: "counter64", 17: "counter64", 18: "counter64",
             19: "counter64", 20: "counter64",
             22: "gauge", 23: "string",
+        },
+    },
+    "nvme_selftest": {
+        "oid_suffix": (3, 1, 18),
+        "entry_prefix": _full((3, 1, 18, 1)),
+        "indexes": 2,
+        "columns": {
+            2: "gauge", 3: "integer", 4: "integer", 5: "string",
+            6: "counter64", 7: "counter64", 8: "gauge", 9: "gauge",
+            10: "gauge", 11: "gauge",
+        },
+    },
+    "nvme_errlog": {
+        "oid_suffix": (3, 1, 21),
+        "entry_prefix": _full((3, 1, 21, 1)),
+        "indexes": 2,
+        "columns": {
+            2: "counter64", 3: "gauge", 4: "gauge", 5: "gauge",
+            6: "gauge", 7: "counter64", 8: "gauge", 9: "gauge",
+            10: "gauge", 11: "gauge", 12: "integer", 13: "string",
+            14: "integer", 15: "datetimeval",
+        },
+    },
+    "nvme_capability": {
+        "oid_suffix": (3, 1, 24),
+        "entry_prefix": _full((3, 1, 24, 1)),
+        "indexes": 2,
+        "columns": {
+            1: "gauge", 2: "gauge", 3: "integer",
+            4: "gauge", 5: "gauge", 6: "gauge",
+            7: "string", 8: "string", 9: "string",
         },
     },
     "sata_health": {
@@ -1006,7 +1361,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
         "indexes": 2,
         "columns": {
             2: "integer", 3: "string", 4: "string", 5: "integer",
-            6: "gauge", 7: "integer", 8: "integer", 9: "string",
+            6: "integer", 7: "integer", 8: "integer", 9: "string",
             10: "datetimeval", 11: "gauge",
             12: "integer", 13: "integer", 14: "integer", 15: "integer",
         },
@@ -1059,7 +1414,7 @@ def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
         if snmp_type == "datetimeval":
             scalar.update(_encode_datetimeval(value) if isinstance(value, datetime) else b"")
         elif snmp_type == "bits":
-            scalar.update(value if isinstance(value, bytes) else bytes(value))
+            scalar.update(value if isinstance(value, bytes) else b"")
         elif snmp_type == "string":
             scalar.update(_as_text(value).encode())
         else:
