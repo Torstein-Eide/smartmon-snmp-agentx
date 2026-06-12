@@ -62,19 +62,26 @@ def load_config(path: str) -> dict:
 # Binary discovery
 # ---------------------------------------------------------------------------
 
+def _is_runnable(path: str) -> bool:
+    """A candidate agent is runnable if executable, or a readable .py script."""
+    if path.endswith(".py"):
+        return os.access(path, os.R_OK)
+    return os.access(path, os.X_OK)
+
+
 def find_binary(cfg: dict, repo_root: Path, override: Optional[str]) -> str:
     if override:
-        if not os.access(override, os.X_OK):
-            die(f"--binary is not executable: {override}")
+        if not _is_runnable(override):
+            die(f"--binary is not runnable: {override}")
         return override
     env_val = os.environ.get("AGENTXD_BIN", "")
     if env_val:
-        if not os.access(env_val, os.X_OK):
-            die(f"AGENTXD_BIN is not executable: {env_val}")
+        if not _is_runnable(env_val):
+            die(f"AGENTXD_BIN is not runnable: {env_val}")
         return env_val
     for rel in cfg["config"].get("binary_search_paths", []):
         candidate = repo_root / rel if not Path(rel).is_absolute() else Path(rel)
-        if candidate.exists() and os.access(str(candidate), os.X_OK):
+        if candidate.exists() and _is_runnable(str(candidate)):
             return str(candidate)
     die("binary not found; set AGENTXD_BIN, use --binary, or build first")
 
@@ -202,8 +209,9 @@ def start_agentxd(binary: str, run_dir: Path, socket_path: Path,
     conf = run_dir / "agentxd.conf"
     conf.write_text(f"state_dir     {live_fixtures}\nagentx_socket {socket_path}\n")
     extra = os.environ.get("AGENTXD_EXTRA_ARGS", "").split()
+    cmd = [sys.executable, binary] if binary.endswith(".py") else [binary]
     pid = daemons.start(
-        binary, "-f", "-c", str(conf), *extra,
+        *cmd, "-f", "-c", str(conf), *extra,
         stdout=open(agentxd_log, "w"), stderr=subprocess.STDOUT,
     )
     return pid
@@ -281,14 +289,18 @@ def discover_index(walk_file: Path, oid_grep_re: str, value_pattern: str,
     return None
 
 
-def discover_all(cfg: dict, walk_files: dict[str, Path], ent_oid: str) -> dict[str, str]:
-    indices: dict[str, str] = {}
+def discover_all(cfg: dict, walk_files: dict[str, Path], ent_oid: str) -> dict[str, Optional[str]]:
+    indices: dict[str, Optional[str]] = {}
     for dev_key, dev in cfg["discovery"].items():
         wfile = walk_files.get(dev["walk_label"])
         if wfile is None:
             die(f"discovery: walk '{dev['walk_label']}' not found for device '{dev_key}'")
         idx = discover_index(wfile, dev["oid_grep_re"], dev["value_pattern"], ent_oid)
         if idx is None or not idx.isdigit():
+            if dev.get("optional"):
+                print(_yellow(f"  skipping optional device '{dev_key}' ({dev['label']}): not found in walk"))
+                indices[dev_key] = None
+                continue
             die(
                 f"could not discover device index for '{dev_key}' "
                 f"({dev['label']})\n"
@@ -310,7 +322,8 @@ def substitute_oid(oid_template: str, device_idx: Optional[str],
     if device_idx is not None:
         result = result.replace("{D}", device_idx)
     for key, idx in all_indices.items():
-        result = result.replace(f"{{{key}}}", idx)
+        if idx is not None:
+            result = result.replace(f"{{{key}}}", idx)
     return result
 
 
@@ -580,6 +593,8 @@ def run_section(section: dict, walk_files: dict[str, Path],
 
     device_key = section.get("device")
     device_idx = all_indices.get(device_key) if device_key else None
+    if device_key and device_idx is None:
+        return 0, 0, 1, []   # optional device not present; skip silently
 
     tests = section.get("tests") or []
     if not tests:

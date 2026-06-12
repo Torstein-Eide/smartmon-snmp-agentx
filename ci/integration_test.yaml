@@ -70,6 +70,7 @@ discovery:
     walk_label: "sensor"
     oid_grep_re: '\.6\.1\.3\.1\.7\.[0-9]+\.3'
     value_pattern: "INTEGER: 12189"
+    optional: true   # FARM files (.farm.ata.json) are not parsed by all agents
 
 # Walk definitions — which OID subtree to walk for each label.
 # Used by both discovery and section tests.
