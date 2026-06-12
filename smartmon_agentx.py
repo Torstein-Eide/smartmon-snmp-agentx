@@ -1689,12 +1689,11 @@ def _add_sata_devstat(add, dev: dict, d_idx: int) -> int:
             offset = int(entry.get("offset", 0) or 0)
             flags  = entry.get("flags") or {}
             raw_v  = int(entry.get("value", 0) or 0)
-            # pack flags byte: supported=bit7, valid=bit6, normalized=bit5, dsn=bit4, mcm=bit3, rti=bit2
             fval = int(flags.get("value", 0) or 0)
             add(T+(3, d_idx, page_num, offset), *_string(page_name))
             add(T+(4, d_idx, page_num, offset), *_string(str(entry.get("name") or "")))
             add(T+(5, d_idx, page_num, offset), *_counter64(raw_v))
-            add(T+(6, d_idx, page_num, offset), *_bits(fval, nbits=8))
+            add(T+(6, d_idx, page_num, offset), "bits", bytes([fval & 0xFF]))
             count += 1
     count += _add_sata_farm(add, dev["raw"], d_idx)
     return count
