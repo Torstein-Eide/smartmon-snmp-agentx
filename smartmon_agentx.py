@@ -412,7 +412,7 @@ class _State:
     last_load:      float
     ttl:            int
     checksums:      dict   # table key -> fingerprint int
-    timestamps:     dict   # table key -> ISO 8601 string
+    timestamps:     dict   # table key -> datetime
     state_dir:      str
     config_devices: Optional[list]
 
@@ -453,7 +453,6 @@ def _build(devices: list, ts: datetime,
            error_code: int = EXIT_SUCCESS, error_string: str = "") -> None:
     """Rebuild the OID map from a list of parsed device dicts."""
     entries: List[Tuple] = []
-    ts_iso = ts.isoformat()
 
     def add(suffix, typ, val):
         entries.append((_full(suffix), typ, val))
@@ -560,9 +559,9 @@ def _build(devices: list, ts: datetime,
         fp = _table_fingerprint(entries, _TABLE_PREFIXES[tname])
         if fp != _st.checksums.get(tname):
             _st.checksums[tname]  = fp
-            _st.timestamps[tname] = ts_iso
+            _st.timestamps[tname] = ts
             LOGGER.notice("table %s changed (fp %08x)", tname, fp & 0xFFFFFFFF)
-        add(lc_suffix, "string", _st.timestamps.get(tname, ts_iso))
+        add(lc_suffix, "datetimeval", _st.timestamps.get(tname, ts))
 
     entries.sort(key=lambda e: e[0])
     _st.oid_keys = [e[0] for e in entries]
@@ -651,7 +650,7 @@ def _add_nvme_health(add, dev: dict, d_idx: int) -> None:
     cur_st = st_log.get("current_self_test") or {}
     cur_code = cur_st.get("code") or {}
     st_val = int(cur_code.get("value", 0))
-    st_str = str(cur_code.get("string") or "No self-test in progress")
+    st_str = "" if st_val == 0 else str(cur_code.get("string") or "")
     add(T+(22, d_idx, hi), *_gauge(st_val))
     add(T+(23, d_idx, hi), *_string(st_str))
 
@@ -675,7 +674,7 @@ def _add_nvme_controller(add, dev: dict, d_idx: int) -> int:
     add(T+(5,  d_idx, ci), *_gauge(int(raw.get("nvme_controller_id", 0) or 0)))
     add(T+(6,  d_idx, ci), *_string(str(ver.get("string", "") or "")))
     add(T+(7,  d_idx, ci), *_gauge(int(raw.get("nvme_number_of_namespaces", 0) or 0)))
-    add(T+(8,  d_idx, ci), *_gauge(0))   # maxDataTransferPages — not in smartd state
+    add(T+(8,  d_idx, ci), *_gauge(int(raw.get("nvme_maximum_data_transfer_pages", 0) or 0)))
     add(T+(12, d_idx, ci), *_gauge(sid))
     add(T+(13, d_idx, ci), *_gauge(int(ver.get("value", 0) or 0)))
     add(T+(14, d_idx, ci), *_string(_pci_vendor_name(vid)))
@@ -701,8 +700,8 @@ def _add_nvme_namespaces(add, dev: dict, d_idx: int) -> int:
         add(T+(3,  d_idx, ns_id), *_counter64(int(cap.get("bytes", 0) or 0)))
         add(T+(4,  d_idx, ns_id), *_counter64(int(util.get("bytes", 0) or 0)))
         add(T+(5,  d_idx, ns_id), *_gauge(int(ns.get("formatted_lba_size", 0) or 0)))
-        add(T+(6,  d_idx, ns_id), *_string(str(ns.get("eui64") or "")))
-        add(T+(7,  d_idx, ns_id), *_string(str(ns.get("nguid") or "")))
+        add(T+(6,  d_idx, ns_id), *_string(""))   # eui64 (raw-bytes field, not parsed)
+        add(T+(7,  d_idx, ns_id), *_string(""))   # nguid (raw-bytes field, not parsed)
         add(T+(8,  d_idx, ns_id), *_counter64(int(size.get("blocks", 0) or 0)))
         add(T+(9,  d_idx, ns_id), *_counter64(int(cap.get("blocks", 0) or 0)))
         add(T+(10, d_idx, ns_id), *_counter64(int(util.get("blocks", 0) or 0)))
@@ -817,20 +816,63 @@ def _add_nvme_errlogs(add, dev: dict, d_idx: int) -> int:
 # NVMe capability table  (.3.1.24.1)
 # --------------------------------------------------------------------------
 
+def _nvme_cap_text(section: dict, bits: list) -> str:
+    """Join labels for all true boolean flags in a smartctl capability section."""
+    return ", ".join(label for key, label in bits if section.get(key))
+
+
+_ADM_BITS = [
+    ("security_send_receive",        "Security Send/Receive"),
+    ("format_nvm",                   "Format NVM"),
+    ("firmware_download",            "Firmware Download"),
+    ("namespace_management",         "Namespace Management"),
+    ("self_test",                    "Self-test"),
+    ("directives",                   "Directives"),
+    ("mi_send_receive",              "MI Send/Receive"),
+    ("virtualization_management",    "Virtualization Management"),
+    ("doorbell_buffer_config",       "Doorbell Buffer Config"),
+    ("get_lba_status",               "Get LBA Status"),
+    ("command_and_feature_lockdown", "Command and Feature Lockdown"),
+]
+_NVM_BITS = [
+    ("compare",                     "Compare"),
+    ("write_uncorrectable",         "Write Uncorrectable"),
+    ("dataset_management",          "Dataset Management"),
+    ("write_zeroes",                "Write Zeroes"),
+    ("save_select_feature_nonzero", "Save/Select Feature Nonzero"),
+    ("reservations",                "Reservations"),
+    ("timestamp",                   "Timestamp"),
+    ("verify",                      "Verify"),
+    ("copy",                        "Copy"),
+]
+_LPA_BITS = [
+    ("smart_health_per_namespace", "SMART/Health per Namespace"),
+    ("commands_effects_log",       "Commands Effects Log"),
+    ("extended_get_log_page_cmd",  "Extended Get Log Page"),
+    ("telemetry_log",              "Telemetry Log"),
+    ("persistent_event_log",       "Persistent Event Log"),
+    ("supported_log_pages_log",    "Supported Log Pages Log"),
+    ("telemetry_data_area_4",      "Telemetry Data Area 4"),
+]
+
+
 def _add_nvme_capability(add, dev: dict, d_idx: int) -> int:
     T   = (3, 1, 24, 1)
     raw = dev["raw"]
     ci  = 1
-    cap = raw.get("nvme_capabilities") or {}
-    add(T+(1, d_idx, ci), *_gauge(int(cap.get("firmware_update_raw", 0) or 0)))
-    add(T+(2, d_idx, ci), *_gauge(int(cap.get("firmware_slot_count", 0) or 0)))
-    add(T+(3, d_idx, ci), *_integer(1 if cap.get("firmware_reset_required") else 2))
-    add(T+(4, d_idx, ci), *_gauge(int(cap.get("optional_admin_commands_raw", 0) or 0)))
-    add(T+(5, d_idx, ci), *_gauge(int(cap.get("optional_nvm_commands_raw", 0) or 0)))
-    add(T+(6, d_idx, ci), *_gauge(int(cap.get("log_page_attributes_raw", 0) or 0)))
-    add(T+(7, d_idx, ci), *_string(str(cap.get("optional_admin_commands_text") or "")))
-    add(T+(8, d_idx, ci), *_string(str(cap.get("optional_nvm_commands_text") or "")))
-    add(T+(9, d_idx, ci), *_string(str(cap.get("log_page_attributes_text") or "")))
+    fw  = raw.get("nvme_firmware_update_capabilities") or {}
+    adm = raw.get("nvme_optional_admin_commands") or {}
+    nvm = raw.get("nvme_optional_nvm_commands") or {}
+    lpa = raw.get("nvme_log_page_attributes") or {}
+    add(T+(1, d_idx, ci), *_gauge(int(fw.get("value", 0) or 0)))
+    add(T+(2, d_idx, ci), *_gauge(int(fw.get("slots", 0) or 0)))
+    add(T+(3, d_idx, ci), *_integer(2 if fw.get("activation_without_reset") else 1))
+    add(T+(4, d_idx, ci), *_gauge(int(adm.get("value", 0) or 0)))
+    add(T+(5, d_idx, ci), *_gauge(int(nvm.get("value", 0) or 0)))
+    add(T+(6, d_idx, ci), *_gauge(int(lpa.get("value", 0) or 0)))
+    add(T+(7, d_idx, ci), *_string(_nvme_cap_text(adm, _ADM_BITS)))
+    add(T+(8, d_idx, ci), *_string(_nvme_cap_text(nvm, _NVM_BITS)))
+    add(T+(9, d_idx, ci), *_string(_nvme_cap_text(lpa, _LPA_BITS)))
     return 1
 
 
@@ -1185,41 +1227,41 @@ def _scalar_definitions() -> Dict[Oid, str]:
     return {
         # Common scalars
         _full((2, 1, 1, 0)): "gauge",    # deviceTableRowCount
-        _full((2, 1, 2, 0)): "string",   # deviceTableLastChange
+        _full((2, 1, 2, 0)): "datetimeval", # deviceTableLastChange
         _full((2, 1, 4, 0)): "gauge",    # deviceCountNvme
         _full((2, 1, 5, 0)): "gauge",    # deviceCountAta
         _full((2, 1, 6, 0)): "gauge",    # deviceCountSas
         _full((2, 1, 7, 0)): "gauge",    # pollFailureThreshold
         # NVMe scalars
-        _full((3, 1, 1, 0)):  "gauge",   # nvmeControllerTableRowCount
-        _full((3, 1, 2, 0)):  "string",  # nvmeControllerTableLastChange
-        _full((3, 1, 4, 0)):  "gauge",   # nvmeNamespaceTableRowCount
-        _full((3, 1, 5, 0)):  "string",  # nvmeNamespaceTableLastChange
-        _full((3, 1, 7, 0)):  "gauge",   # nvmePowerStateTableRowCount
-        _full((3, 1, 8, 0)):  "string",  # nvmePowerStateTableLastChange
-        _full((3, 1, 10, 0)): "gauge",   # nvmeLbaFormatTableRowCount
-        _full((3, 1, 11, 0)): "string",  # nvmeLbaFormatTableLastChange
-        _full((3, 1, 13, 0)): "gauge",   # nvmeHealthTableRowCount
-        _full((3, 1, 14, 0)): "string",  # nvmeHealthTableLastChange
-        _full((3, 1, 16, 0)): "gauge",   # nvmeSelfTestTableRowCount
-        _full((3, 1, 17, 0)): "string",  # nvmeSelfTestTableLastChange
-        _full((3, 1, 19, 0)): "gauge",   # nvmeErrorLogTableRowCount
-        _full((3, 1, 20, 0)): "string",  # nvmeErrorLogTableLastChange
-        _full((3, 1, 22, 0)): "gauge",   # nvmeCapabilityTableRowCount
-        _full((3, 1, 23, 0)): "string",  # nvmeCapabilityTableLastChange
+        _full((3, 1, 1, 0)):  "gauge",       # nvmeControllerTableRowCount
+        _full((3, 1, 2, 0)):  "datetimeval", # nvmeControllerTableLastChange
+        _full((3, 1, 4, 0)):  "gauge",       # nvmeNamespaceTableRowCount
+        _full((3, 1, 5, 0)):  "datetimeval", # nvmeNamespaceTableLastChange
+        _full((3, 1, 7, 0)):  "gauge",       # nvmePowerStateTableRowCount
+        _full((3, 1, 8, 0)):  "datetimeval", # nvmePowerStateTableLastChange
+        _full((3, 1, 10, 0)): "gauge",       # nvmeLbaFormatTableRowCount
+        _full((3, 1, 11, 0)): "datetimeval", # nvmeLbaFormatTableLastChange
+        _full((3, 1, 13, 0)): "gauge",       # nvmeHealthTableRowCount
+        _full((3, 1, 14, 0)): "datetimeval", # nvmeHealthTableLastChange
+        _full((3, 1, 16, 0)): "gauge",       # nvmeSelfTestTableRowCount
+        _full((3, 1, 17, 0)): "datetimeval", # nvmeSelfTestTableLastChange
+        _full((3, 1, 19, 0)): "gauge",       # nvmeErrorLogTableRowCount
+        _full((3, 1, 20, 0)): "datetimeval", # nvmeErrorLogTableLastChange
+        _full((3, 1, 22, 0)): "gauge",       # nvmeCapabilityTableRowCount
+        _full((3, 1, 23, 0)): "datetimeval", # nvmeCapabilityTableLastChange
         # SATA scalars
-        _full((4, 1, 4, 0)): "gauge",    # sataHealthTableRowCount
-        _full((4, 1, 5, 0)): "string",   # sataHealthTableLastChange
-        _full((4, 1, 7, 0)): "gauge",    # sataAttrTableRowCount
-        _full((4, 1, 8, 0)): "string",   # sataAttrTableLastChange
+        _full((4, 1, 4, 0)): "gauge",        # sataHealthTableRowCount
+        _full((4, 1, 5, 0)): "datetimeval",  # sataHealthTableLastChange
+        _full((4, 1, 7, 0)): "gauge",        # sataAttrTableRowCount
+        _full((4, 1, 8, 0)): "datetimeval",  # sataAttrTableLastChange
         # SAS scalars
-        _full((5, 1, 4, 0)): "gauge",    # sasHealthTableRowCount
-        _full((5, 1, 5, 0)): "string",   # sasHealthTableLastChange
-        _full((5, 1, 7, 0)): "gauge",    # sasErrorCounterTableRowCount
-        _full((5, 1, 8, 0)): "string",   # sasErrorCounterTableLastChange
+        _full((5, 1, 4, 0)): "gauge",        # sasHealthTableRowCount
+        _full((5, 1, 5, 0)): "datetimeval",  # sasHealthTableLastChange
+        _full((5, 1, 7, 0)): "gauge",        # sasErrorCounterTableRowCount
+        _full((5, 1, 8, 0)): "datetimeval",  # sasErrorCounterTableLastChange
         # Sensor scalars
-        _full((6, 1, 1, 0)): "gauge",    # sensorTableRowCount
-        _full((6, 1, 2, 0)): "string",   # sensorTableLastChange
+        _full((6, 1, 1, 0)): "gauge",        # sensorTableRowCount
+        _full((6, 1, 2, 0)): "datetimeval",  # sensorTableLastChange
     }
 
 
@@ -1406,15 +1448,24 @@ def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
     for oid, scalar in scalars.items():
         snmp_type, value = _st.oid_map.get(oid, (None, None))
         if snmp_type is None:
-            if defns[oid] == "string":
+            dtype = defns[oid]
+            if dtype == "datetimeval":
+                raw = _encode_datetimeval(now)
+                scalar._cvar.raw = raw.ljust(len(scalar._cvar.raw), b'\x00')
+                scalar._data_size = scalar._watcher.contents.data_size = len(raw)
+            elif dtype == "string":
                 scalar.update(now.isoformat().encode())
             else:
                 scalar.update(0)
             continue
         if snmp_type == "datetimeval":
-            scalar.update(_encode_datetimeval(value) if isinstance(value, datetime) else b"")
+            raw = _encode_datetimeval(value) if isinstance(value, datetime) else b""
+            scalar._cvar.raw = raw.ljust(len(scalar._cvar.raw), b'\x00')
+            scalar._data_size = scalar._watcher.contents.data_size = len(raw)
         elif snmp_type == "bits":
-            scalar.update(value if isinstance(value, bytes) else b"")
+            raw = value if isinstance(value, bytes) else b""
+            scalar._cvar.raw = raw.ljust(len(scalar._cvar.raw), b'\x00')
+            scalar._data_size = scalar._watcher.contents.data_size = len(raw)
         elif snmp_type == "string":
             scalar.update(_as_text(value).encode())
         else:
