@@ -682,6 +682,26 @@ def _add_nvme_controller(add, dev: dict, d_idx: int) -> int:
     return 1
 
 
+def _eui64_text(eui64) -> str:
+    """Format smartctl EUI-64 dict {'oui': int, 'ext_id': int} as xx:xx:xx:xx:xx:xx:xx:xx."""
+    if not isinstance(eui64, dict):
+        return ""
+    oui    = int(eui64.get("oui", 0) or 0)
+    ext_id = int(eui64.get("ext_id", 0) or 0)
+    val    = (oui << 40) | ext_id
+    return ":".join(f"{b:02x}" for b in val.to_bytes(8, "big"))
+
+
+def _nguid_text(nguid) -> str:
+    """Format smartctl NGUID dict {'ms': int, 'ext_id': int} as 16 hex octets."""
+    if not isinstance(nguid, dict):
+        return ""
+    ms     = int(nguid.get("ms", 0) or 0)
+    ext_id = int(nguid.get("ext_id", 0) or 0)
+    val    = (ms << 64) | ext_id
+    return ":".join(f"{b:02x}" for b in val.to_bytes(16, "big"))
+
+
 # --------------------------------------------------------------------------
 # NVMe namespace table  (.3.1.6.1)
 # --------------------------------------------------------------------------
@@ -700,8 +720,8 @@ def _add_nvme_namespaces(add, dev: dict, d_idx: int) -> int:
         add(T+(3,  d_idx, ns_id), *_counter64(int(cap.get("bytes", 0) or 0)))
         add(T+(4,  d_idx, ns_id), *_counter64(int(util.get("bytes", 0) or 0)))
         add(T+(5,  d_idx, ns_id), *_gauge(int(ns.get("formatted_lba_size", 0) or 0)))
-        add(T+(6,  d_idx, ns_id), *_string(""))   # eui64 (raw-bytes field, not parsed)
-        add(T+(7,  d_idx, ns_id), *_string(""))   # nguid (raw-bytes field, not parsed)
+        add(T+(6,  d_idx, ns_id), *_string(_eui64_text(ns.get("eui64"))))
+        add(T+(7,  d_idx, ns_id), *_string(_nguid_text(ns.get("nguid"))))
         add(T+(8,  d_idx, ns_id), *_counter64(int(size.get("blocks", 0) or 0)))
         add(T+(9,  d_idx, ns_id), *_counter64(int(cap.get("blocks", 0) or 0)))
         add(T+(10, d_idx, ns_id), *_counter64(int(util.get("blocks", 0) or 0)))
