@@ -215,18 +215,15 @@ def _parse_device_json(path: str) -> dict:
     result["device_path"] = device_name
     result["name"] = os.path.basename(device_name)
 
-    # Protocol from filename suffix (ata/nvme/scsi/sas)
-    bn = os.path.basename(path)
-    m = re.search(r'\.(ata|sat|nvme|scsi|sas)\.json$', bn)
-    suffix = m.group(1) if m else (device.get("protocol") or "unknown").lower()
+    # Protocol from device.protocol field; fall back to filename suffix
+    proto_str = (device.get("protocol") or "").lower()
+    if not proto_str:
+        bn = os.path.basename(path)
+        m = re.search(r'\.(ata|sat|nvme|scsi|sas)\.json$', bn)
+        proto_str = m.group(1) if m else "unknown"
 
-    info_name = device.get("info_name", "")
-    if suffix == "ata" and "[SAT]" in info_name:
-        result["protocol"] = "sat"
-        result["device_type"] = _DEVICE_TYPE.get("sat", 2)
-    else:
-        result["protocol"] = suffix
-        result["device_type"] = _DEVICE_TYPE.get(suffix, 0)
+    result["protocol"]    = proto_str
+    result["device_type"] = _DEVICE_TYPE.get(proto_str, 0)
 
     lt = raw.get("local_time") or {}
     ts = lt.get("time_t")
@@ -305,8 +302,27 @@ def _string(v) -> tuple:
 def _integer(v) -> tuple:
     return ("integer", str(int(v) if v is not None else 0))
 
+def _encode_datetimeval(dt: datetime) -> bytes:
+    """Encode datetime as RFC 2579 DateAndTime (11-byte OCTET STRING with UTC offset)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    offset = dt.utcoffset()
+    total_s = int(offset.total_seconds())
+    direction = ord('+') if total_s >= 0 else ord('-')
+    abs_s = abs(total_s)
+    tz_h, tz_m = abs_s // 3600, (abs_s % 3600) // 60
+    y = dt.year
+    return bytes([
+        (y >> 8) & 0xFF, y & 0xFF,
+        dt.month, dt.day,
+        dt.hour, dt.minute, dt.second,
+        dt.microsecond // 100000,
+        direction, tz_h, tz_m,
+    ])
+
+
 def _datetimeval(dt: datetime) -> tuple:
-    return ("string", dt.isoformat())
+    return ("datetimeval", dt)
 
 def _map(table: dict, s) -> int:
     return table.get(str(s).lower().strip(), 0)
@@ -368,14 +384,15 @@ class _State:
     config_devices: Optional[list]
 
     def __init__(self):
-        self.oid_keys       = []
-        self.oid_map        = {}
-        self.last_load      = 0.0
-        self.ttl            = CACHE_TTL
-        self.checksums      = {}
-        self.timestamps     = {}
-        self.state_dir      = ""
-        self.config_devices = None
+        self.oid_keys              = []
+        self.oid_map               = {}
+        self.last_load             = 0.0
+        self.ttl                   = CACHE_TTL
+        self.checksums             = {}
+        self.timestamps            = {}
+        self.state_dir             = ""
+        self.config_devices        = None
+        self.poll_failure_threshold = 1
 
 
 _st = _State()
@@ -412,6 +429,7 @@ def _build(devices: list, ts: datetime,
     add((2, 1, 4, 0), *_gauge(n_nvme))        # smartmonDeviceCountNvme
     add((2, 1, 5, 0), *_gauge(n_ata))         # smartmonDeviceCountAta
     add((2, 1, 6, 0), *_gauge(n_sas))         # smartmonDeviceCountSas
+    add((2, 1, 7, 0), *_gauge(_st.poll_failure_threshold))  # smartmonPollFailureThreshold
 
     # ---- Protocol-subtree scalars ----
     add((3, 1, 13, 0), *_gauge(n_nvme))       # smartmonNvmeHealthTableRowCount
@@ -489,7 +507,7 @@ def _add_common_device(add, dev: dict, d_idx: int) -> None:
     add(T+(5,  d_idx), *(_datetimeval(poll_time) if poll_time else _string("")))
     add(T+(6,  d_idx), *_integer(poll_result))
     add(T+(7,  d_idx), *_gauge(0))                             # lastPollExitStatus
-    add(T+(8,  d_idx), *_gauge(0))                             # physicalIndex
+    add(T+(8,  d_idx), *_integer(0))                           # physicalIndex
     add(T+(9,  d_idx), *_string(dev.get("device_path", "")))   # uris
     add(T+(10, d_idx), *_string(dev["model_family"]))
     add(T+(11, d_idx), *_string(dev["model_name"]))
@@ -857,6 +875,9 @@ def _make_value(agent: Any, snmp_type: str, value: object) -> Any:
         return agent.Integer32(_as_int(value))
     if snmp_type == "string":
         return agent.OctetString(_as_text(value))
+    if snmp_type == "datetimeval":
+        raw = _encode_datetimeval(value) if isinstance(value, datetime) else b""
+        return agent.OctetString(raw)
     raise ValueError(f"unsupported SNMP type {snmp_type!r}")
 
 
@@ -867,7 +888,7 @@ def _make_scalar(agent: Any, oidstr: str, snmp_type: str) -> Any:
         return agent.Unsigned32(oidstr=oidstr, writable=False)
     if snmp_type == "integer":
         return agent.Integer32(oidstr=oidstr, writable=False)
-    if snmp_type == "string":
+    if snmp_type in ("string", "datetimeval"):
         return agent.OctetString(oidstr=oidstr, writable=False)
     raise ValueError(f"unsupported scalar type {snmp_type!r}")
 
@@ -880,6 +901,7 @@ def _scalar_definitions() -> Dict[Oid, str]:
         _full((2, 1, 4, 0)): "gauge",    # deviceCountNvme
         _full((2, 1, 5, 0)): "gauge",    # deviceCountAta
         _full((2, 1, 6, 0)): "gauge",    # deviceCountSas
+        _full((2, 1, 7, 0)): "gauge",    # pollFailureThreshold
         # NVMe scalars
         _full((3, 1, 13, 0)): "gauge",   # nvmeHealthTableRowCount
         _full((3, 1, 14, 0)): "string",  # nvmeHealthTableLastChange
@@ -905,8 +927,8 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
         "entry_prefix": _full((2, 1, 3, 1)),
         "indexes": 1,
         "columns": {
-            2: "string", 3: "string", 4: "integer", 5: "string",
-            6: "integer", 7: "gauge",  8: "gauge",  9: "string",
+            2: "string", 3: "string", 4: "integer", 5: "datetimeval",
+            6: "integer", 7: "gauge",  8: "integer", 9: "string",
             10: "string", 11: "string", 12: "string", 13: "string", 14: "string",
         },
     },
@@ -969,7 +991,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
         "columns": {
             2: "integer", 3: "string", 4: "string", 5: "integer",
             6: "gauge", 7: "integer", 8: "integer", 9: "string",
-            10: "string", 11: "gauge",
+            10: "datetimeval", 11: "gauge",
             12: "integer", 13: "integer", 14: "integer", 15: "integer",
         },
     },
@@ -987,7 +1009,7 @@ def _register_tables(agent: Any) -> Dict[str, Any]:
     tables = {}
     for name, defn in TABLE_DEFINITIONS.items():
         columns = [
-            (col, _make_value(agent, snmp_type, 0 if snmp_type != "string" else ""))
+            (col, _make_value(agent, snmp_type, "" if snmp_type in ("string", "datetimeval") else 0))
             for col, snmp_type in defn["columns"].items()
         ]
         tables[name] = agent.Table(
@@ -1018,7 +1040,12 @@ def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
             else:
                 scalar.update(0)
             continue
-        scalar.update(_as_text(value).encode() if snmp_type == "string" else _as_int(value))
+        if snmp_type == "datetimeval":
+            scalar.update(_encode_datetimeval(value) if isinstance(value, datetime) else b"")
+        elif snmp_type == "string":
+            scalar.update(_as_text(value).encode())
+        else:
+            scalar.update(_as_int(value))
 
 
 def _publish_tables(agent: Any, tables: Dict[str, Any]) -> None:
@@ -1042,7 +1069,7 @@ def _publish_tables(agent: Any, tables: Dict[str, Any]) -> None:
         for indexes in sorted(rows):
             row = table.addRow([agent.Unsigned32(idx) for idx in indexes])
             for col, snmp_type in columns.items():
-                vtype, val = rows[indexes].get(col, (snmp_type, "" if snmp_type == "string" else 0))
+                vtype, val = rows[indexes].get(col, (snmp_type, "" if snmp_type in ("string", "datetimeval") else 0))
                 row.setRowCell(col, _make_value(agent, vtype, val))
 
 
