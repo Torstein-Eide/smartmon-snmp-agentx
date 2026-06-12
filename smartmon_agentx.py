@@ -1768,6 +1768,33 @@ def _extract_sensors(dev: dict) -> List[dict]:
                9, 0, int(t_current), 1, "C",
                hi_crit=t_crit, hi_warn=t_crit - 5)
 
+    # Seagate FARM: 4 sensors from page_4_environment_statistics
+    farm = raw.get("seagate_farm_log") or {}
+    if farm.get("supported"):
+        farm_ts = datetime.fromtimestamp(
+            int((farm.get("local_time") or {}).get("time_t", 0) or 0),
+            tz=timezone.utc,
+        ) or poll_time
+        env = farm.get("page_4_environment_statistics") or {}
+        _FARM_SENSORS = [
+            (3, "current_12v_in_mv",   "12V Supply",  6, 8, "mV"),
+            (4, "current_5v_in_mv",    "5V Supply",   6, 8, "mV"),
+            (5, "humidity",            "Humidity",   10, 9, "percent"),
+            (6, "current_motor_power", "Motor Power", 4, 8, "mW"),
+        ]
+        for s_idx, field, name, stype, scale, units in _FARM_SENSORS:
+            val = env.get(field)
+            if val is None:
+                continue
+            sensors.append({
+                "idx": s_idx, "type": stype, "name": name,
+                "source": f"seagate_farm_log.page_4_environment_statistics.{field}",
+                "scale": scale, "precision": 0, "value": int(val),
+                "status": 1, "units_display": units,
+                "hi_crit": None, "hi_warn": None, "lo_warn": None, "lo_crit": None,
+                "timestamp": farm_ts,
+            })
+
     return sensors
 
 
