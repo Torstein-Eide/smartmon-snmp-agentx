@@ -3732,7 +3732,7 @@ def _load_config(path: str) -> dict:
 
 
 def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
-    ttl       = args.ttl if args.ttl is not None else int(cfg.get("cache_timeout", CACHE_TTL))
+    ttl       = args.cache_timeout if args.cache_timeout is not None else int(cfg.get("cache_timeout", CACHE_TTL))
     log_level = args.log_level or str(cfg.get("log_level", "WARNING")).upper()
     log_path  = args.log_file  or cfg.get("log_file")
     devices   = cfg.get("devices")
@@ -3775,8 +3775,9 @@ def main() -> None:
                         help="path to YAML (or key=value) config file (default: %(default)s)")
     parser.add_argument("--state-dir",    metavar="PATH", default=None,
                         help="directory containing smartd --jsonstate *.json files")
-    parser.add_argument("--ttl",          type=int, default=None, metavar="SEC",
-                        help=f"cache TTL in seconds before re-reading state files (default: {CACHE_TTL})")
+    parser.add_argument("--cache-timeout", type=int, default=None, metavar="SEC",
+                        help=f"data refresh / poll interval in seconds (config key: "
+                             f"cache_timeout; default: {CACHE_TTL})")
     parser.add_argument("--log-level",    default=None,
                         choices=["DEBUG", "VERBOSE", "INFO", "NOTICE", "WARNING", "ERROR"],
                         help="minimum log severity written to stderr / log-file (default: WARNING)")

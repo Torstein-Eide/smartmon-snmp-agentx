@@ -9,7 +9,7 @@ smartmon-snmp-agentx \- SNMP AgentX subagent for smartmontools SMART data
 .RB [ \-\-collect ]
 .RB [ \-\-state\-dir
 .IR dir ]
-.RB [ \-\-ttl
+.RB [ \-\-cache\-timeout
 .IR seconds ]
 .RB [ \-\-state\-db
 .IR path ]
@@ -79,10 +79,12 @@ Directory containing smartd
 .B \-\-jsonstate
 JSON files (file mode).
 .TP
-.BI \-\-ttl " seconds"
+.BI \-\-cache\-timeout " seconds"
 Data refresh / poll interval.
 In file mode, how long parsed data is cached before re-reading; in collect
 mode, the smartctl poll interval.
+Config key:
+.BR cache_timeout .
 Default: 300.
 .TP
 .BI \-\-state\-db " path"

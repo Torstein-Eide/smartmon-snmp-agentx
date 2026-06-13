@@ -269,7 +269,7 @@ snmpwalk -v2c -c public -m ALL localhost \
 | `-f` | Run in foreground (do not daemonise; useful for debugging) |
 | `--collect` | Poll `smartctl` directly instead of reading `state_dir` |
 | `--state-dir DIR` | Directory containing smartd `--jsonstate` JSON files (file mode) |
-| `--ttl SEC` | Data refresh / poll interval in seconds (config key: `cache_timeout`) |
+| `--cache-timeout SEC` | Data refresh / poll interval in seconds (config key: `cache_timeout`) |
 | `--state-db PATH` | SQLite persistence file (overrides config `state_db`) |
 | `--agentx-socket PATH` | AgentX master socket path |
 | `--log-level LEVEL` | `DEBUG`, `VERBOSE`, `INFO`, `NOTICE`, `WARNING`, `ERROR` |

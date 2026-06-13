@@ -13,44 +13,46 @@ Wants=smartmon-collect.timer
 # python3-netsnmpagent; runs directly via its shebang.  It does not implement
 # sd_notify, so Type=simple (not notify) and no WatchdogSec.
 Type=simple
-ExecStart=@sbindir@/smartmon-snmp-agentx -f -c @sysconfdir@/smartmontools/snmp-agentx.conf
+ExecStart=@sbindir@/smartmon-snmp-agentx -f -c @sysconfdir@/smartmontools/snmp-agentx.yaml
 Restart=on-failure
 RestartSec=10
 
 # ------------------------------------------------------------------ #
 # Security hardening                                                 #
-# The agent only reads JSON state files and connects to the AgentX   #
-# Unix socket.  No special privileges are needed at any point.       #
+# The agent connects to the AgentX Unix socket and either reads JSON #
+# state files (file mode) or polls smartctl (collect mode).  Collect #
+# mode runs `sudo -n smartctl`, so a few directives below are relaxed #
+# to permit that escalation and disk access.  File-mode-only          #
+# deployments may re-tighten the four directives marked "collect".    #
 # ------------------------------------------------------------------ #
 
 # Run as a dedicated unprivileged system account created on install
 User=smartmon
 Group=smartmon
 
-# Prevent any privilege escalation via setuid/setgid
-NoNewPrivileges=yes
-
-# Drop all capabilities — the agent needs none
-CapabilityBoundingSet=
+# collect: allow `sudo -n smartctl` to gain privilege.  NoNewPrivileges=yes
+# would make sudo fail with "effective uid is not 0".  Grant the smartmon user
+# passwordless smartctl in sudoers, e.g.:
+#   smartmon ALL=(root) NOPASSWD: /usr/sbin/smartctl
+NoNewPrivileges=no
+# collect: do NOT empty CapabilityBoundingSet — the root smartctl spawned via
+# sudo needs CAP_SYS_RAWIO / CAP_SYS_ADMIN / CAP_DAC_READ_SEARCH (and sudo
+# itself needs CAP_SETUID/CAP_SETGID).  The default (full) bounding set is kept;
+# the agent process itself runs unprivileged as smartmon.
 AmbientCapabilities=
 
 # Filesystem isolation
 PrivateTmp=yes
-PrivateDevices=yes
+# collect: real /dev must be visible so smartctl can open the drives.
+PrivateDevices=no
 ProtectHome=yes
 # ProtectSystem=strict makes the entire filesystem read-only except for
 # the paths listed in ReadWritePaths/ReadOnlyPaths below
 ProtectSystem=strict
-# Read JSON state files written by smartmon-collect or smartd
+# Read JSON state files written by smartmon-collect or smartd (file mode)
 ReadOnlyPaths=-/run/smartmontools/json
 # AgentX socket directory plus SQLite state DB directory
 ReadWritePaths=/var/agentx /run/agentx /var/lib/smartmontools/snmp-agent
-# /dev/disk/by-id and /dev/disk/by-path are needed to populate
-# smartmonDeviceUris.  PrivateDevices=yes hides the real /dev, so we
-# bind-mount the by-* tree read-only into the private namespace.
-# The symlink targets (/dev/sda, /dev/nvme0n1, …) need not exist
-# inside the private /dev — we only read the symlinks, not the devices.
-BindReadOnlyPaths=-/dev/disk
 
 # Network: AgentX uses Unix sockets by default; also allow TCP/UDP in
 # case snmpd uses an agentxsocket tcp: address
@@ -72,10 +74,11 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 
-# System call filtering — @system-service covers all calls a standard
-# daemon legitimately makes; anything else returns EPERM
+# System call filtering.  @system-service covers a standard daemon; collect
+# mode additionally needs @raw-io (smartctl ATA/NVMe pass-through ioctls) and
+# @privileged (sudo's setuid/setgid).  Anything else returns EPERM.
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service @raw-io @privileged
 SystemCallErrorNumber=EPERM
 
 # Resource limits
