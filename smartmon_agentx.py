@@ -148,11 +148,19 @@ _SELFTEST_EXEC_STATUS = {i: i for i in range(16)}
 # _discover_devices() is now called on the main-loop change-detection path.
 _PROTO_SUFFIX = re.compile(r'\.(ata|sat|nvme|scsi|sas)\.json$')
 
+# Seagate FARM supplementary state file suffix (e.g. <serial>.farm.ata.json).
+_FARM_SIDECAR_SUFFIX = ".farm.ata.json"
+
 
 def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
-    """Return sorted list of smartd JSON state file paths in state_dir.
+    """Return sorted list of smartd JSON device state file paths in state_dir.
 
-    Skips *.farm.ata.json supplementary files (Seagate FARM log).
+    A Seagate FARM supplementary file (*.farm.ata.json) is matched to its sibling
+    main device file (<base>.ata.json); the pairing is recorded in
+    _st.farm_sidecars so the FARM log merges into that device (it "follows" the
+    main device rather than appearing as a separate item).  An orphan FARM file
+    with no matching main file is surfaced as its own standalone device.
+
     Raises CollectionError when no files are found."""
     try:
         all_files = glob.glob(os.path.join(state_dir, "*.json"))
@@ -160,11 +168,28 @@ def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
         raise CollectionError(EXIT_PERMISSION_DENIED,
                               f"cannot scan {state_dir!r}: {exc}") from exc
 
-    # Keep only files whose names end with a known protocol suffix;
-    # exclude Seagate FARM supplementary logs (.farm.ata.json).
-    files = [f for f in all_files
-             if _PROTO_SUFFIX.search(os.path.basename(f))
-             and not f.endswith(".farm.ata.json")]
+    # Split into main device files and Seagate FARM sidecars.  Match each FARM
+    # sidecar to <base>.ata.json; merged ones drop out of the device list, the
+    # rest stand alone.
+    main_files, farm_files = [], []
+    for f in all_files:
+        if f.endswith(_FARM_SIDECAR_SUFFIX):
+            farm_files.append(f)
+        elif _PROTO_SUFFIX.search(os.path.basename(f)):
+            main_files.append(f)
+
+    main_set = set(main_files)
+    sidecars: Dict[str, str] = {}
+    orphan_farm: List[str] = []
+    for ff in farm_files:
+        main_candidate = ff[:-len(_FARM_SIDECAR_SUFFIX)] + ".ata.json"
+        if main_candidate in main_set:
+            sidecars[main_candidate] = ff
+        else:
+            orphan_farm.append(ff)
+    _st.farm_sidecars = sidecars
+
+    files = main_files + orphan_farm
 
     if config_devices:
         filtered = []
@@ -192,8 +217,9 @@ def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
 # Part 1b — Native collection (smartctl pulled directly, no state_dir files)
 #
 # Enabled by `collect: true` / --collect.  A native Python port of
-# bin/smartmon-collect: scan drives, run `smartctl -x -j` per drive, merge the
-# Seagate FARM log, and hand the parsed objects straight to the build pipeline.
+# bin/smartmon-collect: scan drives (once, then on udev hotplug — see
+# _udev_monitor_loop), run `smartctl -x -j` per drive, merge the Seagate FARM
+# log, and hand the parsed objects straight to the build pipeline.
 # When not root, smartctl is wrapped in `sudo -n` so only smartctl needs a
 # sudoers grant; a failed pull emits one-shot guidance on how to add it.
 # ==========================================================================
@@ -386,14 +412,24 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
 
 
 def _collect_all() -> List[Tuple[str, dict]]:
-    """Discover and pull every drive.  Sequential today; this loop is the seam
-    for a future ThreadPoolExecutor (parallel per-disk pulls).
+    """Pull every known drive.  Sequential today; this loop is the seam for a
+    future ThreadPoolExecutor (parallel per-disk pulls).
+
+    Device discovery (`smartctl --scan`) only re-runs on the first cycle or when
+    the udev monitor (_rescan_event) signals a block-device hotplug; otherwise
+    the cached spec set is reused so steady-state polls just refresh SMART data.
 
     Raises CollectionError when no drives are found, or when drives exist but
     every pull is blocked (e.g. missing sudoers grant)."""
-    specs = _discover_drives()
-    LOGGER.info("discovered %d drive(s) via smartctl", len(specs))
+    if _st.collect_specs is None or _rescan_event.is_set():
+        _rescan_event.clear()
+        _st.collect_specs = _discover_drives()
+        LOGGER.info("discovered %d drive(s) via smartctl", len(_st.collect_specs))
+    specs = _st.collect_specs
     if not specs:
+        # Retry discovery next cycle (a transient/permission scan failure leaves
+        # no device to fire a udev event that would otherwise un-stick us).
+        _st.collect_specs = None
         raise CollectionError(EXIT_NO_DEVICES, "no drives discovered via smartctl")
 
     collected: List[Tuple[str, dict]] = []
@@ -445,7 +481,26 @@ def _parse_device_json(path: str) -> dict:
     except (OSError, json.JSONDecodeError) as exc:
         result["read_error"] = str(exc)
         return result
+    farm_path = _st.farm_sidecars.get(path)
+    if farm_path:
+        _merge_farm_file(raw, farm_path)
     return _parse_device_from_raw(raw, path)
+
+
+def _merge_farm_file(raw: dict, farm_path: str) -> None:
+    """Splice seagate_farm_log from a sibling *.farm.ata.json into the main
+    device's raw object so the FARM pages/sensors follow the main device."""
+    try:
+        with open(farm_path) as fh:
+            fjson = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.warning("could not read FARM sidecar %s: %s", farm_path, exc)
+        return
+    fl = fjson.get("seagate_farm_log")
+    if isinstance(fl, dict) and (fl.get("supported")
+                                 or any(k.startswith("page_") for k in fl)):
+        raw["seagate_farm_log"] = fl
+        LOGGER.info("FARM log merged from %s", os.path.basename(farm_path))
 
 
 def _parse_device_from_raw(raw: dict, path: str) -> dict:
@@ -727,6 +782,14 @@ class _State:
         # state_dir JSON files.  sudoers_warned gates the one-shot guidance log.
         self.collect               = False
         self.sudoers_warned        = False
+        # Cached drive specs in collect mode.  None forces a `smartctl --scan`;
+        # otherwise the cached set is reused and discovery only re-runs when the
+        # udev monitor (or a transient empty scan) requests a rescan.
+        self.collect_specs: Optional[list] = None
+        self.udev_proc             = None   # running `udevadm monitor` subprocess
+        # File mode: main-device path -> sibling *.farm.ata.json path whose
+        # seagate_farm_log merges into that device (see _discover_devices).
+        self.farm_sidecars: dict   = {}
         # Notification config (mirrors AgentxConfig in the C++ daemon).
         self.test_mode             = False
         self.sensor_hysteresis     = 0
@@ -764,6 +827,12 @@ _publish_q: "queue.Queue[dict]" = queue.Queue()
 # check_and_process, and the worker only re-reads state files when asked — and
 # even then only past the TTL guard (or when fixture mtimes changed).
 _refresh_request = threading.Event()
+
+# Set by the udev monitor thread (collect mode) when a block device is added or
+# removed, asking the collector to re-run `smartctl --scan` on its next cycle
+# instead of re-discovering every poll.  Coalescing: multiple sets before the
+# collector runs collapse into a single rescan.
+_rescan_event = threading.Event()
 
 
 # ==========================================================================
@@ -3550,6 +3619,55 @@ def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
 NOTIFY_POLL_INTERVAL = 0.05
 
 
+def _udev_monitor_loop(stop: threading.Event) -> None:
+    """Watch the kernel for block-device hotplug events (collect mode only).
+
+    Runs `udevadm monitor --kernel --udev --property --subsystem-match=block`,
+    which streams one blank-line-separated property block per event.  When a
+    whole disk (DEVTYPE=disk) is added or removed it sets _rescan_event and wakes
+    the collector, so the drive set is re-scanned on hotplug instead of on every
+    poll.  If udevadm is unavailable the collector falls back to per-cycle
+    discovery (collect_specs forced to None)."""
+    cmd = ["udevadm", "monitor", "--kernel", "--udev", "--property",
+           "--subsystem-match=block"]
+    while not stop.is_set():
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        except OSError as exc:
+            LOGGER.warning("udevadm monitor unavailable (%s); falling back to "
+                           "per-poll drive discovery", exc)
+            _st.collect_specs = None
+            return
+        _st.udev_proc = proc
+        action = devtype = None
+        try:
+            for line in proc.stdout:               # blocks until next line
+                if stop.is_set():
+                    break
+                line = line.strip()
+                if not line:                       # blank line ends an event block
+                    if action in ("add", "remove") and devtype == "disk":
+                        LOGGER.info("udev %s of a disk — scheduling drive rescan",
+                                    action)
+                        _rescan_event.set()
+                        _refresh_request.set()     # wake the collector promptly
+                    action = devtype = None
+                    continue
+                if line.startswith("ACTION="):
+                    action = line[len("ACTION="):]
+                elif line.startswith("DEVTYPE="):
+                    devtype = line[len("DEVTYPE="):]
+        finally:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        if not stop.is_set():
+            LOGGER.warning("udevadm monitor exited; restarting in 5s")
+            stop.wait(5.0)
+
+
 def _collector_loop(stop: threading.Event) -> None:
     """Producer thread: owns all data collection and _st mutation.
 
@@ -3644,7 +3762,9 @@ def _snapshot_file_mtimes() -> None:
     except CollectionError:
         return
     _st.file_mtimes.clear()
-    for path in files:
+    # Sidecar FARM files are not device paths but must still trigger a rebuild
+    # when they change, so stat them alongside the device files.
+    for path in files + list(_st.farm_sidecars.values()):
         try:
             _st.file_mtimes[path] = os.stat(path).st_mtime
         except OSError:
@@ -3662,7 +3782,7 @@ def _files_modified() -> bool:
     except CollectionError:
         return False
     current: dict = {}
-    for path in files:
+    for path in files + list(_st.farm_sidecars.values()):
         try:
             current[path] = os.stat(path).st_mtime
         except OSError:
@@ -3864,6 +3984,15 @@ def main() -> None:
                               name="smartmon-collector", daemon=True)
     worker.start()
 
+    # Collect mode: drive discovery is event-driven via udev rather than a
+    # `smartctl --scan` on every poll.  File mode has no devices to hotplug.
+    udev_thread = None
+    if _st.collect:
+        udev_thread = threading.Thread(target=_udev_monitor_loop,
+                                       args=(stop_event,),
+                                       name="smartmon-udev", daemon=True)
+        udev_thread.start()
+
     try:
         while True:
             # Block on the agent's fds (processing packets as fast as they
@@ -3898,7 +4027,15 @@ def main() -> None:
     finally:
         stop_event.set()
         _refresh_request.set()   # wake the worker so it observes stop promptly
+        # The udev thread blocks on udevadm's stdout; terminate it to unblock.
+        if _st.udev_proc is not None:
+            try:
+                _st.udev_proc.terminate()
+            except Exception:
+                pass
         worker.join(timeout=2.0)
+        if udev_thread is not None:
+            udev_thread.join(timeout=2.0)
         state_db_close()         # safe: the worker (sole save() caller) has joined
 
 
