@@ -10,12 +10,21 @@ Wants=smartmon-collect.timer
 
 [Service]
 # Self-contained Python script (#!/usr/bin/env python3) using
-# python3-netsnmpagent; runs directly via its shebang.  It does not implement
-# sd_notify, so Type=simple (not notify) and no WatchdogSec.
-Type=simple
+# python3-netsnmpagent; runs directly via its shebang.  It implements the
+# systemd notify protocol: READY=1 after the first publish (so Type=notify
+# reports "active" only once the agent is actually serving), a STATUS= line
+# shown by `systemctl status` (agentx connect state, disk/OID counts, last
+# update, leading with any active collection error), and WATCHDOG=1 pings.
+Type=notify
+NotifyAccess=main
 ExecStart=@sbindir@/smartmon-snmp-agentx -f -c @sysconfdir@/smartmontools/snmp-agentx.yaml
 Restart=on-failure
 RestartSec=10
+# Optional liveness watchdog: uncomment to have systemd restart the agent if it
+# stops pinging.  The agent pings at half this interval; pick a value comfortably
+# above one poll/refresh cycle (cache_timeout) so a slow smartctl pull cannot trip
+# it.  Leave disabled to rely on Restart=on-failure alone.
+#WatchdogSec=60
 
 # ------------------------------------------------------------------ #
 # Security hardening                                                 #
