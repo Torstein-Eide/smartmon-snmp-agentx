@@ -785,6 +785,9 @@ class _State:
         # state_dir JSON files.  sudoers_warned gates the one-shot guidance log.
         self.collect               = False
         self.sudoers_warned        = False
+        # DEBUG-AGENTX log level: app DEBUG + net-snmp AgentX PDU tracing.
+        self.agentx_debug          = False
+        self.log_path              = ""
         # Cached drive specs in collect mode.  None forces a `smartctl --scan`;
         # otherwise the cached set is reused and discovery only re-runs when the
         # udev monitor (or a transient empty scan) requests a rescan.
@@ -2642,6 +2645,25 @@ def _get_trap_api():
     return _trap_api
 
 
+def _enable_agentx_debug(log_path: str) -> None:
+    """Turn on net-snmp's own AgentX PDU tracing (the DEBUG-AGENTX log level).
+
+    Routes net-snmp logging to log_path (or stderr) and enables the 'agentx'
+    debug token, so every PDU exchanged with the master agent is written out —
+    used to inspect what the master actually sends during a walk."""
+    lib = _get_trap_api().libnsa
+    lib.snmp_set_do_debugging.argtypes = [ctypes.c_int]
+    lib.debug_register_tokens.argtypes = [ctypes.c_char_p]
+    if log_path:
+        lib.snmp_enable_filelog.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        lib.snmp_enable_filelog(log_path.encode(), 1)   # 1 = append, don't truncate
+    else:
+        lib.snmp_enable_stderrlog()
+    lib.snmp_set_do_debugging(1)
+    lib.debug_register_tokens(b"agentx")
+    LOGGER.info("AgentX PDU debug tracing enabled (-> %s)", log_path or "stderr")
+
+
 # Reused ctypes scratch + cached agent fd list for _agent_wait.  snmp_select_info
 # and the struct allocation are relatively expensive in Python, so we do NOT run
 # them per packet: the subagent's master-socket fd is stable, so we cache the fd
@@ -3653,7 +3675,7 @@ def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
 # sets a larger TTL to trade trap/refresh latency for lower idle cost.
 NOTIFY_POLL_INTERVAL = 0.05
 # Seconds of SNMP inactivity after which the main loop prints a VERBOSE summary
-# of the just-finished request burst (start line + count/duration/rate).
+# of the just-finished activity burst (start line + socket-wakeup count/rate).
 SNMP_IDLE_SUMMARY_SEC = 10.0
 
 
@@ -3943,7 +3965,11 @@ def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
     _st.sensor_hysteresis       = max(0, _cfg_int("sensor_hysteresis", 0))
     _st.test_mode               = str(cfg.get("test_mode", "")).lower() in ("1", "true", "yes")
 
-    level = {"VERBOSE": VERBOSE, "NOTICE": NOTICE}.get(
+    # DEBUG-AGENTX is DEBUG plus net-snmp AgentX PDU tracing (enabled in main()
+    # via _enable_agentx_debug once the ctypes API is ready).
+    _st.agentx_debug = log_level == "DEBUG-AGENTX"
+    _st.log_path     = log_path or ""
+    level = {"VERBOSE": VERBOSE, "NOTICE": NOTICE, "DEBUG-AGENTX": logging.DEBUG}.get(
         log_level, getattr(logging, log_level, logging.WARNING)
     )
     handlers: List[Any] = [logging.StreamHandler(sys.stderr)]
@@ -3967,8 +3993,11 @@ def main() -> None:
                         help=f"data refresh / poll interval in seconds (config key: "
                              f"cache_timeout; default: {CACHE_TTL})")
     parser.add_argument("--log-level",    default=None,
-                        choices=["DEBUG", "VERBOSE", "INFO", "NOTICE", "WARNING", "ERROR"],
-                        help="minimum log severity written to stderr / log-file (default: WARNING)")
+                        choices=["DEBUG-AGENTX", "DEBUG", "VERBOSE", "INFO",
+                                 "NOTICE", "WARNING", "ERROR"],
+                        help="minimum log severity written to stderr / log-file "
+                             "(default: WARNING). DEBUG-AGENTX = DEBUG plus raw "
+                             "net-snmp AgentX PDU tracing to the log file/stderr")
     parser.add_argument("--log-file",     metavar="PATH", default=None,
                         help="append log output to this file in addition to stderr")
     parser.add_argument("--agentx-socket", default=DEFAULT_AGENTX_SOCKET,
@@ -4019,6 +4048,11 @@ def main() -> None:
         MasterSocket=agentx_socket,
         UseMIBFiles=False,
     )
+    # Enable net-snmp AgentX PDU tracing before registration so the register/start
+    # exchange with the master is captured too.
+    if _st.agentx_debug:
+        _enable_agentx_debug(_st.log_path)
+
     scalars = _register_scalars(agent)
     tables  = _register_tables(agent)
 
@@ -4085,21 +4119,25 @@ def main() -> None:
             # the bulk of the walk slowdown) with no benefit.
             agent.check_and_process(block=False)
 
-            # Track SNMP request bursts: log the start of activity, count the
-            # request iterations (a proxy for GET/GETNEXT PDUs served), and print a
-            # one-line summary once the burst has been idle for SNMP_IDLE_SUMMARY_SEC.
+            # Track SNMP activity bursts: log the start, count loop wakeups (socket
+            # read-ready events), and summarise once idle for SNMP_IDLE_SUMMARY_SEC.
+            # A wakeup is NOT one client request: each AgentX getNext is several
+            # socket messages (request + response sync), so wakeups run ~3x the
+            # actual PDU count — confirmed via the DEBUG-AGENTX trace. Hence the
+            # summary reports "socket wakeups", not requests.
             now = time.monotonic()
             if active:
                 if not walk_active:
                     walk_active, walk_start, walk_count = True, now, 0
-                    LOGGER.verbose("SNMP request activity started")
+                    LOGGER.verbose("SNMP activity started")
                 walk_count += 1
                 walk_last = now
             elif walk_active and now - walk_last >= SNMP_IDLE_SUMMARY_SEC:
                 dur  = walk_last - walk_start
                 rate = walk_count / dur if dur > 0 else 0.0
-                LOGGER.verbose("SNMP activity summary: ~%d requests over %.1fs "
-                               "(%.0f req/s)", walk_count, dur, rate)
+                LOGGER.verbose("SNMP activity summary: %d socket wakeups over %.1fs "
+                               "(%.0f/s; wakeups run ~3x the AgentX PDU count)",
+                               walk_count, dur, rate)
                 walk_active = False
 
             # Drain to the most recent snapshot; publish it on this (main) thread.
