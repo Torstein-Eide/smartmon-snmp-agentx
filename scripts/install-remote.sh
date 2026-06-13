@@ -371,7 +371,7 @@ echo "  enabled and (re)started: \$AGENT_NAME.service"
 
 echo ""
 echo "  Deployment complete.  Verify with:"
-echo "    snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2"
+echo "    snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.2"
 REMOTE_SCRIPT
 
 echo ""

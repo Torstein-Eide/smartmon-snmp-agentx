@@ -40,7 +40,7 @@ C++ SNMP AgentX daemon (`smartmon-snmp-agentxd`) that reads `smartd --jsonstate`
 
 ### OID Layout
 
-Enterprise prefix `SMARTMON_ENT = 1.3.6.1.4.1.9999.1.1`:
+Enterprise prefix `SMARTMON_ENT = 1.3.6.1.4.1.65891.1.1`:
 
 | Suffix | MIB |
 |--------|-----|

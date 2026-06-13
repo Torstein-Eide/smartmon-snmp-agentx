@@ -55,7 +55,7 @@ sequenceDiagram
 
 ## MIB structure
 
-Enterprise OID: `1.3.6.1.4.1.9999.1.1` (placeholder; TODO: replace with an assigned IANA PEN before publication)
+Enterprise OID: `1.3.6.1.4.1.65891.1.1` (placeholder; TODO: replace with an assigned IANA PEN before publication)
 
 | Sub-tree | MIB | Status | Contents |
 |----------|-----|--------|----------|
@@ -174,7 +174,7 @@ master agentx
 agentXSocket /var/agentx/master
 # Group is distro-dependent: Debian-snmp on Debian/Ubuntu, snmp on RHEL/Fedora.
 agentXPerms 0660 0550 root Debian-snmp
-rocommunity public 127.0.0.1 .1.3.6.1.4.1.9999
+rocommunity public 127.0.0.1 .1.3.6.1.4.1.65891
 ```
 
 Restart snmpd:
@@ -240,19 +240,19 @@ systemctl enable --now smartmon-snmp-agentx
 
 ```bash
 # List all monitored devices
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.2
 
 # NVMe health
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.3
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.3
 
 # SATA attributes
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.4
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.4
 
 # SAS health and error counters
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.5
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.5
 
 # Unified sensor table
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.6
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.6
 
 # Human-readable output (requires MIBs in /usr/share/snmp/mibs/):
 snmpwalk -v2c -c public -m ALL localhost \
@@ -391,7 +391,7 @@ echo 'smartmon ALL=(root) NOPASSWD: /usr/sbin/smartctl' \
 **snmpwalk returns "No Such Object":**
 The agent may not have registered yet.  Check:
 ```bash
-snmpget -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2.1.1.0
+snmpget -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.2.1.1.0
 ```
 Should return `Gauge32: N` (number of devices).
 
@@ -403,5 +403,5 @@ Should return `Gauge32: N` (number of devices).
 Install MIBs to `/usr/share/snmp/mibs/` and use `-m ALL`:
 ```bash
 export MIBS=ALL
-snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1
+snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1
 ```

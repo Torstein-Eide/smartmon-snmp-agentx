@@ -309,7 +309,7 @@ else
 fi
 echo ""
 echo "Verify:"
-echo '  snmpwalk -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2'
+echo '  snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.2'
 echo '  snmpwalk -v2c -c public -m ALL localhost SMARTMON-COMMON-MIB::smartmonDeviceTable'
 echo ""
 echo "MIBs installed to $MIBDIR"

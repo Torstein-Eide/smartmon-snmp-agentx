@@ -194,7 +194,7 @@ Add the following to
 master agentx
 agentXSocket /var/agentx/master
 agentXPerms 0660 0550 root Debian-snmp
-rocommunity public 127.0.0.1 .1.3.6.1.4.1.9999
+rocommunity public 127.0.0.1 .1.3.6.1.4.1.65891
 .fi
 .RE
 .SH FILES
