@@ -757,7 +757,7 @@ class _State:
     sub_timestamps: dict   # (table_id, d_idx, sub1) -> datetime
     state_dir:      str
     config_devices: Optional[list]
-    file_mtimes:    dict   # path -> mtime float; used for inotify-equivalent change detection
+    file_mtimes:    dict   # path -> stat signature (size, mtime, ctime); change detection
     published_fp:   dict   # table name -> fingerprint of last content pushed to net-snmp
 
     def __init__(self):
@@ -3753,8 +3753,25 @@ def _collect_and_build(ts: datetime) -> None:
     LOGGER.notice("built OID table: %d devices (%d errors)", len(devices), errors)
 
 
+def _file_signature(path: str) -> Optional[tuple]:
+    """Cheap stat signature (size, mtime, ctime) for change detection.
+
+    mtime alone is unreliable: the integration harness swaps fixtures with
+    shutil.copy2, which preserves the *source* mtime, and the variant fixtures
+    all share one mtime — so a content swap can land on an identical/older mtime
+    and go undetected.  ctime closes that gap: it is kernel-controlled and can't
+    be set from userspace, so an overwrite always bumps it to "now" even when
+    mtime is preserved.  This stays a single stat() (no file read), so it adds no
+    load at the sub-second worker poll cadence.  Returns None on stat failure."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime, st.st_ctime)
+
+
 def _snapshot_file_mtimes() -> None:
-    """Record current fixture file mtimes so _files_modified() has a baseline."""
+    """Record current fixture file signatures so _files_modified() has a baseline."""
     if _st.collect:
         return  # no state_dir files in collect mode
     try:
@@ -3763,12 +3780,11 @@ def _snapshot_file_mtimes() -> None:
         return
     _st.file_mtimes.clear()
     # Sidecar FARM files are not device paths but must still trigger a rebuild
-    # when they change, so stat them alongside the device files.
+    # when they change, so sign them alongside the device files.
     for path in files + list(_st.farm_sidecars.values()):
-        try:
-            _st.file_mtimes[path] = os.stat(path).st_mtime
-        except OSError:
-            pass
+        sig = _file_signature(path)
+        if sig is not None:
+            _st.file_mtimes[path] = sig
 
 
 def _files_modified() -> bool:
@@ -3783,10 +3799,9 @@ def _files_modified() -> bool:
         return False
     current: dict = {}
     for path in files + list(_st.farm_sidecars.values()):
-        try:
-            current[path] = os.stat(path).st_mtime
-        except OSError:
-            pass
+        sig = _file_signature(path)
+        if sig is not None:
+            current[path] = sig
     changed = current != _st.file_mtimes
     if changed:
         _st.file_mtimes.clear()
