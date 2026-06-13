@@ -19,6 +19,7 @@ import queue
 import re
 import select
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -3982,6 +3983,44 @@ def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
     )
 
 
+# Signals that should trigger an orderly shutdown: Ctrl-C (SIGINT), systemd /
+# `kill` stop (SIGTERM), and terminal hangup (SIGHUP).  Ctrl-D is intentionally
+# NOT handled — it is an EOF on stdin, not a signal, and the daemon never reads
+# stdin (under systemd stdin is /dev/null, so tying shutdown to it would exit
+# instantly).  Use Ctrl-C or `systemctl stop` instead.
+_SHUTDOWN_SIGNALS = tuple(
+    s for s in (getattr(signal, n, None) for n in ("SIGINT", "SIGTERM", "SIGHUP"))
+    if s is not None
+)
+
+
+def _install_signal_handlers() -> None:
+    """Route shutdown signals through KeyboardInterrupt.
+
+    Raising in the handler unwinds whatever the main thread is doing — startup
+    (including a blocking smartctl pull) or the serving loop — into main()'s
+    single try/finally, so the daemon always tears down its worker threads and
+    state DB instead of dying with a traceback (Ctrl-C) or being killed silently
+    (systemd stop)."""
+    def _handler(signum, _frame):
+        raise KeyboardInterrupt(signal.Signals(signum).name)
+    for sig in _SHUTDOWN_SIGNALS:
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass  # not the main thread, or signal unavailable on this platform
+
+
+def _restore_default_signals() -> None:
+    """Reset to default disposition so a second signal during the (bounded)
+    shutdown force-terminates instead of corrupting cleanup."""
+    for sig in _SHUTDOWN_SIGNALS:
+        try:
+            signal.signal(sig, signal.SIG_DFL)
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SMARTMON-*-MIB AgentX subagent")
     parser.add_argument("--config", "-c", metavar="PATH",
@@ -4043,69 +4082,72 @@ def main() -> None:
         LOGGER.error("unsupported netsnmpagent package (no Agent/netsnmpAgent class)")
         sys.exit(EXIT_DEPENDENCY_MISSING)
 
-    agent = agent_cls(
-        AgentName="smartmonAgent",
-        MasterSocket=agentx_socket,
-        UseMIBFiles=False,
-    )
-    # Enable net-snmp AgentX PDU tracing before registration so the register/start
-    # exchange with the master is captured too.
-    if _st.agentx_debug:
-        _enable_agentx_debug(_st.log_path)
+    # Route Ctrl-C / SIGTERM / SIGHUP through the single try/finally below so a
+    # signal during startup (e.g. a blocking smartctl pull) shuts down cleanly
+    # rather than dumping a traceback or being killed mid-cleanup.
+    _install_signal_handlers()
 
-    scalars = _register_scalars(agent)
-    tables  = _register_tables(agent)
-
-    agent.start()
-
-    # Open + load persisted state BEFORE the first build so loaded hashes match
-    # the current data (timestamps are preserved, not advanced) and notification
-    # baselines suppress restart trap storms.
-    state_db_path = args.state_db if args.state_db is not None else cfg.get("state_db", "")
-    state_db_open(state_db_path)
-    state_db_load()
-
-    _refresh_and_publish(agent, scalars, tables)
-    # Devices present at startup must not raise device-discovered traps; arm
-    # detection only after the first build has seeded all baselines.
-    _st.initial_scan_done = True
-
-    if args.once:
-        state_db_close()
-        return
-
-    # Producer/consumer split: the worker thread owns all data collection and
-    # _st mutation; the main thread owns all net-snmp socket access (net-snmp is
-    # not thread-safe).  The main thread answers SNMP, publishes the snapshots
-    # the worker hands it over _publish_q, and sends the trap descriptors the
-    # worker enqueues onto _notify_q.  It polls at NOTIFY_POLL_INTERVAL rather
-    # than blocking indefinitely so worker-detected traps are delivered promptly
-    # even with no client traffic.
-    # Prepare the ctypes prototypes before the worker starts so both threads see
-    # them initialized (the worker sends traps; the main thread selects/processes).
-    api = _get_trap_api()
-
-    stop_event = threading.Event()
-    worker = threading.Thread(target=_collector_loop, args=(stop_event,),
-                              name="smartmon-collector", daemon=True)
-    worker.start()
-
-    # Collect mode: drive discovery is event-driven via udev rather than a
-    # `smartctl --scan` on every poll.  File mode has no devices to hotplug.
+    worker = None
     udev_thread = None
-    if _st.collect:
-        udev_thread = threading.Thread(target=_udev_monitor_loop,
-                                       args=(stop_event,),
-                                       name="smartmon-udev", daemon=True)
-        udev_thread.start()
-
-    # SNMP request-burst tracking for the VERBOSE performance summary.
-    walk_active = False
-    walk_count  = 0
-    walk_start  = 0.0
-    walk_last   = 0.0
-
+    stop_event = threading.Event()
     try:
+        agent = agent_cls(
+            AgentName="smartmonAgent",
+            MasterSocket=agentx_socket,
+            UseMIBFiles=False,
+        )
+        # Enable net-snmp AgentX PDU tracing before registration so the register/
+        # start exchange with the master is captured too.
+        if _st.agentx_debug:
+            _enable_agentx_debug(_st.log_path)
+
+        scalars = _register_scalars(agent)
+        tables  = _register_tables(agent)
+
+        agent.start()
+
+        # Open + load persisted state BEFORE the first build so loaded hashes
+        # match the current data (timestamps are preserved, not advanced) and
+        # notification baselines suppress restart trap storms.
+        state_db_path = args.state_db if args.state_db is not None else cfg.get("state_db", "")
+        state_db_open(state_db_path)
+        state_db_load()
+
+        _refresh_and_publish(agent, scalars, tables)
+        # Devices present at startup must not raise device-discovered traps; arm
+        # detection only after the first build has seeded all baselines.
+        _st.initial_scan_done = True
+
+        if args.once:
+            return   # finally closes the state DB
+
+        # Producer/consumer split: the worker thread owns all data collection and
+        # _st mutation; the main thread owns all net-snmp socket access (net-snmp
+        # is not thread-safe).  The main thread answers SNMP, publishes the
+        # snapshots the worker hands it over _publish_q, and sends the trap
+        # descriptors the worker enqueues onto _notify_q.  It polls at
+        # NOTIFY_POLL_INTERVAL rather than blocking indefinitely so worker-detected
+        # traps are delivered promptly even with no client traffic.
+        api = _get_trap_api()
+
+        worker = threading.Thread(target=_collector_loop, args=(stop_event,),
+                                  name="smartmon-collector", daemon=True)
+        worker.start()
+
+        # Collect mode: drive discovery is event-driven via udev rather than a
+        # `smartctl --scan` on every poll.  File mode has no devices to hotplug.
+        if _st.collect:
+            udev_thread = threading.Thread(target=_udev_monitor_loop,
+                                           args=(stop_event,),
+                                           name="smartmon-udev", daemon=True)
+            udev_thread.start()
+
+        # SNMP request-burst tracking for the VERBOSE performance summary.
+        walk_active = False
+        walk_count  = 0
+        walk_start  = 0.0
+        walk_last   = 0.0
+
         while True:
             # Block on the agent's fds (processing packets as fast as they
             # arrive) but wake at least every NOTIFY_POLL_INTERVAL so the worker's
@@ -4153,10 +4195,12 @@ def main() -> None:
                 _log_published(len(snapshot), time.monotonic() - before)
                 # Send the traps detected during that refresh (sole net-snmp caller).
                 _drain_and_send_traps()
-    except KeyboardInterrupt:
-        pass
+    except KeyboardInterrupt as exc:
+        LOGGER.info("received %s — shutting down", str(exc) or "interrupt")
     finally:
-        LOGGER.info("smartmon AgentX shutting down")
+        # Reset signal disposition first so a second Ctrl-C / SIGTERM during the
+        # bounded shutdown below force-terminates instead of corrupting cleanup.
+        _restore_default_signals()
         stop_event.set()
         _refresh_request.set()   # wake the worker so it observes stop promptly
         # The udev thread blocks on udevadm's stdout; terminate it to unblock.
@@ -4165,7 +4209,8 @@ def main() -> None:
                 _st.udev_proc.terminate()
             except Exception:
                 pass
-        worker.join(timeout=2.0)
+        if worker is not None:
+            worker.join(timeout=2.0)
         if udev_thread is not None:
             udev_thread.join(timeout=2.0)
         state_db_close()         # safe: the worker (sole save() caller) has joined
