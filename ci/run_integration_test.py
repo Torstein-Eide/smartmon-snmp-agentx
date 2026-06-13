@@ -744,9 +744,34 @@ def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Pa
         failures.append(f"FAIL: unsupported notification action: {action}")
         return 0, 1, failures
 
-    time.sleep(wait_sec)
-    trap_after = trap_log.read_text() if trap_log.exists() else ""
-    new_trap_text = trap_after[len(trap_before):]
+    # Pre-compile the expected-trap matchers once.
+    matchers = []
+    for et in expected_traps:
+        oid_suffix = substitute_oid(et.get("oid_suffix", ""), None, all_indices)
+        value_pat = et.get("value_pattern", ".*")
+        oid_full = f"{ent_oid}{oid_suffix}"
+        oid_forms = [re.escape(oid_full)]
+        if oid_full.startswith("1.3.6.1.4.1."):
+            oid_forms.append(re.escape("enterprises." + oid_full[len("1.3.6.1.4.1."):]))
+        pattern = re.compile(rf"(?:{'|'.join(oid_forms)}).*{value_pat}")
+        matchers.append((oid_full, value_pat, pattern))
+
+    # Poll for delivery instead of a single sleep: the agent's worker→publish→
+    # trap pipeline has variable latency, so a one-shot 0.2s window mis-attributes
+    # a trap to the next test.  Retry up to `wait_attempts` × wait_sec (matching
+    # the stability-check loop), accumulating from trap_before, breaking once all
+    # expected traps have arrived.  new_trap_text is cumulative since the swap.
+    attempts = int(notif.get("wait_attempts", 5))
+    new_trap_text = ""
+    for _ in range(attempts):
+        time.sleep(wait_sec)
+        trap_after = trap_log.read_text() if trap_log.exists() else ""
+        new_trap_text = trap_after[len(trap_before):]
+        if matchers:
+            if all(p.search(new_trap_text) for _o, _v, p in matchers):
+                break
+        elif new_trap_text.strip():
+            break
 
     if not expected_traps:
         if new_trap_text.strip():
@@ -755,14 +780,7 @@ def run_notification_test(notif: dict, live_fixtures: Path, fixture_variants: Pa
             failed += 1
             failures.append(f"FAIL: no trap received after fixture swap\n      traplog: {trap_log}")
     else:
-        for et in expected_traps:
-            oid_suffix = substitute_oid(et.get("oid_suffix", ""), None, all_indices)
-            value_pat = et.get("value_pattern", ".*")
-            oid_full = f"{ent_oid}{oid_suffix}"
-            oid_forms = [re.escape(oid_full)]
-            if oid_full.startswith("1.3.6.1.4.1."):
-                oid_forms.append(re.escape("enterprises." + oid_full[len("1.3.6.1.4.1."):]))
-            pattern = re.compile(rf"(?:{'|'.join(oid_forms)}).*{value_pat}")
+        for oid_full, value_pat, pattern in matchers:
             if pattern.search(new_trap_text):
                 passed += 1
             else:
