@@ -3732,7 +3732,7 @@ def _load_config(path: str) -> dict:
 
 
 def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
-    ttl       = args.ttl if args.ttl is not None else int(cfg.get("ttl", CACHE_TTL))
+    ttl       = args.ttl if args.ttl is not None else int(cfg.get("cache_timeout", CACHE_TTL))
     log_level = args.log_level or str(cfg.get("log_level", "WARNING")).upper()
     log_path  = args.log_file  or cfg.get("log_file")
     devices   = cfg.get("devices")

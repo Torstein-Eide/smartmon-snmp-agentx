@@ -1,0 +1,60 @@
+# /etc/smartmontools/snmp-agentx.yaml
+# Configuration for smartmon-snmp-agentx (Python AgentX subagent)
+#
+# The agent obtains SMART data in one of two ways:
+#
+#   1. collect mode (collect: true): the agent polls smartctl directly.  No
+#      state_dir or external collector is required.
+#   2. file mode (default): the agent reads JSON state files from state_dir,
+#      written either by the smartmon-collect timer or by smartd --jsonstate.
+#      For smartd, you MUST use -x (extended) so NVMe self-test logs and SAS
+#      error counters are included:
+#
+#        DEVICESCAN -x --jsonstate /run/smartmontools/json/
+#
+#      Using -a instead of -x leaves the NVMe self-test and SAS error counter
+#      MIB tables empty.  Point state_dir at the same path.
+
+# Collect mode: poll smartctl directly instead of reading state_dir files.
+# When true, smartctl runs as root if the agent is root, otherwise via
+# `sudo -n smartctl` (grant the agent passwordless smartctl in sudoers).
+collect: false
+
+# Directory of JSON state files (REQUIRED in file mode; ignored in collect
+# mode).  In file mode the agent refuses to start if this is unset.
+state_dir: /run/smartmontools/json/
+
+# Path to the AgentX master socket.  Must match agentXSocket in snmpd.conf.
+agentx_socket: /var/agentx/master
+
+# Data refresh / poll interval in seconds.  In file mode this is how long
+# parsed data is cached before re-reading; in collect mode it is the smartctl
+# poll interval.
+cache_timeout: 300
+
+# Path to a SQLite database for persisting table-change timestamps and
+# notification baselines across restarts.  The agent creates the file if it
+# does not exist.  Comment out to disable persistence.
+# The directory must be writable by the daemon user.
+state_db: /var/lib/smartmontools/snmp-agent/snmp-agentx-state.db
+
+# ----------------------------------------------------------------------------
+# Notification tuning (optional)
+# ----------------------------------------------------------------------------
+
+# Consecutive poll failures before a smartmonDevicePollFailed trap fires.
+#poll_failure_threshold: 1
+
+# Units of hysteresis applied when clearing a sensor alarm.  For high alarms
+# the value must drop below (threshold - hysteresis) before the alarm clears;
+# for low alarms it must rise above (threshold + hysteresis).  0 disables.
+#sensor_hysteresis: 0
+
+# If non-zero, re-send the current sensor alarm trap every N seconds even when
+# the state has not changed (so NMS managers do not lose persistent alarms
+# after a reconnect).  0 disables.
+#sensor_resend_interval: 0
+
+# When true, sensor traps fire on every refresh regardless of prior state.
+# Intended for CI/integration testing only.
+#test_mode: false

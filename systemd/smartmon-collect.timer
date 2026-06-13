@@ -1,6 +1,6 @@
 [Unit]
 Description=Periodic SMART data collection for SNMP monitoring
-Documentation=man:smartmon-snmp-agentxd(8)
+Documentation=man:smartmon-snmp-agentx(8)
 
 [Timer]
 # First run 2 minutes after boot to let drives spin up and settle

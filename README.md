@@ -1,7 +1,7 @@
-# smartmon-snmp-agentxd
+# smartmon-snmp-agentx
 
-An SNMP AgentX subagent (RFC 2741) that exposes SMART drive health data
-from smartmontools JSON state files via the SMARTMON-* MIBs.
+A self-contained Python SNMP AgentX subagent (RFC 2741) that exposes SMART
+drive health data via the SMARTMON-* MIBs.
 
 Supports **NVMe**, **SATA/ATA**, and partial **SAS/SCSI** drive data.
 
@@ -9,32 +9,42 @@ Supports **NVMe**, **SATA/ATA**, and partial **SAS/SCSI** drive data.
 
 ## Overview
 
-`smartmon-snmp-agentxd` connects to a running `snmpd` master agent over a
-Unix domain socket, registers the SMARTMON-* OID subtrees, and responds to
-SNMP GET/GETNEXT/GETBULK requests.  It also sends SNMP v2 traps when drive
-health changes or self-tests fail.
+`smartmon-snmp-agentx` is a single Python script (`smartmon_agentx.py`) that
+connects to a running `snmpd` master agent over a Unix domain socket, registers
+the SMARTMON-* OID subtrees, and responds to SNMP GET/GETNEXT/GETBULK requests.
+It also sends SNMP v2 traps when drive health changes or self-tests fail.
 
-The agent reads JSON state files from a configured `state_dir`. Those files are
-written by the included `smartmon-collect` timer. The agent process itself never
-invokes `smartctl` directly.
+It requires the **`python3-netsnmpagent`** module.  SQLite persistence uses the
+Python standard library — no extra package needed.
+
+The agent obtains SMART data in one of two ways:
+
+1. **collect mode** (`collect: true` / `--collect`) — the agent polls
+   `smartctl` directly.  No `state_dir` or external collector is required.  It
+   runs `smartctl` as root when the agent is root, otherwise via
+   `sudo -n smartctl`.
+2. **file mode** (default) — the agent reads JSON state files from a configured
+   `state_dir`, written either by the included `smartmon-collect` timer or by
+   `smartd --jsonstate`.
 
 ```text
-smartmon-collect timer
-      └── writes *.json  ──>  smartmon-snmp-agentxd  ──>  snmpd  ──>  SNMP manager
+collect mode:   smartmon-snmp-agentx ──(smartctl)──┐
+                                                    ├──> snmpd ──> SNMP manager
+file mode:      smartmon-collect ──> *.json ──> smartmon-snmp-agentx ──┘
 ```
 
 ## Sequence Diagram(s)
 
 ```mermaid
 sequenceDiagram
-  participant Collect as smartmon-collect
-  participant Agent as smartmon-snmp-agentxd
+  participant Smartctl as smartctl / smartmon-collect
+  participant Agent as smartmon-snmp-agentx
   participant SNMPD as snmpd
   participant Client as SNMP client
 
-  Collect->>Agent: write SMART JSON files into state_dir
+  Smartctl->>Agent: SMART data (direct smartctl poll, or JSON in state_dir)
   Agent->>SNMPD: connect as AgentX subagent and register SMARTMON OIDs
-  Client->>SNMPD: snmpwalk/snmpset GET/GETNEXT on SMARTMON subtree
+  Client->>SNMPD: snmpwalk/snmpget GET/GETNEXT on SMARTMON subtree
   SNMPD->>Agent: forward GET/GETNEXT requests
   Agent-->>SNMPD: return cached table values
   SNMPD-->>Client: return SNMP results
@@ -66,33 +76,33 @@ MIB field reliably.
 
 ## Prerequisites
 
-- **`g++`** with C++14 support
-- **`make`**
-- **`libsnmp-dev`** for net-snmp headers, libraries, and `net-snmp-config`
-- **`libsqlite3-dev`** for SQLite-backed table-change timestamp support
+- **`python3`** (3.8+)
+- **`python3-netsnmpagent`** — the net-snmp Python AgentX bindings
+- **`python3-yaml`** — for the YAML config file (a plain `key value` file also works)
 - **`snmp`** and **`snmpd`** for live SNMP integration tests
-- **`smartmontools`** for `smartctl`, `smartd`, or both
-- Read access to the configured `state_dir`
+- **`smartmontools`** for `smartctl` (and `smartd` if using file mode)
+- In collect mode as a non-root user: **`sudo`** with a passwordless `smartctl` grant
+- In file mode: read access to the configured `state_dir`
 
 On Debian/Ubuntu:
 
 ```bash
-sudo apt-get install g++ make libsnmp-dev libsqlite3-dev snmp snmpd smartmontools
+sudo apt-get install python3 python3-netsnmpagent python3-yaml snmp snmpd smartmontools
 ```
 
 ---
 
 ## Installation
 
-### From a source build
+### Using the install script
 
 ```bash
-make -j$(nproc)
 sudo scripts/install-agentxd.sh
 ```
 
-The install script installs the daemon, config file, MIB files, systemd unit,
-and by default the `smartmon-collect` timer that writes JSON state files.
+The install script installs the agent (`smartmon_agentx.py` → `/usr/sbin/smartmon-snmp-agentx`),
+its Python dependencies, the YAML config, MIB files, the systemd unit, and by
+default the `smartmon-collect` timer that writes JSON state files.
 
 ### Manual install
 
@@ -104,28 +114,51 @@ getent group Debian-snmp >/dev/null && sudo usermod -aG Debian-snmp smartmon
 getent group snmp >/dev/null && sudo usermod -aG snmp smartmon
 sudo install -d -m 750 -o root -g smartmon /run/smartmontools/json
 sudo install -d -m 750 -o smartmon -g smartmon /var/lib/smartmontools/snmp-agent
-sudo install -m 755 .build/smartmon-snmp-agentxd /usr/sbin/
+# The script carries a #!/usr/bin/env python3 shebang and runs directly
+sudo install -m 755 smartmon_agentx.py /usr/sbin/smartmon-snmp-agentx
 sudo install -m 755 bin/smartmon-collect /usr/sbin/
-sudo install -m 644 etc/smartmon-snmp-agentxd.conf \
-    /etc/smartmontools/snmp-agentxd.conf
+sudo install -m 640 etc/smartmon-snmp-agentx.yaml \
+    /etc/smartmontools/snmp-agentx.yaml
 sudo install -m 644 doc/SMARTMON-*.mib /usr/share/snmp/mibs/
 sudo sed -e 's|@sbindir@|/usr/sbin|' \
           -e 's|@sysconfdir@|/etc|' \
-    systemd/smartmon-snmp-agentxd.service.in \
-    | sudo tee /lib/systemd/system/smartmon-snmp-agentxd.service >/dev/null
+    systemd/smartmon-snmp-agentx.service.in \
+    | sudo tee /lib/systemd/system/smartmon-snmp-agentx.service >/dev/null
 sudo install -m 644 systemd/smartmon-collect.service \
     systemd/smartmon-collect.timer /lib/systemd/system/
 sudo systemctl daemon-reload
+```
+
+### Remote install
+
+To deploy to another host over SSH (copies the script, config, units, and MIBs,
+installs Python deps, and configures snmpd remotely):
+
+```bash
+scripts/install-remote.sh ops@server01
 ```
 
 ---
 
 ## Configuration
 
-### JSON collection
+### Data source
 
-The recommended local install uses `smartmon-collect.timer` to discover drives,
-run `smartctl -x -j`, and write JSON files to `/run/smartmontools/json/`:
+**Collect mode** — let the agent poll `smartctl` itself; set in the config:
+
+```yaml
+collect: true
+```
+
+When the agent runs as a non-root user, grant it passwordless `smartctl`:
+
+```bash
+echo 'smartmon ALL=(root) NOPASSWD: /usr/sbin/smartctl' \
+    | sudo tee /etc/sudoers.d/smartmon-agentx
+```
+
+**File mode** (default) — use `smartmon-collect.timer` to discover drives, run
+`smartctl -x -j`, and write JSON files to `/run/smartmontools/json/`:
 
 ```bash
 systemctl enable --now smartmon-collect.timer
@@ -149,30 +182,34 @@ Restart snmpd:
 systemctl restart snmpd
 ```
 
-### smartmon-snmp-agentxd
+### smartmon-snmp-agentx
 
-Edit `/etc/smartmontools/snmp-agentxd.conf`:
+Edit `/etc/smartmontools/snmp-agentx.yaml` (YAML):
 
-```conf
-# Directory where smartmon-collect or smartd writes JSON state files (required)
-state_dir       /run/smartmontools/json/
+```yaml
+# Poll smartctl directly instead of reading state_dir files
+collect: false
+
+# Directory where smartmon-collect or smartd writes JSON state files
+# (required in file mode; ignored in collect mode)
+state_dir: /run/smartmontools/json/
 
 # AgentX master socket — must match agentXSocket in snmpd.conf
-agentx_socket   /var/agentx/master
+agentx_socket: /var/agentx/master
 
-# Cache timeout in seconds (default: 300)
-cache_timeout   300
+# Data refresh / poll interval in seconds (default: 300)
+cache_timeout: 300
 
-# SQLite state DB for persisting table LastChange timestamps across restarts.
-# The agent creates the DB file if it does not exist.
-state_db        /var/lib/smartmontools/snmp-agent/snmp-agentxd-state.db
+# SQLite state DB persisting table LastChange timestamps and notification
+# baselines across restarts.  The agent creates the file if it does not exist.
+state_db: /var/lib/smartmontools/snmp-agent/snmp-agentx-state.db
 ```
 
 The database directory must be writable by the daemon user. The installed
 systemd unit allows writes to `/var/lib/smartmontools/snmp-agent` for this
 purpose.
 If `state_db` is unset, table `LastChange` scalars remain accurate within a
-daemon run but reset to first-parse time after restart.
+run but reset to first-parse time after restart.
 
 Table `LastChange` timestamps are content based: the agent hashes each table
 after parsing and updates the corresponding timestamp only when that table's
@@ -183,12 +220,18 @@ managers see false table changes.
 
 ## Starting the service
 
-If using the recommended `smartmon-collect` timer:
+If using the `smartmon-collect` timer (file mode):
 
 ```bash
 systemctl enable --now smartmon-collect.timer
-systemctl enable --now smartmon-snmp-agentxd
-systemctl status smartmon-snmp-agentxd
+systemctl enable --now smartmon-snmp-agentx
+systemctl status smartmon-snmp-agentx
+```
+
+In collect mode, the timer is not needed:
+
+```bash
+systemctl enable --now smartmon-snmp-agentx
 ```
 
 ---
@@ -222,104 +265,58 @@ snmpwalk -v2c -c public -m ALL localhost \
 
 | Option | Description |
 |--------|-------------|
-| `-c FILE` | Path to config file (default: `/etc/smartmontools/snmp-agentxd.conf`) |
+| `-c, --config FILE` | Path to YAML config file (default: `/etc/smartmontools/snmp-agentx.yaml`) |
 | `-f` | Run in foreground (do not daemonise; useful for debugging) |
-| `-v` | Verbose logging: scan flow and device load summaries |
-| `-vv` | Very verbose logging: per-sensor detail and SNMP iterator calls |
-| `-h` | Print usage and exit |
+| `--collect` | Poll `smartctl` directly instead of reading `state_dir` |
+| `--state-dir DIR` | Directory containing smartd `--jsonstate` JSON files (file mode) |
+| `--ttl SEC` | Data refresh / poll interval in seconds (config key: `cache_timeout`) |
+| `--state-db PATH` | SQLite persistence file (overrides config `state_db`) |
+| `--agentx-socket PATH` | AgentX master socket path |
+| `--log-level LEVEL` | `DEBUG`, `VERBOSE`, `INFO`, `NOTICE`, `WARNING`, `ERROR` |
+| `--log-file PATH` | Append log output to this file in addition to stderr |
+| `--once` | Collect and publish once, then exit |
+| `-h, --help` | Print usage and exit |
 
 ---
 
-## Building and testing
+## Running and testing
 
-### Build
-
-```bash
-make -j$(nproc)
-```
-
-### Static build
-
-Full static linking depends on static versions of net-snmp and its dependency
-libraries being installed on the build host:
+### Run directly
 
 ```bash
-make clean
-make LDFLAGS="-static"
-```
+# File mode against a directory of JSON state files, in the foreground
+./smartmon_agentx.py -f --state-dir /run/smartmontools/json --log-level INFO
 
-Check the result with:
+# Collect mode (polls smartctl; use sudo or run as root for device access)
+sudo ./smartmon_agentx.py -f --collect --log-level INFO
 
-```bash
-ldd .build/smartmon-snmp-agentxd
-```
-
-A fully static binary usually reports `not a dynamic executable`. If full static
-linking fails because static net-snmp dependencies are unavailable, use a
-partially static C++ runtime build instead:
-
-```bash
-make clean
-make LDFLAGS="-static-libstdc++ -static-libgcc"
-```
-
-### Unit tests
-
-```bash
-cd tests
-make test
+# One-shot smoke test
+./smartmon_agentx.py --once --state-dir /run/smartmontools/json
 ```
 
 ### Integration test (live SNMP)
 
-Requires `snmpd` and the built binary:
+Requires `snmpd` and `python3-netsnmpagent`:
 
 ```bash
-# Auto-detects binary in .build/
-ci/run_integration_test.py
-
-# Or specify explicitly:
-AGENTXD_BIN=.build/smartmon-snmp-agentxd \
-    ci/run_integration_test.py
+# Run the Python agent against fixture JSON files
+AGENTXD_BIN=smartmon_agentx.py ci/run_integration_test.py
 ```
 
 The integration test:
 1. Starts `snmpd` on `127.0.0.1:10161` with a temp AgentX socket (no root needed)
-2. Starts `smartmon-snmp-agentxd` against fixture JSON files
+2. Starts the agent against fixture JSON files
 3. Runs `snmpwalk` over all MIB subtrees
 4. Validates MIB values and trap notifications across all device types
 
-### Docker (full build + integration test)
+### Docker (full integration test)
 
 ```bash
-ci/run_docker.sh
+ci/run_docker_py.sh
 ```
 
-This builds using `ghcr.io/smartmontools/docker-build:master` as the base and
-runs the full integration test suite inside a container.
-
-### Debian 11 export build
-
-Use the Debian 11 export build when you need a release binary linked against
-Debian 11 system net-snmp libraries instead of libraries from your local build
-environment:
-
-```bash
-ci/build_debian11_export.sh
-```
-
-Artifacts are written to `.tmp/export/debian11/`:
-
-| File | Description |
-|------|-------------|
-| `smartmon-snmp-agentxd` | Exported daemon binary |
-| `ldd.txt` | Dynamic library linkage report |
-| `file.txt` | Binary type report |
-| `packages.txt` | Debian package versions used for the build |
-| `build-info.txt` | Compiler and net-snmp build flags |
-
-The export build fails if `ldd.txt` contains `/usr/local`, which prevents
-accidental linkage against a developer-installed net-snmp build.
+This builds a container (`ci/Dockerfile.agentx_py`) with `python3-netsnmpagent`
+and runs the full integration test suite against the Python agent.
 
 ---
 
@@ -353,14 +350,23 @@ the current agent emits the threshold notifications listed above.
 ## Troubleshooting
 
 **Agent exits immediately:**
-Check syslog for config errors:
+Check the journal for config errors:
 ```bash
-journalctl -u smartmon-snmp-agentxd -n 50
+journalctl -u smartmon-snmp-agentx -n 50
 ```
-Common causes: `state_dir` not set, no JSON files in `state_dir`, or
-`agentx_socket` path does not exist (snmpd not running or AgentX disabled).
+Common causes: `python3-netsnmpagent` not installed, `state_dir` not set (file
+mode), no JSON files in `state_dir`, or `agentx_socket` path does not exist
+(snmpd not running or AgentX disabled).
 If using `smartmon-collect`, check `systemctl status smartmon-collect.timer`
 and `journalctl -u smartmon-collect.service -n 50`.
+
+**collect mode logs a sudoers hint and serves no devices:**
+The agent could not run `smartctl` as a non-root user. Grant passwordless
+access:
+```bash
+echo 'smartmon ALL=(root) NOPASSWD: /usr/sbin/smartctl' \
+    | sudo tee /etc/sudoers.d/smartmon-agentx
+```
 
 **snmpwalk returns "No Such Object":**
 The agent may not have registered yet.  Check:
@@ -370,8 +376,8 @@ snmpget -v2c -c public localhost 1.3.6.1.4.1.9999.1.1.2.1.1.0
 Should return `Gauge32: N` (number of devices).
 
 **Empty NVMe self-test or SAS error counter tables:**
-`smartmon-collect` uses `smartctl -x -j` by default. If using `smartd`, ensure
-it is configured with `-x` (extended monitoring), not just `-a`.
+`smartmon-collect` and collect mode use `smartctl -x -j` by default. If using
+`smartd`, ensure it is configured with `-x` (extended monitoring), not just `-a`.
 
 **snmpwalk shows numeric OIDs instead of names:**
 Install MIBs to `/usr/share/snmp/mibs/` and use `-m ALL`:

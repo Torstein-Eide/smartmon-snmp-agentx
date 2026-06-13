@@ -1,27 +1,28 @@
 #!/bin/bash
-# scripts/install-agentxd.sh — Deploy smartmon-snmp-agentxd to the local system
+# scripts/install-agentxd.sh — Deploy smartmon-snmp-agentx to the local system
 #
-# Installs the binary, smartmon-collect script, systemd units, config file,
-# and MIB files.  Must be run as root (or with sudo).
+# Installs the Python AgentX agent (smartmon_agentx.py), the smartmon-collect
+# script, systemd units, YAML config, and MIB files.  Must be run as root.
 #
 # Usage:
 #   sudo scripts/install-agentxd.sh [OPTIONS]
 #
 # Options:
 #   --prefix PREFIX      Installation prefix (default: /usr)
-#   --build-dir DIR      Directory containing the built binary
 #   --state-dir DIR      JSON state directory (default: /run/smartmontools/json)
 #   --no-collect         Skip installing the smartmon-collect service/timer
 #   -h, --help           Show this help
 #
 # After installation the agent can be started with:
-#   systemctl enable --now smartmon-collect.timer smartmon-snmp-agentxd
+#   systemctl enable --now smartmon-collect.timer smartmon-snmp-agentx
 #
-# To use smartd --jsonstate instead of smartmon-collect, add to smartd.conf:
-#   DEVICESCAN -x --jsonstate /run/smartmontools/json/ -a -s (S/../.././02|L/../../6/03)
-# and set state_dir in /etc/smartmontools/snmp-agentxd.conf.
-# Note: --jsonstate is required for smartmon-snmp-agentxd to have JSON data to read.
-# Note: DEVICESCAN with -x requires smartd >= 7.0.
+# Data sources (pick one):
+#   * smartmon-collect timer (default) — writes JSON into state_dir.
+#   * smartd --jsonstate — add to /etc/smartd.conf:
+#       DEVICESCAN -x --jsonstate /run/smartmontools/json/
+#     then set state_dir to match (requires smartd >= 7.0 for -x).
+#   * collect mode — set `collect: true` in the config so the agent polls
+#     smartctl directly (needs device access; adjust the unit accordingly).
 
 set -euo pipefail
 
@@ -29,20 +30,22 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PREFIX="/usr"
-BUILD_DIR=""
 STATE_DIR="/run/smartmontools/json"
-STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentxd-state.db"
+STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentx-state.db"
 INSTALL_COLLECT=1
+
+# Installed agent executable, systemd unit, config, and man page names.
+AGENT_NAME="smartmon-snmp-agentx"
+AGENT_SRC="$REPO_ROOT/smartmon_agentx.py"
 
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
 while [ $# -gt 0 ]; do
     case "$1" in
-        --prefix)      PREFIX="$2";      shift 2 ;;
-        --build-dir)   BUILD_DIR="$2";   shift 2 ;;
-        --state-dir)   STATE_DIR="$2";   shift 2 ;;
-        --no-collect)  INSTALL_COLLECT=0; shift  ;;
+        --prefix)      PREFIX="$2";       shift 2 ;;
+        --state-dir)   STATE_DIR="$2";    shift 2 ;;
+        --no-collect)  INSTALL_COLLECT=0; shift   ;;
         -h|--help)
             sed -n '2,/^set -/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -60,27 +63,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Locate binary
+# Locate the Python agent
 # ---------------------------------------------------------------------------
-if [ -z "$BUILD_DIR" ]; then
-    for candidate in \
-        "$REPO_ROOT/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/.build/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/build/smartmon-snmp-agentxd" \
-        /build/smartmon-snmp-agentxd
-    do
-        if [ -x "$candidate" ]; then
-            BINARY="$candidate"
-            BUILD_DIR="$(dirname "$candidate")"
-            break
-        fi
-    done
-else
-    BINARY="$BUILD_DIR/smartmon-snmp-agentxd"
-fi
-
-if [ -z "${BINARY:-}" ] || [ ! -x "$BINARY" ]; then
-    echo "ERROR: Binary not found. Build first or set --build-dir." >&2
+if [ ! -f "$AGENT_SRC" ]; then
+    echo "ERROR: agent script not found at $AGENT_SRC" >&2
     exit 1
 fi
 
@@ -93,12 +79,39 @@ BIN_SRC="$REPO_ROOT/bin"
 MAN_SRC="$REPO_ROOT/man"
 SYSTEMD_SRC="$REPO_ROOT/systemd"
 
-echo "=== Installing smartmon-snmp-agentxd ==="
-echo "  binary      : $BINARY"
+echo "=== Installing $AGENT_NAME ==="
+echo "  agent       : $AGENT_SRC"
 echo "  prefix      : $PREFIX"
 echo "  state_dir   : $STATE_DIR"
 echo "  collect svc : $([ "$INSTALL_COLLECT" -eq 1 ] && echo yes || echo no)"
 echo ""
+
+# ---------------------------------------------------------------------------
+# Python runtime dependencies (python3-netsnmpagent + PyYAML)
+# ---------------------------------------------------------------------------
+echo "--- installing Python dependencies ---"
+install_python_deps() {
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y --no-install-recommends \
+            python3 python3-netsnmpagent python3-yaml snmp smartmontools sudo \
+            2>/dev/null || true
+    elif command -v dnf &>/dev/null; then
+        dnf install -y python3 net-snmp-python python3-pyyaml \
+            net-snmp smartmontools sudo 2>/dev/null || true
+    elif command -v yum &>/dev/null; then
+        yum install -y python3 net-snmp-python python3-pyyaml \
+            net-snmp smartmontools sudo 2>/dev/null || true
+    fi
+}
+install_python_deps
+if ! python3 -c 'import netsnmpagent' 2>/dev/null; then
+    echo "" >&2
+    echo "ERROR: the python3-netsnmpagent module is not importable." >&2
+    echo "Install it via your package manager (python3-netsnmpagent) or:" >&2
+    echo "  pip3 install netsnmpagent" >&2
+    exit 1
+fi
+echo "  python3-netsnmpagent OK"
 
 # ---------------------------------------------------------------------------
 # Dedicated system user
@@ -106,7 +119,7 @@ echo ""
 echo "--- creating system user ---"
 if ! id smartmon &>/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin \
-        --comment "smartmon-snmp-agentxd daemon" smartmon
+        --comment "$AGENT_NAME daemon" smartmon
     echo "  created user: smartmon"
 else
     echo "  user already exists: smartmon"
@@ -140,12 +153,13 @@ install -d -m 750 -o smartmon -g smartmon "$(dirname "$STATE_DB")"
 echo "  $(dirname "$STATE_DB") (mode 750, smartmon:smartmon)"
 
 # ---------------------------------------------------------------------------
-# Binaries
+# Agent script + smartmon-collect
 # ---------------------------------------------------------------------------
-echo "--- installing binaries ---"
+echo "--- installing agent ---"
 install -d "$SBINDIR"
-install -m 755 "$BINARY" "$SBINDIR/smartmon-snmp-agentxd"
-echo "  $SBINDIR/smartmon-snmp-agentxd"
+# Install the Python script as an executable (it carries a python3 shebang).
+install -m 755 "$AGENT_SRC" "$SBINDIR/$AGENT_NAME"
+echo "  $SBINDIR/$AGENT_NAME"
 
 if [ "$INSTALL_COLLECT" -eq 1 ]; then
     COLLECT_SCRIPT="$BIN_SRC/smartmon-collect"
@@ -159,90 +173,38 @@ if [ "$INSTALL_COLLECT" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Runtime library dependencies
-# The binary must be built against the system net-snmp (libsnmp-dev),
-# which links to the distro-provided libnetsnmp.so.* in /usr/lib.
-# Here we just ensure the runtime package is installed.
+# Man page (substitute @variables@ from the .in source)
 # ---------------------------------------------------------------------------
-echo "--- checking runtime libraries ---"
-install_runtime_snmp() {
-    if command -v apt-get &>/dev/null; then
-        # libsnmp40 is the runtime package on Debian/Ubuntu (bookworm/noble)
-        # libsnmp40t64 is used on Ubuntu 24.04+ with the t64 ABI transition
-        apt-get install -y --no-install-recommends \
-            libsnmp40 snmp 2>/dev/null \
-        || apt-get install -y --no-install-recommends \
-            libsnmp40t64 snmp 2>/dev/null \
-        || true
-    elif command -v dnf &>/dev/null; then
-        dnf install -y net-snmp-libs 2>/dev/null || true
-    elif command -v yum &>/dev/null; then
-        yum install -y net-snmp-libs 2>/dev/null || true
-    fi
-}
-
-if ldd "$BINARY" 2>/dev/null | grep -q "not found"; then
-    echo "  installing net-snmp runtime package..."
-    install_runtime_snmp
-    if ldd "$BINARY" 2>/dev/null | grep -q "not found"; then
-        echo ""
-        echo "ERROR: missing runtime libraries after package install:" >&2
-        ldd "$BINARY" 2>/dev/null | grep "not found" >&2
-        echo "" >&2
-        echo "The binary must be built against the system net-snmp (libsnmp-dev)." >&2
-        echo "Rebuild with:  make" >&2
-        echo "Ensure libsnmp-dev is installed before building." >&2
-        exit 1
-    fi
+MAN_IN="$MAN_SRC/$AGENT_NAME.8.in"
+if [ -f "$MAN_IN" ]; then
+    MANDIR="${PREFIX}/share/man/man8"
+    install -d "$MANDIR"
+    sed -e "s|@sysconfdir@|${SYSCONFDIR}|g" \
+        -e "s|@PACKAGE_VERSION@|local|g" \
+        "$MAN_IN" > "$MANDIR/$AGENT_NAME.8"
+    chmod 644 "$MANDIR/$AGENT_NAME.8"
+    echo "  $MANDIR/$AGENT_NAME.8"
 fi
-echo "  runtime libraries OK"
 
 # ---------------------------------------------------------------------------
-# Man page (if built)
-# ---------------------------------------------------------------------------
-for candidate in \
-    "$MAN_SRC/smartmon-snmp-agentxd.8" \
-    "$(dirname "$BINARY")/../man/smartmon-snmp-agentxd.8"
-do
-    if [ -f "$candidate" ]; then
-        MANDIR="${PREFIX}/share/man/man8"
-        install -d "$MANDIR"
-        install -m 644 "$candidate" "$MANDIR/smartmon-snmp-agentxd.8"
-        echo "  $MANDIR/smartmon-snmp-agentxd.8"
-        break
-    fi
-done
-
-# ---------------------------------------------------------------------------
-# Config file (do not overwrite existing)
+# Config file (YAML; do not overwrite existing)
 # ---------------------------------------------------------------------------
 echo "--- installing config ---"
 install -d "$CONFDIR"
-CONF_DEST="$CONFDIR/snmp-agentxd.conf"
+CONF_DEST="$CONFDIR/snmp-agentx.yaml"
+CONF_SRC="$REPO_ROOT/etc/$AGENT_NAME.yaml"
 if [ -f "$CONF_DEST" ]; then
     echo "  $CONF_DEST already exists — not overwriting"
-else
-    cat > "$CONF_DEST" <<EOF
-# smartmon-snmp-agentxd configuration
-# See: man smartmon-snmp-agentxd
-
-# Directory containing JSON state files written by smartmon-collect
-# (or by smartd --jsonstate)
-state_dir       $STATE_DIR
-
-# AgentX socket — must match snmpd's agentxsocket setting
-agentx_socket   /var/agentx/master
-
-# How long (seconds) before a device entry is considered stale
-# cache_timeout  300
-
-# SQLite state DB for persisted table LastChange timestamps.
-# The agent creates the DB file if it does not exist.
-state_db        $STATE_DB
-EOF
+elif [ -f "$CONF_SRC" ]; then
+    # Install the template, patching the state_dir and state_db paths.
+    sed -e "s|^state_dir:.*|state_dir: $STATE_DIR|" \
+        -e "s|^state_db:.*|state_db: $STATE_DB|" \
+        "$CONF_SRC" > "$CONF_DEST"
     chmod 640 "$CONF_DEST"
     chown root:smartmon "$CONF_DEST"
     echo "  $CONF_DEST (new)"
+else
+    echo "  WARNING: config template not found at $CONF_SRC" >&2
 fi
 
 # ---------------------------------------------------------------------------
@@ -262,9 +224,9 @@ done
 echo "--- installing systemd units ---"
 install -d "$UNITDIR"
 
-# agentxd service (substitute @variables@)
-UNIT_SRC="$SYSTEMD_SRC/smartmon-snmp-agentxd.service.in"
-UNIT_DEST="$UNITDIR/smartmon-snmp-agentxd.service"
+# agentx service (substitute @variables@)
+UNIT_SRC="$SYSTEMD_SRC/$AGENT_NAME.service.in"
+UNIT_DEST="$UNITDIR/$AGENT_NAME.service"
 if [ -f "$UNIT_SRC" ]; then
     sed \
         -e "s|@sbindir@|${SBINDIR}|g" \
@@ -336,14 +298,14 @@ echo ""
 if [ "$INSTALL_COLLECT" -eq 1 ]; then
     echo "To use smartmon-collect (recommended — no smartd --jsonstate needed):"
     echo "  systemctl enable --now smartmon-collect.timer"
-    echo "  systemctl enable --now smartmon-snmp-agentxd"
+    echo "  systemctl enable --now $AGENT_NAME"
     echo ""
     echo "To use smartd --jsonstate instead:"
     echo "  Add to /etc/smartd.conf:  DEVICESCAN -x -a (requires smartd >= 7.0)"
     echo "  Set state_dir in $CONF_DEST to match --jsonstate path"
-    echo "  Then: systemctl enable --now smartmon-snmp-agentxd"
+    echo "  Then: systemctl enable --now $AGENT_NAME"
 else
-    echo "  systemctl enable --now smartmon-snmp-agentxd"
+    echo "  systemctl enable --now $AGENT_NAME"
 fi
 echo ""
 echo "Verify:"

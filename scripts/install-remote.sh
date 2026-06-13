@@ -1,17 +1,15 @@
 #!/bin/bash
-# scripts/install-remote.sh — Deploy smartmon-snmp-agentxd to a remote host via SSH
+# scripts/install-remote.sh — Deploy smartmon-snmp-agentx to a remote host via SSH
 #
-# Copies the built binary, support scripts, systemd units, and MIB files
-# to a remote machine, then performs all setup (user creation, service
-# installation, snmpd config) directly via SSH.
+# Copies the Python agent (smartmon_agentx.py), support scripts, systemd units,
+# YAML config, and MIB files to a remote machine, then performs all setup
+# (Python deps, user creation, service installation, snmpd config) over SSH.
 #
 # Usage:
 #   scripts/install-remote.sh [OPTIONS] user@host
 #
 # Options:
 #   --prefix PREFIX      Installation prefix on remote (default: /usr)
-#   --build-dir DIR      Local directory containing the built binary
-#   --export-dir DIR     Local export directory from ci/build_debian11_export.sh
 #   --ssh-key FILE       SSH private key (-i FILE)
 #   --port PORT          SSH port (default: 22)
 #   --state-dir DIR      JSON state directory on remote
@@ -21,15 +19,12 @@
 #   -h, --help           Show this help
 #
 # Requirements:
-#   Local:  rsync, ssh (or scp as fallback), built binary
-#   Remote: bash, systemctl, useradd, rsync or scp (for file transfer)
+#   Local:  rsync, ssh (or scp as fallback)
+#   Remote: bash, sudo, systemctl, useradd, rsync or scp, and a package
+#           manager that provides python3-netsnmpagent (or pip3 fallback)
 #
 # Examples:
-#   # Deploy to ops@server01 using default build location
-#   scripts/install-remote.sh ops@server01
-#
-#   # Build in Debian 11 and deploy that exported binary
-#   ci/build_debian11_export.sh
+#   # Deploy to ops@server01
 #   scripts/install-remote.sh ops@server01
 #
 #   # Deploy to a non-standard SSH port with a specific key
@@ -45,15 +40,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Defaults
 PREFIX="/usr"
-BUILD_DIR=""
-EXPORT_DIR=""
 SSH_KEY=""
 SSH_PORT=22
 STATE_DIR="/run/smartmontools/json"
-STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentxd-state.db"
+STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentx-state.db"
 INSTALL_COLLECT=1
 DRY_RUN=0
 REMOTE=""
+
+AGENT_NAME="smartmon-snmp-agentx"
+AGENT_SRC="$REPO_ROOT/smartmon_agentx.py"
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -61,8 +57,6 @@ REMOTE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --prefix)       PREFIX="$2";       shift 2 ;;
-        --build-dir)    BUILD_DIR="$2";    shift 2 ;;
-        --export-dir)   EXPORT_DIR="$2";   shift 2 ;;
         --ssh-key)      SSH_KEY="$2";      shift 2 ;;
         --port)         SSH_PORT="$2";     shift 2 ;;
         --state-dir)    STATE_DIR="$2";    shift 2 ;;
@@ -92,36 +86,12 @@ if [ -z "$REMOTE" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Locate the built binary
+# Locate the Python agent (no build step — it is a self-contained script)
 # ---------------------------------------------------------------------------
-if [ -n "$EXPORT_DIR" ]; then
-    BUILD_DIR="$EXPORT_DIR"
-elif [ -z "$BUILD_DIR" ]; then
-    for candidate in \
-        "$REPO_ROOT/.tmp/export/debian11/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/.build/smartmon-snmp-agentxd" \
-        "$REPO_ROOT/build/smartmon-snmp-agentxd" \
-        /build/smartmon-snmp-agentxd
-    do
-        if [ -x "$candidate" ]; then
-            BUILD_DIR="$(dirname "$candidate")"
-            break
-        fi
-    done
-fi
-
-BINARY="${BUILD_DIR:+$BUILD_DIR/}smartmon-snmp-agentxd"
-if [ ! -x "$BINARY" ]; then
-    echo "ERROR: Binary not found. Build first or pass --build-dir." >&2
-    echo "  Recommended export build: ci/build_debian11_export.sh" >&2
-    echo "  Expected export binary:   .tmp/export/debian11/smartmon-snmp-agentxd" >&2
+if [ ! -f "$AGENT_SRC" ]; then
+    echo "ERROR: agent script not found at $AGENT_SRC" >&2
     exit 1
 fi
-
-BUILD_INFO="$BUILD_DIR/build-info.txt"
-LINKAGE_INFO="$BUILD_DIR/ldd.txt"
-PACKAGE_INFO="$BUILD_DIR/packages.txt"
 
 # ---------------------------------------------------------------------------
 # SSH / rsync helpers
@@ -169,61 +139,33 @@ copy_to_remote() {
 }
 
 # ---------------------------------------------------------------------------
-# Pre-flight: verify the binary links against the system net-snmp.
-# If it resolves to /usr/local, the binary was built against a custom
-# net-snmp and will fail on a clean target.  Abort with a clear message.
-# ---------------------------------------------------------------------------
-
-NON_SYSTEM_LIBS=$(ldd "$BINARY" 2>/dev/null | awk '{print $3}' | grep -E '^/usr/local' || true)
-if [ -n "$NON_SYSTEM_LIBS" ]; then
-    echo "" >&2
-    echo "ERROR: binary links against non-system net-snmp libraries:" >&2
-    echo "$NON_SYSTEM_LIBS" >&2
-    echo "" >&2
-    echo "Rebuild the binary against the system net-snmp:" >&2
-    echo "  ci/build_debian11_export.sh" >&2
-    echo "Then re-run this script." >&2
-    exit 1
-fi
-
-if [ -f "$LINKAGE_INFO" ] && grep -q '/usr/local' "$LINKAGE_INFO"; then
-    echo "ERROR: export linkage report contains /usr/local libraries: $LINKAGE_INFO" >&2
-    exit 1
-fi
-
-# ---------------------------------------------------------------------------
 # Assemble the list of files to deploy
 # ---------------------------------------------------------------------------
 BIN_SRC="$REPO_ROOT/bin"
 SYSTEMD_SRC="$REPO_ROOT/systemd"
+MAN_SRC="$REPO_ROOT/man"
+ETC_SRC="$REPO_ROOT/etc"
 
-BINARIES=("$BINARY")
-[ "$INSTALL_COLLECT" -eq 1 ] && BINARIES+=("$BIN_SRC/smartmon-collect")
+AGENT_FILES=("$AGENT_SRC")
+[ "$INSTALL_COLLECT" -eq 1 ] && AGENT_FILES+=("$BIN_SRC/smartmon-collect")
 
-SERVICE_FILES=("$SYSTEMD_SRC/smartmon-snmp-agentxd.service.in")
+SERVICE_FILES=("$SYSTEMD_SRC/$AGENT_NAME.service.in")
 [ "$INSTALL_COLLECT" -eq 1 ] && SERVICE_FILES+=(
     "$SYSTEMD_SRC/smartmon-collect.service"
     "$SYSTEMD_SRC/smartmon-collect.timer"
 )
 
 MIB_FILES=("$REPO_ROOT"/doc/SMARTMON-*.mib)
+CONF_FILE_SRC="$ETC_SRC/$AGENT_NAME.yaml"
+MAN_FILE_SRC="$MAN_SRC/$AGENT_NAME.8.in"
 
-echo "=== Remote deployment: smartmon-snmp-agentxd ==="
+echo "=== Remote deployment: $AGENT_NAME ==="
 echo "  target       : $REMOTE"
 echo "  prefix       : $PREFIX"
 echo "  state_dir    : $STATE_DIR"
 echo "  state_db     : $STATE_DB"
 echo "  ssh port     : $SSH_PORT"
-echo "  binary       : $BINARY"
-if [ -f "$BUILD_INFO" ]; then
-    echo "  build info   : $BUILD_INFO"
-fi
-if [ -f "$LINKAGE_INFO" ]; then
-    echo "  linkage      : $LINKAGE_INFO"
-fi
-if [ -f "$PACKAGE_INFO" ]; then
-    echo "  packages     : $PACKAGE_INFO"
-fi
+echo "  agent        : $AGENT_SRC"
 echo "  install poll : $([ "$INSTALL_COLLECT" -eq 1 ] && echo yes || echo no)"
 [ "$DRY_RUN" -eq 1 ] && echo "  *** DRY RUN — no changes will be made ***"
 echo ""
@@ -241,17 +183,21 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Copy files to remote
+# Copy files to remote.  The agent script and config keep their source names
+# during transfer; the remote setup step below renames them into place.
 # ---------------------------------------------------------------------------
 echo "--- copying files ---"
 
 SBINDIR="$PREFIX/sbin"
 SYSTEMD_DIR="/etc/systemd/system"
 MIB_DIR="/usr/share/snmp/mibs"
+STAGE_DIR="/etc/smartmontools"
 
-copy_to_remote "$SBINDIR" "${BINARIES[@]}"
+copy_to_remote "$SBINDIR" "${AGENT_FILES[@]}"
 copy_to_remote "$SYSTEMD_DIR" "${SERVICE_FILES[@]}"
 [ ${#MIB_FILES[@]} -gt 0 ] && copy_to_remote "$MIB_DIR" "${MIB_FILES[@]}"
+[ -f "$CONF_FILE_SRC" ] && copy_to_remote "$STAGE_DIR" "$CONF_FILE_SRC"
+[ -f "$MAN_FILE_SRC" ]  && copy_to_remote "$STAGE_DIR" "$MAN_FILE_SRC"
 
 # ---------------------------------------------------------------------------
 # Remote configuration and service setup
@@ -261,28 +207,44 @@ echo "--- configuring remote ---"
 run_ssh bash -s << REMOTE_SCRIPT
 set -euo pipefail
 
+AGENT_NAME="$AGENT_NAME"
 SBINDIR="$SBINDIR"
 SYSCONFDIR="/etc"
 STATE_DIR="$STATE_DIR"
 STATE_DB="$STATE_DB"
 INSTALL_COLLECT="$INSTALL_COLLECT"
 SYSTEMD_DIR="$SYSTEMD_DIR"
+STAGE_DIR="$STAGE_DIR"
 
-# ---- Install net-snmp runtime package ------------------------------------
+# ---- Install Python runtime dependencies ---------------------------------
 if command -v apt-get &>/dev/null 2>/dev/null; then
-    sudo apt-get install -y --no-install-recommends libsnmp40 snmp 2>/dev/null \
-    || sudo apt-get install -y --no-install-recommends libsnmp40t64 snmp 2>/dev/null \
-    || true
+    sudo apt-get install -y --no-install-recommends \
+        python3 python3-netsnmpagent python3-yaml snmp smartmontools sudo \
+        2>/dev/null || true
 elif command -v dnf &>/dev/null 2>/dev/null; then
-    sudo dnf install -y net-snmp-libs 2>/dev/null || true
+    sudo dnf install -y python3 net-snmp-python python3-pyyaml net-snmp smartmontools sudo 2>/dev/null || true
 elif command -v yum &>/dev/null 2>/dev/null; then
-    sudo yum install -y net-snmp-libs 2>/dev/null || true
+    sudo yum install -y python3 net-snmp-python python3-pyyaml net-snmp smartmontools sudo 2>/dev/null || true
 fi
+if ! python3 -c 'import netsnmpagent' 2>/dev/null; then
+    echo "ERROR: python3-netsnmpagent not importable on remote." >&2
+    echo "Install it (python3-netsnmpagent) or: pip3 install netsnmpagent" >&2
+    exit 1
+fi
+echo "  python3-netsnmpagent OK"
+
+# ---- Rename the agent script into its final executable name --------------
+if [ -f "\$SBINDIR/smartmon_agentx.py" ]; then
+    sudo mv -f "\$SBINDIR/smartmon_agentx.py" "\$SBINDIR/\$AGENT_NAME"
+    sudo chmod 755 "\$SBINDIR/\$AGENT_NAME"
+    echo "  installed \$SBINDIR/\$AGENT_NAME"
+fi
+[ -f "\$SBINDIR/smartmon-collect" ] && sudo chmod 755 "\$SBINDIR/smartmon-collect"
 
 # ---- Create dedicated system user ----------------------------------------
 if ! id smartmon &>/dev/null 2>&1; then
     sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
-        --comment "smartmon-snmp-agentxd daemon" smartmon
+        --comment "\$AGENT_NAME daemon" smartmon
     echo "  created user: smartmon"
 else
     echo "  user already exists: smartmon"
@@ -309,7 +271,6 @@ fi
 # ---- Create and secure the state directory --------------------------------
 sudo mkdir -p "\$STATE_DIR"
 sudo chown root:smartmon "\$STATE_DIR"
-# Owner (root) can write; group (smartmon) can read; others: nothing
 sudo chmod 750 "\$STATE_DIR"
 echo "  state dir: \$STATE_DIR (mode 750, root:smartmon)"
 
@@ -320,13 +281,13 @@ sudo chmod 750 "\$(dirname "\$STATE_DB")"
 echo "  state DB dir: \$(dirname "\$STATE_DB") (mode 750, smartmon:smartmon)"
 
 # ---- Substitute @variables@ in the service file --------------------------
-AGENTXD_SVC="\$SYSTEMD_DIR/smartmon-snmp-agentxd.service"
-if [ -f "\$AGENTXD_SVC.in" ]; then
+AGENTX_SVC="\$SYSTEMD_DIR/\$AGENT_NAME.service"
+if [ -f "\$AGENTX_SVC.in" ]; then
     sudo sed \
         -e "s|@sbindir@|\$SBINDIR|g" \
         -e "s|@sysconfdir@|\$SYSCONFDIR|g" \
-        "\$AGENTXD_SVC.in" | sudo tee "\$AGENTXD_SVC" > /dev/null
-    sudo rm -f "\$AGENTXD_SVC.in"
+        "\$AGENTX_SVC.in" | sudo tee "\$AGENTX_SVC" > /dev/null
+    sudo rm -f "\$AGENTX_SVC.in"
 fi
 
 # Patch state dir into the collect service if different from default
@@ -337,32 +298,31 @@ if [ "\$INSTALL_COLLECT" = "1" ]; then
     fi
 fi
 
-# ---- Default config file --------------------------------------------------
-CONF_FILE="\$SYSCONFDIR/smartmontools/snmp-agentxd.conf"
-sudo mkdir -p "\$(dirname "\$CONF_FILE")"
-if [ ! -f "\$CONF_FILE" ]; then
-    sudo tee "\$CONF_FILE" > /dev/null <<EOF
-# smartmon-snmp-agentxd configuration
-# See: man smartmon-snmp-agentxd
-
-# Directory containing JSON state files written by smartmon-collect
-# (or by smartd --jsonstate)
-state_dir       \$STATE_DIR
-
-# AgentX socket — must match snmpd's agentxsocket setting
-agentx_socket   /var/agentx/master
-
-# How long (seconds) before a device entry is considered stale
-# cache_timeout  300
-
-# SQLite state DB for persisted table LastChange timestamps.
-# The agent creates the DB file if it does not exist.
-state_db        \$STATE_DB
-EOF
-    echo "  created default config: \$CONF_FILE"
-else
-    echo "  config already exists (not overwritten): \$CONF_FILE"
+# ---- Install the man page (substitute @variables@) ------------------------
+MAN_IN="\$STAGE_DIR/\$AGENT_NAME.8.in"
+if [ -f "\$MAN_IN" ]; then
+    sudo install -d /usr/share/man/man8
+    sudo sed -e "s|@sysconfdir@|\$SYSCONFDIR|g" -e "s|@PACKAGE_VERSION@|local|g" \
+        "\$MAN_IN" | sudo tee "/usr/share/man/man8/\$AGENT_NAME.8" > /dev/null
+    sudo rm -f "\$MAN_IN"
 fi
+
+# ---- YAML config file -----------------------------------------------------
+CONF_FILE="\$SYSCONFDIR/smartmontools/snmp-agentx.yaml"
+CONF_STAGED="\$STAGE_DIR/\$AGENT_NAME.yaml"
+sudo mkdir -p "\$(dirname "\$CONF_FILE")"
+if [ ! -f "\$CONF_FILE" ] && [ -f "\$CONF_STAGED" ]; then
+    sudo sed -e "s|^state_dir:.*|state_dir: \$STATE_DIR|" \
+             -e "s|^state_db:.*|state_db: \$STATE_DB|" \
+             "\$CONF_STAGED" | sudo tee "\$CONF_FILE" > /dev/null
+    sudo chmod 640 "\$CONF_FILE"
+    sudo chown root:smartmon "\$CONF_FILE"
+    echo "  created config: \$CONF_FILE"
+else
+    echo "  config present or template missing (not overwritten): \$CONF_FILE"
+fi
+# Remove the staged template copy
+[ -f "\$CONF_STAGED" ] && sudo rm -f "\$CONF_STAGED"
 
 # ---- Harden snmpd.conf ----------------------------------------------------
 SNMPD_CONF="\$(find /etc -name snmpd.conf 2>/dev/null | head -1)"
@@ -405,9 +365,9 @@ if [ "\$INSTALL_COLLECT" = "1" ]; then
     echo "  enabled and started: smartmon-collect.timer"
 fi
 
-sudo systemctl enable smartmon-snmp-agentxd.service
-sudo systemctl restart smartmon-snmp-agentxd.service
-echo "  enabled and (re)started: smartmon-snmp-agentxd.service"
+sudo systemctl enable "\$AGENT_NAME.service"
+sudo systemctl restart "\$AGENT_NAME.service"
+echo "  enabled and (re)started: \$AGENT_NAME.service"
 
 echo ""
 echo "  Deployment complete.  Verify with:"

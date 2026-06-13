@@ -16,7 +16,7 @@
 #   3. Writes JSON to STATE_DIR/poll.<device>.<type>.json atomically
 #   4. Removes files for drives that are no longer present
 #
-# smartmon-snmp-agentxd reads the resulting files from STATE_DIR.
+# smartmon-snmp-agentx reads the resulting files from STATE_DIR.
 
 set -euo pipefail
 

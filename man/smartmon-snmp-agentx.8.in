@@ -1,0 +1,230 @@
+.TH SMARTMON-SNMP-AGENTX 8 "2026-06-13" "smartmontools-@PACKAGE_VERSION@" "System Manager's Manual"
+.SH NAME
+smartmon-snmp-agentx \- SNMP AgentX subagent for smartmontools SMART data
+.SH SYNOPSIS
+.B smartmon-snmp-agentx
+.RB [ \-c
+.IR config ]
+.RB [ \-f ]
+.RB [ \-\-collect ]
+.RB [ \-\-state\-dir
+.IR dir ]
+.RB [ \-\-ttl
+.IR seconds ]
+.RB [ \-\-state\-db
+.IR path ]
+.RB [ \-\-log\-level
+.IR level ]
+.RB [ \-\-once ]
+.SH DESCRIPTION
+.B smartmon-snmp-agentx
+is a self-contained Python net-snmp AgentX subagent (RFC 2741) that exposes
+SMART drive data via the SMARTMON-* SNMP MIBs.
+It requires the
+.B python3-netsnmpagent
+module.
+.PP
+It connects to a running
+.BR snmpd (8)
+master agent over a Unix domain socket, registers the SMARTMON-* OID subtrees,
+and responds to SNMP GET/GETNEXT/GETBULK requests.
+Trap notifications are sent through the master agent when drive health changes.
+.PP
+The agent obtains SMART data in one of two ways:
+.TP
+.B collect mode
+With
+.B \-\-collect
+(or
+.B collect=true
+in the config) the agent polls
+.BR smartctl (8)
+directly.
+It runs smartctl as root when the agent is root, otherwise via
+.BR "sudo \-n smartctl" .
+No
+.B state_dir
+is required.
+.TP
+.B file mode (default)
+The agent reads JSON state files from
+.B state_dir
+written by the
+.B smartmon-collect
+timer or by
+.BR smartd (8)
+configured with
+.BR \-\-jsonstate .
+It will not start unless
+.B state_dir
+is set.
+.SH OPTIONS
+.TP
+.BI \-c " config" "\fR, \fP" \-\-config " config"
+Path to configuration file.
+Default:
+.IR @sysconfdir@/smartmontools/snmp-agentx.yaml .
+.TP
+.B \-f
+Run in the foreground; do not daemonise.
+.TP
+.B \-\-collect
+Poll
+.BR smartctl (8)
+directly instead of reading
+.BR state_dir .
+.TP
+.BI \-\-state\-dir " dir"
+Directory containing smartd
+.B \-\-jsonstate
+JSON files (file mode).
+.TP
+.BI \-\-ttl " seconds"
+Data refresh / poll interval.
+In file mode, how long parsed data is cached before re-reading; in collect
+mode, the smartctl poll interval.
+Default: 300.
+.TP
+.BI \-\-state\-db " path"
+SQLite file persisting table change timestamps and notification baselines
+across restarts.
+Unset disables persistence.
+.TP
+.BI \-\-agentx\-socket " path"
+AgentX master socket path.
+Must match
+.B agentXSocket
+in
+.IR snmpd.conf (5).
+.TP
+.BI \-\-log\-level " level"
+Minimum log severity:
+.BR DEBUG ", " VERBOSE ", " INFO ", " NOTICE ", " WARNING ", " ERROR .
+Default:
+.BR WARNING .
+.TP
+.BI \-\-log\-file " path"
+Append log output to this file in addition to stderr.
+.TP
+.B \-\-once
+Collect and publish once, then exit.
+.TP
+.B \-h ", " \-\-help
+Print usage and exit.
+.SH CONFIGURATION
+Configuration is read from
+.I @sysconfdir@/smartmontools/snmp-agentx.yaml
+(or the file given with
+.BR \-c ),
+which is YAML.
+A plain
+.RB \(dq "key value" \(dq
+key/value file is also accepted.
+.TP
+.BI collect " bool"
+Poll smartctl directly when
+.BR true .
+Default:
+.BR false .
+.TP
+.BI state_dir " path"
+Directory of smartd JSON state files
+.RB ( Required
+in file mode).
+.TP
+.BI agentx_socket " path"
+AgentX master socket.
+Default:
+.IR /var/agentx/master .
+.TP
+.BI cache_timeout " seconds"
+Data refresh / poll interval.
+Default: 300.
+.TP
+.BI state_db " path"
+SQLite persistence file.
+Unset disables persistence.
+.TP
+.BI poll_failure_threshold " n"
+Consecutive poll failures before a
+.B smartmonDevicePollFailed
+trap fires.
+Default: 1.
+.TP
+.BI sensor_hysteresis " units"
+Hysteresis applied when clearing a sensor alarm.
+Default: 0.
+.TP
+.BI sensor_resend_interval " seconds"
+Re-send a persistent sensor alarm trap every N seconds.
+0 disables.
+Default: 0.
+.SH SMARTD CONFIGURATION
+When using
+.BR smartd (8)
+to produce the JSON files (file mode), it must be configured with the
+.B \-x
+(extended) flag so that all data required by the MIBs is present, including
+NVMe self-test logs and SAS error counter logs:
+.PP
+.RS
+.nf
+DEVICESCAN -x --jsonstate /run/smartmontools/json/
+.fi
+.RE
+.PP
+Using
+.B \-a
+instead of
+.B \-x
+omits NVMe self-test log entries and SAS error counters; those MIB tables
+will be empty.
+The
+.B smartmon-collect
+timer is an alternative that calls smartctl directly and needs no smartd
+configuration.
+.SH SNMPD CONFIGURATION
+Add the following to
+.IR /etc/snmp/snmpd.conf :
+.PP
+.RS
+.nf
+master agentx
+agentXSocket /var/agentx/master
+agentXPerms 0660 0550 root Debian-snmp
+rocommunity public 127.0.0.1 .1.3.6.1.4.1.9999
+.fi
+.RE
+.SH FILES
+.TP
+.I @sysconfdir@/smartmontools/snmp-agentx.yaml
+Default configuration file.
+.TP
+.I /run/smartmontools/json/
+Recommended location for JSON state files (file mode).
+.TP
+.I /var/agentx/master
+Default AgentX master socket.
+.SH SIGNALS
+.TP
+.BR SIGTERM ", " SIGINT
+Initiates shutdown: stops the collector thread, closes the state database,
+and exits.
+.SH EXIT STATUS
+A non-zero exit indicates a startup problem: a configuration error (for
+example
+.B state_dir
+unset in file mode), a missing
+.B python3-netsnmpagent
+dependency, or an AgentX connection failure.
+.SH SEE ALSO
+.BR smartd (8),
+.BR smartd.conf (5),
+.BR smartctl (8),
+.BR snmpd (8),
+.BR snmpd.conf (5)
+.SH AUTHORS
+smartmontools development team.
+See
+.I https://www.smartmontools.org/
+for details.

@@ -1,18 +1,21 @@
 [Unit]
 Description=SNMP AgentX subagent for smartmontools SMART data
-Documentation=man:smartmon-snmp-agentxd(8)
+Documentation=man:smartmon-snmp-agentx(8)
 After=network.target snmpd.service smartmon-collect.timer
 # snmpd must be running (AgentX master); the collect timer is optional
-# (users may use smartd --jsonstate instead of smartmon-collect)
+# (the agent can also poll smartctl itself with collect=true, or read
+# smartd --jsonstate files)
 Requires=snmpd.service
 Wants=smartmon-collect.timer
 
 [Service]
-Type=notify
-ExecStart=@sbindir@/smartmon-snmp-agentxd -f -c @sysconfdir@/smartmontools/snmp-agentxd.conf
+# Self-contained Python script (#!/usr/bin/env python3) using
+# python3-netsnmpagent; runs directly via its shebang.  It does not implement
+# sd_notify, so Type=simple (not notify) and no WatchdogSec.
+Type=simple
+ExecStart=@sbindir@/smartmon-snmp-agentx -f -c @sysconfdir@/smartmontools/snmp-agentx.conf
 Restart=on-failure
 RestartSec=10
-WatchdogSec=30
 
 # ------------------------------------------------------------------ #
 # Security hardening                                                 #
@@ -62,7 +65,9 @@ ProtectClock=yes
 ProtectHostname=yes
 
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# NOTE: MemoryDenyWriteExecute is intentionally NOT enabled — the agent uses
+# ctypes/libffi (python3-netsnmpagent and the trap callbacks), whose closure
+# trampolines require writable+executable memory.
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes

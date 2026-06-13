@@ -1,6 +1,6 @@
 [Unit]
 Description=SMART data collection (one-shot poll of all drives)
-Documentation=man:smartmon-snmp-agentxd(8)
+Documentation=man:smartmon-snmp-agentx(8)
 After=local-fs.target
 # Do not fail boot if a drive is temporarily unreadable
 DefaultDependencies=no
