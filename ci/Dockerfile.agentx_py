@@ -1,0 +1,71 @@
+# ci/Dockerfile.agentx_py — integration-test smartmon_agentx.py (Python AgentX subagent)
+#
+# Usage (from repo root):
+#   ci/run_docker_py.sh
+#   -- or manually:
+#   docker build -f ci/Dockerfile.agentx_py -t smartmon-agentx-py-test .
+#   docker run --rm \
+#     -v "$PWD/tests/fixtures:/fixtures:ro" \
+#     -v "$PWD/.tmp/test-py:/output"        \
+#     smartmon-agentx-py-test
+#
+# The image:
+#   1. Adds net-snmp + python3-netsnmpagent on top of the docker-build base
+#   2. Copies MIB files into /usr/share/snmp/mibs/ for human-readable snmpwalk
+#   3. Smoke-tests that the script responds to --help
+#   4. On docker run: executes ci/run_integration_test.py with ci/integration_test.yaml
+#      using AGENTXD_BIN=/src/smartmon_agentx.py
+
+FROM ghcr.io/smartmontools/docker-build:master
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# Runtime dependencies
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        snmpd \
+        snmptrapd \
+        snmp \
+        python3 \
+        python3-netsnmpagent \
+        python3-yaml \
+        procps \
+        rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Copy source tree — exclude local build artefacts via .gitignore rules
+# ---------------------------------------------------------------------------
+COPY . /src-raw
+RUN rsync -a --filter=':- .gitignore' --exclude='.git' /src-raw/ /src/ \
+    && rm -rf /src-raw
+
+# ---------------------------------------------------------------------------
+# MIB files for human-readable snmpwalk output
+# ---------------------------------------------------------------------------
+RUN cp /src/doc/SMARTMON-*.mib /usr/share/snmp/mibs/
+
+# ---------------------------------------------------------------------------
+# Make the agent script executable (needed by find_binary in the test runner)
+# ---------------------------------------------------------------------------
+RUN chmod +x /src/smartmon_agentx.py
+
+# ---------------------------------------------------------------------------
+# Smoke-test: script must import cleanly and respond to --help
+# ---------------------------------------------------------------------------
+RUN python3 /src/smartmon_agentx.py --help 2>&1 | grep -q "state.dir\|state-dir\|AgentX" \
+    && echo "Smoke-test PASSED"
+
+# ---------------------------------------------------------------------------
+# Integration test defaults
+# AGENTXD_BIN is set by run_docker_py.sh at runtime; set here as fallback.
+# ---------------------------------------------------------------------------
+ENV AGENTXD_BIN=/src/smartmon_agentx.py
+ENV FIXTURES=/src/tests/fixtures
+ENV OUTPUT=/output
+
+RUN mkdir -p /output
+
+CMD ["python3", "/src/ci/run_integration_test.py", \
+     "--config", "/src/ci/integration_test.yaml"]
