@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import glob
 import json
 import logging
 import os
 import queue
 import re
+import select
 import sys
 import threading
 import time
@@ -50,7 +52,9 @@ LOG = LOGGER
 # --------------------------------------------------------------------------
 
 BASE_OID  = (1, 3, 6, 1, 4, 1, 65891, 1, 1)
-CACHE_TTL = 300
+# Default TTL = worker poll interval (see _collector_loop).  30s balances trap /
+# data-refresh latency against idle cost; CI overrides to 0 for fast traps.
+CACHE_TTL = 30
 
 # net-snmp's table_dataset mishandles Unsigned32 row indexes >= 2^31 during
 # GETNEXT: a walk stops after the first such row. Keep every table index
@@ -479,10 +483,29 @@ class _State:
         self.state_dir             = ""
         self.config_devices        = None
         self.poll_failure_threshold = 1
+        # Notification config (mirrors AgentxConfig in the C++ daemon).
+        self.test_mode             = False
+        self.sensor_hysteresis     = 0
+        self.sensor_resend_interval = 0
         # Per-device selftest progress: dev_idx -> {start_ns, last_remaining, polling_min, estimated_completion}
         self.selftest_progress: dict = {}
         self.file_mtimes: dict = {}
         self.published_fp: dict = {}
+        # ---- Notification baseline state (change detection across refreshes) ----
+        # Set True after the first build so device-discovered traps are suppressed
+        # for the devices present at startup.
+        self.initial_scan_done     = False
+        # path -> {"d_idx","name","device_path","dev_type"} for devices last seen,
+        # used for poll-failure (path still present) and removal (path gone) traps.
+        self.file_identity: dict   = {}
+        self.consec_fail: dict     = {}   # path -> consecutive parse-failure count
+        self.known_didx: set       = set()  # device indexes seen at least once
+        self.device_health: dict   = {}   # d_idx -> overall health enum
+        self.failed_selftest: dict = {}   # d_idx -> highest failed self-test entry
+        self.attr_failing: dict    = {}   # d_idx -> set(attr_id) below threshold
+        self.sas_uncorrected: dict = {}   # (d_idx, direction) -> uncorrected count
+        self.sensor_alarm_state: dict = {}      # (d_idx, sensor_idx) -> alarm state
+        self.sensor_alarm_last_sent: dict = {}  # (d_idx, sensor_idx) -> monotonic ts
 
 
 _st = _State()
@@ -730,9 +753,17 @@ def _build(devices: list, ts: datetime,
     # per-device subindex groups for errorcmd/devstat: {(d_idx, table_id, sub): True}
     sata_dev_subidx: set = set()
 
+    devs_with_idx: List[Tuple[int, dict]] = []
     for dev in sorted(devices, key=lambda d: (d["serial_number"], d["model_name"])):
         d_idx = _device_index(dev, used_d_idx)
         used_d_idx.add(d_idx)
+        devs_with_idx.append((d_idx, dev))
+        _st.file_identity[dev["path"]] = {
+            "d_idx":       d_idx,
+            "name":        dev["name"],
+            "device_path": dev["device_path"],
+            "dev_type":    dev["device_type"],
+        }
 
         _add_common_device(add, dev, d_idx)
 
@@ -871,6 +902,14 @@ def _build(devices: list, ts: datetime,
     _st.oid_keys = [e[0] for e in entries]
     _st.oid_map  = {e[0]: (e[1], e[2]) for e in entries}
     LOGGER.debug("OID table built: %d entries", len(entries))
+
+    # Change detection / trap dispatch (enqueues descriptors onto _notify_q).
+    for d_idx, dev in devs_with_idx:
+        try:
+            _detect_device_notifications(d_idx, dev)
+        except Exception as exc:    # never let a trap bug break data serving
+            LOGGER.error("notify: detection failed for d_idx=%d: %s", d_idx, exc,
+                         exc_info=True)
 
 
 # --------------------------------------------------------------------------
@@ -1640,9 +1679,21 @@ def _add_sata_errorcmd(add, dev: dict, d_idx: int) -> int:
 
 _SATA_ST_TYPE = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 9: 9}   # map raw type value
 
+
+def _sata_selftest_table(raw: dict) -> list:
+    """smartctl -x reports the extended self-test log; fall back to standard
+    (matches the C++ daemon).  Returns the chosen table (possibly empty)."""
+    log = raw.get("ata_smart_self_test_log") or {}
+    ext = (log.get("extended") or {}).get("table")
+    if isinstance(ext, list):
+        return ext
+    std = (log.get("standard") or {}).get("table")
+    return std if isinstance(std, list) else []
+
+
 def _add_sata_selftest(add, dev: dict, d_idx: int) -> int:
     T       = (4, 1, 18, 1)
-    entries = ((dev["raw"].get("ata_smart_self_test_log") or {}).get("extended") or {}).get("table") or []
+    entries = _sata_selftest_table(dev["raw"])
     for i, e in enumerate(entries):
         si     = i + 1
         status = e.get("status") or {}
@@ -1858,20 +1909,28 @@ def _extract_sensors(dev: dict) -> List[dict]:
 
     if proto == "nvme":
         h = raw.get("nvme_smart_health_information_log") or {}
+        # Composite/per-sensor temperature thresholds come from the dedicated
+        # smartctl field; NVMe provides no per-sensor thresholds so the composite
+        # warning/critical are applied to every temperature sensor (matches the
+        # C++ daemon).
+        ct = raw.get("nvme_composite_temperature_threshold") or {}
+        t_warn = ct.get("warning")
+        t_crit = ct.get("critical")
+        t_warn = int(t_warn) if t_warn is not None else None
+        t_crit = int(t_crit) if t_crit is not None else None
         h_temp = h.get("temperature")
         if h_temp is not None:
-            t_crit = int(temp.get("op_limit") or temp.get("limit_max") or 70)
             sensor(1, 3, "Composite",
                    "nvme_smart_health_information_log.temperature",
                    9, 0, int(h_temp), 1, "Celsius",
-                   hi_crit=t_crit, hi_warn=t_crit - 5)
+                   hi_crit=t_crit, hi_warn=t_warn)
         spare = h.get("available_spare")
         if spare is not None:
             thr = int(h.get("available_spare_threshold") or 10)
             sensor(2, 10, "Available Spare",
                    "nvme_smart_health_information_log.available_spare",
                    9, 0, int(spare), 1, "percent",
-                   lo_warn=thr + 10, lo_crit=thr)
+                   lo_warn=thr * 2, lo_crit=thr)
         pct_used = h.get("percentage_used")
         if pct_used is not None:
             sensor(3, 10, "Percentage Used",
@@ -1880,8 +1939,9 @@ def _extract_sensors(dev: dict) -> List[dict]:
         for i, t_val in enumerate(h.get("temperature_sensors") or [], start=0):
             if t_val is not None:
                 sensor(10 + i, 3, f"Sensor {i + 1}",
-                       f"nvme_smart_health_information_log.temperature_sensors[{i}]",
-                       9, 0, int(t_val), 1, "Celsius")
+                       "nvme_smart_health_information_log.temperature_sensors",
+                       9, 0, int(t_val), 1, "Celsius",
+                       hi_crit=t_crit, hi_warn=t_warn)
     elif t_current is not None:
         t_crit = int(temp.get("op_limit") or temp.get("limit_max") or 70)
         sensor(1, 3, "temperature", "temperature.current",
@@ -1938,6 +1998,537 @@ def _add_sensors(add, dev: dict, d_idx: int) -> int:
         add(T+(14, d_idx, si), *_integer(s["lo_warn"] or 0))
         add(T+(15, d_idx, si), *_integer(s["lo_crit"] or 0))
     return len(sensors)
+
+
+# ==========================================================================
+# Part 3b — Notifications (SNMP v2 traps)
+# ==========================================================================
+#
+# Mirrors agentxd_notify.cpp + the dispatch logic in agentxd_datasrc.cpp.
+# Change detection runs on the worker thread inside _build()/_collect_and_build()
+# and enqueues self-contained trap descriptors onto _notify_q; the main thread
+# drains the queue and calls send_v2trap() (net-snmp is single-threaded, so all
+# socket-touching calls happen on the main thread — see main()).
+
+# Producer/consumer handoff for traps: descriptor = (trap_oid_tuple, varbinds)
+# where varbinds is a list of (oid_tuple, kind, value).  kind is one of
+# "int"/"uint"/"gauge"/"c64"/"str"/"dt"/"oid".
+#
+# There is a single AgentX connection to the master and net-snmp is not
+# thread-safe, so only ONE thread may ever call libnetsnmp.  The build/worker
+# thread does change detection and APPENDS descriptors here (pure Python); the
+# main loop POPS them and is the only caller of send_v2trap.  This handoff is the
+# only shared state between the threads — no lock is needed.
+_notify_q: "queue.Queue[tuple]" = queue.Queue()
+
+# Sensor alarm states (values are arbitrary but must be stable/distinct).
+_SENS_NORMAL        = 0
+_SENS_HIGH_CRITICAL = 1
+_SENS_HIGH_WARNING  = 2
+_SENS_LOW_WARNING   = 3
+_SENS_LOW_CRITICAL  = 4
+
+# SNMPv2-MIB::snmpTrapOID.0 — first varbind of every v2 trap.
+_SNMP_TRAP_OID = (1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0)
+
+# ASN.1 type tags (from net-snmp headers; ASN_GAUGE == ASN_UNSIGNED).
+_ASN_INTEGER   = 0x02
+_ASN_OCTET_STR = 0x04
+_ASN_OBJECT_ID = 0x06
+_ASN_UNSIGNED  = 0x42
+_ASN_COUNTER64 = 0x46
+
+_trap_api = None   # cached netsnmpapi module with prototypes prepared
+
+# fd_set / timeval mirrors for snmp_select_info(), used to drive the main loop
+# with a bounded timeout (Linux: FD_SETSIZE=1024).
+_NFDBITS = 8 * ctypes.sizeof(ctypes.c_long)
+
+
+class _CFdSet(ctypes.Structure):
+    _fields_ = [("fds_bits", ctypes.c_long * (1024 // _NFDBITS))]
+
+
+class _CTimeval(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_usec", ctypes.c_long)]
+
+
+def _get_trap_api():
+    """Import netsnmpapi and prepare the C prototypes we call by ctypes (once)."""
+    global _trap_api
+    if _trap_api is None:
+        import netsnmpapi as api
+        api.libnsa.send_v2trap.argtypes = [api.netsnmp_variable_list_p]
+        api.libnsa.send_v2trap.restype  = ctypes.c_int
+        api.libnsa.snmp_free_varbind.argtypes = [api.netsnmp_variable_list_p]
+        api.libnsa.snmp_free_varbind.restype  = None
+        api.libnsa.snmp_select_info.argtypes = [
+            ctypes.POINTER(ctypes.c_int), ctypes.POINTER(_CFdSet),
+            ctypes.POINTER(_CTimeval), ctypes.POINTER(ctypes.c_int)]
+        api.libnsa.snmp_select_info.restype = ctypes.c_int
+        _trap_api = api
+    return _trap_api
+
+
+# Reused ctypes scratch + cached agent fd list for _agent_wait.  snmp_select_info
+# and the struct allocation are relatively expensive in Python, so we do NOT run
+# them per packet: the subagent's master-socket fd is stable, so we cache the fd
+# list and only re-discover it when the select times out (idle) or errors (the fd
+# changed, e.g. master reconnect).  During a busy walk select keeps returning the
+# live fd readable, so we never re-discover and the per-packet cost is just the
+# select itself — back to ~check_and_process(block=True) speed.
+_SEL_NUMFDS = ctypes.c_int(0)
+_SEL_FDSET  = _CFdSet()
+_SEL_TV     = _CTimeval()
+_SEL_BLOCK  = ctypes.c_int(0)
+_sel_fds: Optional[list] = None      # cached fd list (None = needs discovery)
+
+
+def _discover_agent_fds(api) -> list:
+    _SEL_NUMFDS.value = 0
+    ctypes.memset(ctypes.byref(_SEL_FDSET), 0, ctypes.sizeof(_SEL_FDSET))
+    _SEL_BLOCK.value = 0
+    api.libnsa.snmp_select_info(ctypes.byref(_SEL_NUMFDS), ctypes.byref(_SEL_FDSET),
+                                ctypes.byref(_SEL_TV), ctypes.byref(_SEL_BLOCK))
+    return [fd for fd in range(_SEL_NUMFDS.value)
+            if (_SEL_FDSET.fds_bits[fd // _NFDBITS] >> (fd % _NFDBITS)) & 1]
+
+
+def _agent_wait(api, max_timeout: float) -> None:
+    """Block until a net-snmp fd is readable or max_timeout elapses.
+
+    Keeps the loop responsive to client packets (so walks run at full speed) yet
+    wakes at least every max_timeout to flush queued traps/snapshots."""
+    global _sel_fds
+    if _sel_fds is None:
+        _sel_fds = _discover_agent_fds(api)
+    if not _sel_fds:
+        time.sleep(max_timeout)
+        _sel_fds = None   # re-discover once the agent's fds appear
+        return
+    try:
+        ready, _, _ = select.select(_sel_fds, [], [], max_timeout)
+    except (OSError, ValueError):
+        _sel_fds = None   # stale fd (master reconnect) — rediscover next time
+        return
+    if not ready:
+        _sel_fds = None   # idle timeout — cheap moment to refresh the fd list
+
+
+def _vb_append(api, vars_ref, oid_tuple, kind, value) -> None:
+    """Append one varbind to the C variable_list pointed to by vars_ref."""
+    name = (api.c_oid * len(oid_tuple))(*oid_tuple)
+    if kind == "oid":
+        arr = (api.c_oid * len(value))(*value)
+        api.libnsa.snmp_varlist_add_variable(
+            vars_ref, name, len(oid_tuple), _ASN_OBJECT_ID,
+            ctypes.cast(arr, ctypes.c_void_p), len(value) * ctypes.sizeof(api.c_oid))
+    elif kind == "int":
+        cval = ctypes.c_long(int(value) if value is not None else 0)
+        api.libnsa.snmp_varlist_add_variable(
+            vars_ref, name, len(oid_tuple), _ASN_INTEGER,
+            ctypes.byref(cval), ctypes.sizeof(cval))
+    elif kind in ("uint", "gauge"):
+        cval = ctypes.c_ulong(int(value) & 0xFFFFFFFF if value is not None else 0)
+        api.libnsa.snmp_varlist_add_variable(
+            vars_ref, name, len(oid_tuple), _ASN_UNSIGNED,
+            ctypes.byref(cval), ctypes.sizeof(cval))
+    elif kind == "c64":
+        cval = api.counter64(int(value) if value is not None else 0)
+        api.libnsa.snmp_varlist_add_variable(
+            vars_ref, name, len(oid_tuple), _ASN_COUNTER64,
+            ctypes.byref(cval), ctypes.sizeof(cval))
+    elif kind in ("str", "dt"):
+        if kind == "dt":
+            raw = _encode_datetimeval(value) if isinstance(value, datetime) else b""
+        elif isinstance(value, bytes):
+            raw = value
+        else:
+            raw = ("" if value is None else str(value)).encode("utf-8", "replace")
+        buf = ctypes.create_string_buffer(len(raw) or 1)
+        buf.raw = raw.ljust(len(buf), b"\x00")
+        api.libnsa.snmp_varlist_add_variable(
+            vars_ref, name, len(oid_tuple), _ASN_OCTET_STR, buf, len(raw))
+    else:
+        raise ValueError(f"unsupported varbind kind {kind!r}")
+
+
+def _send_trap(trap_oid: tuple, varbinds: list) -> None:
+    """Build and send one SNMP v2 trap.  MAIN THREAD ONLY (net-snmp socket)."""
+    try:
+        api = _get_trap_api()
+    except Exception as exc:        # pragma: no cover - missing net-snmp
+        LOG.error("trap: net-snmp API unavailable: %s", exc)
+        return
+    vars_p = api.netsnmp_variable_list_p()   # NULL list head
+    vars_ref = ctypes.byref(vars_p)
+    _vb_append(api, vars_ref, _SNMP_TRAP_OID, "oid", trap_oid)
+    for oid_tuple, kind, value in varbinds:
+        _vb_append(api, vars_ref, oid_tuple, kind, value)
+    api.libnsa.send_v2trap(vars_p)
+    api.libnsa.snmp_free_varbind(vars_p)
+
+
+def _drain_and_send_traps() -> int:
+    """Drain _notify_q and send each trap.  MAIN THREAD ONLY (sole net-snmp
+    caller).  Returns the number of traps sent."""
+    sent = 0
+    while True:
+        try:
+            trap_oid, varbinds = _notify_q.get_nowait()
+        except queue.Empty:
+            break
+        _send_trap(trap_oid, varbinds)
+        sent += 1
+    return sent
+
+
+# ---- varbind helpers (device identity columns) ----
+
+def _vb_device_identity(d_idx: int, name: str, path: str) -> list:
+    return [
+        (_full((2, 1, 3, 1, 2)) + (d_idx,), "str", name),
+        (_full((2, 1, 3, 1, 3)) + (d_idx,), "str", path),
+    ]
+
+
+def _vb_disk_identity(d_idx: int, dev: dict) -> list:
+    """model_name + serial_number + device_path (NVMe/SATA/SAS traps)."""
+    return [
+        (_full((2, 1, 3, 1, 11)) + (d_idx,), "str", dev["model_name"]),
+        (_full((2, 1, 3, 1, 12)) + (d_idx,), "str", dev["serial_number"]),
+        (_full((2, 1, 3, 1, 3))  + (d_idx,), "str", dev["device_path"]),
+    ]
+
+
+def _vb_poll_time(d_idx: int, dev: dict) -> list:
+    pt = dev.get("poll_time")
+    return [(_full((2, 1, 3, 1, 5)) + (d_idx,), "dt", pt)] if pt else []
+
+
+# ---- notification builders (enqueue a descriptor) ----
+
+def _notify_device_discovered(d_idx: int, dev: dict) -> None:
+    vb = _vb_device_identity(d_idx, dev["name"], dev["device_path"])
+    vb.append((_full((2, 1, 3, 1, 4)) + (d_idx,), "int", dev["device_type"]))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((_full((2, 3, 1)), vb))
+    LOG.info("notify: device_discovered d_idx=%d path=%s", d_idx, dev["device_path"])
+
+
+def _notify_device_removed(info: dict) -> None:
+    d_idx = info["d_idx"]
+    vb = _vb_device_identity(d_idx, info["name"], info["device_path"])
+    vb.append((_full((2, 1, 3, 1, 4)) + (d_idx,), "int", info["dev_type"]))
+    _notify_q.put((_full((2, 3, 2)), vb))
+    LOG.info("notify: device_removed d_idx=%d path=%s", d_idx, info["device_path"])
+
+
+def _notify_device_poll_failed(info: dict) -> None:
+    d_idx = info["d_idx"]
+    vb = _vb_device_identity(d_idx, info["name"], info["device_path"])
+    vb.append((_full((2, 1, 3, 1, 6)) + (d_idx,), "int", _POLL_RESULT["failed"]))
+    vb.append((_full((2, 1, 7, 0)), "uint", _st.poll_failure_threshold))
+    _notify_q.put((_full((2, 3, 3)), vb))
+    LOG.info("notify: device_poll_failed d_idx=%d path=%s", d_idx, info["device_path"])
+
+
+def _notify_health_changed(d_idx: int, dev: dict, new_status: int) -> None:
+    proto = dev["protocol"]
+    vb = _vb_disk_identity(d_idx, dev)
+    if proto == "nvme":
+        trap = _full((3, 2, 1))
+        vb.append((_full((3, 1, 15, 1, 1)) + (d_idx, 1), "int", new_status))
+        cw = _parse_nvme_health(dev["raw"])["critical_warning"]
+        vb.append((_full((3, 1, 15, 1, 2)) + (d_idx, 1), "str", bytes([int(cw) & 0xFF])))
+    elif proto in ("ata", "sat"):
+        trap = _full((4, 2, 1))
+        vb.append((_full((4, 1, 6, 1, 1)) + (d_idx,), "int", new_status))
+    else:   # scsi / sas
+        trap = _full((5, 2, 1))
+        vb.append((_full((5, 1, 6, 1, 1)) + (d_idx, 1), "int", new_status))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((trap, vb))
+    LOG.info("notify: health_changed d_idx=%d proto=%s status=%d", d_idx, proto, new_status)
+
+
+def _notify_nvme_selftest_failed(d_idx: int, dev: dict, st: dict) -> None:
+    e  = st["entry"]
+    vb = _vb_disk_identity(d_idx, dev)
+    vb.append((_full((3, 1, 18, 1, 2)) + (d_idx, e), "gauge", st["number"]))
+    vb.append((_full((3, 1, 18, 1, 3)) + (d_idx, e), "int",   st["type"]))
+    vb.append((_full((3, 1, 18, 1, 4)) + (d_idx, e), "int",   st["result"]))
+    vb.append((_full((3, 1, 18, 1, 5)) + (d_idx, e), "str",   st["result_text"]))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((_full((3, 2, 2)), vb))
+    LOG.info("notify: nvme_selftest_failed d_idx=%d entry=%d", d_idx, e)
+
+
+def _notify_sata_selftest_failed(d_idx: int, dev: dict, st: dict) -> None:
+    e  = st["entry"]
+    vb = _vb_disk_identity(d_idx, dev)
+    vb.append((_full((4, 1, 18, 1, 2)) + (d_idx, e), "int", st["type"]))
+    vb.append((_full((4, 1, 18, 1, 3)) + (d_idx, e), "int", st["result"]))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((_full((4, 2, 3)), vb))
+    LOG.info("notify: sata_selftest_failed d_idx=%d entry=%d", d_idx, e)
+
+
+def _notify_sata_attr_failing(d_idx: int, dev: dict, a: dict) -> None:
+    ai = a["id"]
+    vb = _vb_disk_identity(d_idx, dev)
+    vb.append((_full((4, 1, 9, 1, 1)) + (d_idx, ai), "uint",  ai))
+    vb.append((_full((4, 1, 9, 1, 2)) + (d_idx, ai), "str",   a["name"]))
+    vb.append((_full((4, 1, 9, 1, 6)) + (d_idx, ai), "gauge", a["value"]))
+    vb.append((_full((4, 1, 9, 1, 8)) + (d_idx, ai), "gauge", a["thresh"]))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((_full((4, 2, 2)), vb))
+    LOG.info("notify: sata_attr_failing d_idx=%d attr=%d value=%d thresh=%d",
+             d_idx, ai, a["value"], a["thresh"])
+
+
+def _notify_sas_uncorrected(d_idx: int, dev: dict, direction: int, count: int) -> None:
+    vb = _vb_disk_identity(d_idx, dev)
+    vb.append((_full((5, 1, 9, 1, 8)) + (d_idx, direction), "c64", count))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((_full((5, 2, 3)), vb))
+    LOG.info("notify: sas_uncorrected d_idx=%d dir=%d count=%d", d_idx, direction, count)
+
+
+# Sensor MIB threshold column for each alarm state, and the trap OID suffix.
+_SENS_THRESH_COL = {
+    _SENS_HIGH_CRITICAL: (12, "hi_crit", (6, 2, 1)),
+    _SENS_HIGH_WARNING:  (13, "hi_warn", (6, 2, 2)),
+    _SENS_LOW_WARNING:   (14, "lo_warn", (6, 2, 3)),
+    _SENS_LOW_CRITICAL:  (15, "lo_crit", (6, 2, 4)),
+}
+
+
+def _notify_sensor_alarm(d_idx: int, dev: dict, s: dict, state: int) -> None:
+    si  = s["idx"]
+    col, key, trap_suffix = _SENS_THRESH_COL[state]
+    vb = _vb_device_identity(d_idx, dev["name"], dev["device_path"])
+    vb.append((_full((6, 1, 3, 1, 3)) + (d_idx, si), "str", s["name"]))
+    vb.append((_full((6, 1, 3, 1, 2)) + (d_idx, si), "int", s["type"]))
+    vb.append((_full((6, 1, 3, 1, 7)) + (d_idx, si), "int", s["value"]))
+    vb.append((_full((6, 1, 3, 1, col)) + (d_idx, si), "int", s[key] or 0))
+    vb.append((_full((6, 1, 3, 1, 9)) + (d_idx, si), "str", s["units_display"]))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((_full(trap_suffix), vb))
+    LOG.info("notify: sensor alarm d_idx=%d sensor=%s state=%d value=%d",
+             d_idx, s["name"], state, s["value"])
+
+
+def _notify_sensor_recovered(d_idx: int, dev: dict, s: dict) -> None:
+    si = s["idx"]
+    vb = _vb_device_identity(d_idx, dev["name"], dev["device_path"])
+    vb.append((_full((6, 1, 3, 1, 3)) + (d_idx, si), "str", s["name"]))
+    vb.append((_full((6, 1, 3, 1, 2)) + (d_idx, si), "int", s["type"]))
+    vb.append((_full((6, 1, 3, 1, 7)) + (d_idx, si), "int", s["value"]))
+    vb.append((_full((6, 1, 3, 1, 9)) + (d_idx, si), "str", s["units_display"]))
+    vb += _vb_poll_time(d_idx, dev)
+    _notify_q.put((_full((6, 2, 5)), vb))
+    LOG.info("notify: sensor_recovered d_idx=%d sensor=%s", d_idx, s["name"])
+
+
+# ---- signal extraction (current values used for change detection) ----
+
+def _device_health_status(dev: dict) -> int:
+    """overall health enum: 1 passed / 2 failed / 0 unknown (matches health tables)."""
+    sp = dev.get("smart_passed")
+    return 1 if sp else (2 if sp is False else 0)
+
+
+def _nvme_failed_selftests(raw: dict) -> List[dict]:
+    log     = raw.get("nvme_self_test_log") or {}
+    entries = log.get("table") or []
+    out = []
+    for i, e in enumerate(entries):
+        result = e.get("self_test_result") or {}
+        if int(result.get("value", 0) or 0) == 0:
+            continue
+        code = e.get("self_test_code") or {}
+        out.append({
+            "entry":       i + 1,
+            "number":      i + 1,
+            "type":        _NVME_ST_TYPE.get(int(code.get("value", 0) or 0), 255),
+            "result":      int(result.get("value", 0) or 0),
+            "result_text": str(result.get("string") or ""),
+        })
+    return out
+
+
+def _sata_failed_selftests(raw: dict) -> List[dict]:
+    entries = _sata_selftest_table(raw)
+    out = []
+    for i, e in enumerate(entries):
+        status = e.get("status") or {}
+        if status.get("passed", False):
+            continue
+        st_val  = int((e.get("type") or {}).get("value", 0) or 0)
+        raw_res = int(status.get("value", 0) or 0)
+        result  = (raw_res + 1) if 0 <= raw_res <= 8 else (15 if raw_res == 15 else 0)
+        out.append({
+            "entry":  i + 1,
+            "type":   _SATA_ST_TYPE.get(st_val, 0),
+            "result": result,
+        })
+    return out
+
+
+def _compute_sensor_alarm(s: dict, old_state: int, hyst: int) -> int:
+    """Port of compute_sensor_alarm_state(): high/low alarm with clear-hysteresis."""
+    v = s["value"]
+    if s["hi_crit"] is not None:
+        stay = old_state == _SENS_HIGH_CRITICAL and v >= s["hi_crit"] - hyst
+        if v >= s["hi_crit"] or stay:
+            return _SENS_HIGH_CRITICAL
+    if s["hi_warn"] is not None:
+        stay = old_state == _SENS_HIGH_WARNING and v >= s["hi_warn"] - hyst
+        if v >= s["hi_warn"] or stay:
+            return _SENS_HIGH_WARNING
+    if s["lo_crit"] is not None:
+        stay = old_state == _SENS_LOW_CRITICAL and v <= s["lo_crit"] + hyst
+        if v <= s["lo_crit"] or stay:
+            return _SENS_LOW_CRITICAL
+    if s["lo_warn"] is not None:
+        stay = old_state == _SENS_LOW_WARNING and v <= s["lo_warn"] + hyst
+        if v <= s["lo_warn"] or stay:
+            return _SENS_LOW_WARNING
+    return _SENS_NORMAL
+
+
+def _detect_sensor_notifications(d_idx: int, dev: dict, is_new: bool) -> None:
+    """Sensor alarm state machine — transitions, hysteresis, periodic resend."""
+    now = time.monotonic()
+    for s in _extract_sensors(dev):
+        key = (d_idx, s["idx"])
+        old_state = _st.sensor_alarm_state.get(key, _SENS_NORMAL)
+
+        if _st.test_mode:
+            # Test mode: fire unconditionally whenever the sensor is in alarm.
+            if s["hi_crit"] is not None and s["value"] >= s["hi_crit"]:
+                _notify_sensor_alarm(d_idx, dev, s, _SENS_HIGH_CRITICAL)
+            elif s["hi_warn"] is not None and s["value"] >= s["hi_warn"]:
+                _notify_sensor_alarm(d_idx, dev, s, _SENS_HIGH_WARNING)
+            if s["lo_crit"] is not None and s["value"] <= s["lo_crit"]:
+                _notify_sensor_alarm(d_idx, dev, s, _SENS_LOW_CRITICAL)
+            elif s["lo_warn"] is not None and s["value"] <= s["lo_warn"]:
+                _notify_sensor_alarm(d_idx, dev, s, _SENS_LOW_WARNING)
+            continue
+
+        new_state = _compute_sensor_alarm(s, old_state, _st.sensor_hysteresis)
+
+        if is_new:
+            # Establish baseline without firing on first sighting.
+            _st.sensor_alarm_state[key]     = new_state
+            _st.sensor_alarm_last_sent[key] = now
+            continue
+
+        if new_state != old_state:
+            if new_state == _SENS_NORMAL:
+                _notify_sensor_recovered(d_idx, dev, s)
+            else:
+                _notify_sensor_alarm(d_idx, dev, s, new_state)
+            _st.sensor_alarm_state[key]     = new_state
+            _st.sensor_alarm_last_sent[key] = now
+        elif new_state != _SENS_NORMAL and _st.sensor_resend_interval > 0:
+            last = _st.sensor_alarm_last_sent.get(key, 0)
+            if now - last >= _st.sensor_resend_interval:
+                _notify_sensor_alarm(d_idx, dev, s, new_state)
+                _st.sensor_alarm_last_sent[key] = now
+
+
+def _forget_device_baselines(d_idx: int) -> None:
+    """Drop all per-device notification baseline state (device removed)."""
+    _st.known_didx.discard(d_idx)
+    _st.device_health.pop(d_idx, None)
+    _st.failed_selftest.pop(d_idx, None)
+    _st.attr_failing.pop(d_idx, None)
+    for key in [k for k in _st.sas_uncorrected if k[0] == d_idx]:
+        _st.sas_uncorrected.pop(key, None)
+    for key in [k for k in _st.sensor_alarm_state if k[0] == d_idx]:
+        _st.sensor_alarm_state.pop(key, None)
+        _st.sensor_alarm_last_sent.pop(key, None)
+
+
+def _detect_device_notifications(d_idx: int, dev: dict) -> None:
+    """Per-device change detection (health, self-test, attrs, SAS errors, sensors).
+
+    Mirrors capture_snapshot()/dispatch_notifications()/update_alarm_state() in
+    agentxd_datasrc.cpp.  On a device's first sighting all baselines are seeded
+    and nothing fires (a device-discovered trap is queued by the caller); from
+    then on each refresh compares against the stored baseline."""
+    proto  = dev["protocol"]
+    raw    = dev["raw"]
+    is_new = d_idx not in _st.known_didx
+
+    # Current signal values.
+    health = _device_health_status(dev)
+
+    if proto == "nvme":
+        failed = _nvme_failed_selftests(raw)
+    elif proto in ("ata", "sat"):
+        failed = _sata_failed_selftests(raw)
+    else:
+        failed = []
+    max_failed = max((f["entry"] for f in failed), default=0)
+
+    attr_failing = set()
+    if proto in ("ata", "sat"):
+        for a in _parse_sata_attrs(raw):
+            if a["thresh"] > 0 and a["value"] <= a["thresh"]:
+                attr_failing.add(a["id"])
+
+    sas_counts = {}
+    if proto in ("scsi", "sas"):
+        for r in _parse_sas_error_counters(raw):
+            sas_counts[r["direction"]] = r["uncorrected_errors"]
+
+    if is_new:
+        _st.known_didx.add(d_idx)
+        _st.device_health[d_idx]   = health
+        _st.failed_selftest[d_idx] = max_failed
+        _st.attr_failing[d_idx]    = attr_failing
+        for direction, cnt in sas_counts.items():
+            _st.sas_uncorrected[(d_idx, direction)] = cnt
+        _detect_sensor_notifications(d_idx, dev, is_new=True)
+        if _st.initial_scan_done:
+            _notify_device_discovered(d_idx, dev)
+        return
+
+    # Health change.
+    prev_health = _st.device_health.get(d_idx)
+    if prev_health is not None and prev_health != health:
+        _notify_health_changed(d_idx, dev, health)
+    _st.device_health[d_idx] = health
+
+    # New self-test failure (highest failed entry advanced).
+    if max_failed > _st.failed_selftest.get(d_idx, 0):
+        worst = max(failed, key=lambda f: f["entry"])
+        if proto == "nvme":
+            _notify_nvme_selftest_failed(d_idx, dev, worst)
+        elif proto in ("ata", "sat"):
+            _notify_sata_selftest_failed(d_idx, dev, worst)
+    _st.failed_selftest[d_idx] = max_failed
+
+    # SATA prefailure attribute newly below threshold.
+    if proto in ("ata", "sat"):
+        prev = _st.attr_failing.get(d_idx, set())
+        for a in _parse_sata_attrs(raw):
+            if a["thresh"] > 0 and a["value"] <= a["thresh"] and a["id"] not in prev:
+                _notify_sata_attr_failing(d_idx, dev, a)
+        _st.attr_failing[d_idx] = attr_failing
+
+    # SAS uncorrected error count increased.
+    if proto in ("scsi", "sas"):
+        for direction, cnt in sas_counts.items():
+            base = _st.sas_uncorrected.get((d_idx, direction), 0)
+            if cnt > base:
+                _notify_sas_uncorrected(d_idx, dev, direction, cnt)
+            _st.sas_uncorrected[(d_idx, direction)] = cnt
+
+    _detect_sensor_notifications(d_idx, dev, is_new=False)
 
 
 # ==========================================================================
@@ -2468,35 +3059,36 @@ def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
     _publish_tables(agent, tables, oid_map)
 
 
+# Floor for the worker poll interval when TTL is 0 (poll-as-fast-as-possible).
+# Prevents a busy loop while keeping trap latency well inside the integration
+# test's wait window.  CI runs with ttl=0 for fast trap delivery; production
+# sets a larger TTL to trade trap/refresh latency for lower idle cost.
+NOTIFY_POLL_INTERVAL = 0.05
+
+
 def _collector_loop(stop: threading.Event) -> None:
     """Producer thread: owns all data collection and _st mutation.
 
-    Lazy / client-driven: blocks on _refresh_request until the main thread (on
-    client packet activity) asks for a refresh — there is no proactive timer.
-    When asked, it runs _refresh() (discover→parse→_build, pure Python + file
-    IO), which still honours the TTL guard, so a burst of requests within the
-    TTL re-reads nothing; fixture mtime changes force a rebuild past the TTL.
-    Hands the freshly built oid_map to the main thread over _publish_q; never
-    touches net-snmp."""
-    next_mtime_check = 0.0
+    The TTL is the poll interval: the worker re-stats the state files every
+    `_st.ttl` seconds (or every NOTIFY_POLL_INTERVAL when ttl=0) to detect
+    changes.  A change runs _refresh() (discover→parse→_build, pure Python + file
+    IO); change detection inside _build() appends trap descriptors onto _notify_q
+    and the rebuilt oid_map onto _publish_q.  The main loop pops both and is the
+    sole net-snmp caller — this thread never touches net-snmp."""
     while not stop.is_set():
-        # Wait until asked (short timeout only so shutdown is observed promptly).
-        if not _refresh_request.wait(timeout=1.0):
-            continue
+        poll_interval = _st.ttl if _st.ttl > 0 else NOTIFY_POLL_INTERVAL
+        # wait() returns early only on shutdown (_refresh_request set in finally).
+        _refresh_request.wait(timeout=poll_interval)
         _refresh_request.clear()
         if stop.is_set():
             break
 
-        now = time.monotonic()
-        modified = False
-        if now >= next_mtime_check:
-            next_mtime_check = now + 1.0
-            modified = _files_modified()
+        if not _files_modified():
+            continue
 
         prev_map = _st.oid_map
-        if modified:
-            _st.last_load = 0.0          # force _refresh() past the TTL guard
-        _refresh()                       # TTL guard inside decides whether to rebuild
+        _st.last_load = 0.0              # a change forces a rebuild past the guard
+        _refresh()
 
         # _build() rebinds _st.oid_map to a brand-new dict only when it actually
         # rebuilt; on the keep-last-good error path the identity is unchanged,
@@ -2517,6 +3109,16 @@ def _handle_collection_error(exc: CollectionError, ts: datetime) -> None:
 
 def _collect_and_build(ts: datetime) -> None:
     files   = _discover_devices(_st.state_dir, _st.config_devices)
+    present = set(files)
+
+    # Removal: a device whose state file disappeared since the last cycle.
+    for path in [p for p in _st.file_identity if p not in present]:
+        info = _st.file_identity.pop(path)
+        _st.consec_fail.pop(path, None)
+        if _st.initial_scan_done:
+            _notify_device_removed(info)
+        _forget_device_baselines(info["d_idx"])
+
     devices = []
     errors  = 0
     for path in files:
@@ -2524,7 +3126,15 @@ def _collect_and_build(ts: datetime) -> None:
         if dev["read_error"]:
             LOGGER.warning("parse error %s: %s", path, dev["read_error"])
             errors += 1
+            # Poll failure: file still present but unparseable.  Fire once the
+            # consecutive-failure count reaches the configured threshold.
+            info = _st.file_identity.get(path)
+            if info:
+                _st.consec_fail[path] = _st.consec_fail.get(path, 0) + 1
+                if _st.consec_fail[path] >= _st.poll_failure_threshold:
+                    _notify_device_poll_failed(info)
         else:
+            _st.consec_fail.pop(path, None)
             devices.append(dev)
     err_code = EXIT_PARTIAL_FAILURE if errors else EXIT_SUCCESS
     err_msg  = f"{errors} device(s) failed to parse" if errors else ""
@@ -2634,6 +3244,18 @@ def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
     _st.state_dir     = args.state_dir or cfg.get("state_dir", "")
     _st.config_devices = list(devices) if devices else None
 
+    # Notification config (mirror of the C++ AgentxConfig keys).
+    def _cfg_int(key, default):
+        try:
+            return int(cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    _st.poll_failure_threshold  = max(1, _cfg_int("poll_failure_threshold", 1))
+    _st.sensor_resend_interval  = max(0, _cfg_int("sensor_resend_interval", 0))
+    _st.sensor_hysteresis       = max(0, _cfg_int("sensor_hysteresis", 0))
+    _st.test_mode               = str(cfg.get("test_mode", "")).lower() in ("1", "true", "yes")
+
     level = {"VERBOSE": VERBOSE, "NOTICE": NOTICE}.get(
         log_level, getattr(logging, log_level, logging.WARNING)
     )
@@ -2703,18 +3325,24 @@ def main() -> None:
 
     agent.start()
     _refresh_and_publish(agent, scalars, tables)
+    # Devices present at startup must not raise device-discovered traps; arm
+    # detection only after the first build has seeded all baselines.
+    _st.initial_scan_done = True
 
     if args.once:
         return
 
-    # Producer/consumer split, lazy refresh: the worker thread owns all data
-    # collection and _st mutation; the main thread answers SNMP via
-    # check_and_process and only publishes the snapshots the worker hands it
-    # over _publish_q. There is NO background refresh timer — after the initial
-    # synchronous build+publish above, the worker stays idle until a client
-    # packet wakes check_and_process, at which point the main thread asks it to
-    # refresh (still TTL-gated). check_and_process(block=True) blocks on the
-    # AgentX socket, so it wakes on client GET/GETNEXT and master keepalives.
+    # Producer/consumer split: the worker thread owns all data collection and
+    # _st mutation; the main thread owns all net-snmp socket access (net-snmp is
+    # not thread-safe).  The main thread answers SNMP, publishes the snapshots
+    # the worker hands it over _publish_q, and sends the trap descriptors the
+    # worker enqueues onto _notify_q.  It polls at NOTIFY_POLL_INTERVAL rather
+    # than blocking indefinitely so worker-detected traps are delivered promptly
+    # even with no client traffic.
+    # Prepare the ctypes prototypes before the worker starts so both threads see
+    # them initialized (the worker sends traps; the main thread selects/processes).
+    api = _get_trap_api()
+
     stop_event = threading.Event()
     worker = threading.Thread(target=_collector_loop, args=(stop_event,),
                               name="smartmon-collector", daemon=True)
@@ -2722,22 +3350,33 @@ def main() -> None:
 
     try:
         while True:
-            agent.check_and_process(block=True)
-            # A client (or master) packet arrived: ask the worker to refresh
-            # (the TTL guard makes this a no-op until the cache expires).
-            _refresh_request.set()
+            # Block on the agent's fds (processing packets as fast as they
+            # arrive) but wake at least every NOTIFY_POLL_INTERVAL so the worker's
+            # queued traps and snapshots are flushed even with no client traffic.
+            _agent_wait(api, NOTIFY_POLL_INTERVAL)
+
+            # Process all packets that are now pending.  We deliberately do NOT
+            # poke the worker per packet: it polls file mtimes every
+            # NOTIFY_POLL_INTERVAL on its own, so a per-GETNEXT _refresh_request
+            # would only add GIL contention (it woke the worker on every packet,
+            # the bulk of the walk slowdown) with no benefit.
+            agent.check_and_process(block=False)
+
             # Drain to the most recent snapshot; publish it on this (main) thread.
-            snapshot = None
-            while True:
-                try:
+            # A snapshot is only queued when the worker actually rebuilt, and that
+            # same rebuild is the only thing that queues traps — so trap sending is
+            # coupled to a real data refresh and skipped on every other iteration.
+            if not _publish_q.empty():
+                snapshot = None
+                while not _publish_q.empty():
                     snapshot = _publish_q.get_nowait()
-                except queue.Empty:
-                    break
-            if snapshot is not None:
-                before = time.monotonic()
-                _publish(agent, scalars, tables, snapshot)
-                LOG.info("published %d OIDs in %.2fs",
-                         len(snapshot), time.monotonic() - before)
+                if snapshot is not None:
+                    before = time.monotonic()
+                    _publish(agent, scalars, tables, snapshot)
+                    LOG.info("published %d OIDs in %.2fs",
+                             len(snapshot), time.monotonic() - before)
+                    # Send the traps detected during that refresh (sole net-snmp caller).
+                    _drain_and_send_traps()
     except KeyboardInterrupt:
         pass
     finally:
