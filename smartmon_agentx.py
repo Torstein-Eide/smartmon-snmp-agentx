@@ -20,6 +20,7 @@ import re
 import select
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -811,6 +812,14 @@ class _State:
         # steady-state collect-mode poll does not repeat them every cycle.
         self.last_built_devices    = -1
         self.last_published_oids   = -1
+        # ---- systemd sd_notify STATUS= fields (see _sd_status_text) ----
+        # Updated at the end of every _build so the line stays current; surfaced
+        # to systemd on READY, on each refresh, and on agentx connect/disconnect.
+        self.last_device_count     = 0
+        self.last_update_ts: Optional[datetime] = None
+        self.last_err_code         = EXIT_SUCCESS
+        self.last_err_msg          = ""
+        self.agentx_connected      = False
         # ---- Notification baseline state (change detection across refreshes) ----
         # Set True after the first build so device-discovered traps are suppressed
         # for the devices present at startup.
@@ -1464,6 +1473,12 @@ def _build(devices: list, ts: datetime,
     _st.oid_keys = [e[0] for e in entries]
     _st.oid_map  = {e[0]: (e[1], e[2]) for e in entries}
     LOGGER.debug("OID table built: %d entries", len(entries))
+
+    # Snapshot for the systemd STATUS= line (set even on error builds).
+    _st.last_device_count = n_total
+    _st.last_update_ts    = ts
+    _st.last_err_code     = error_code
+    _st.last_err_msg      = error_string
 
     # Change detection / trap dispatch (enqueues descriptors onto _notify_q).
     for d_idx, dev in devs_with_idx:
@@ -2700,6 +2715,9 @@ def _agent_wait(api, max_timeout: float) -> bool:
     global _sel_fds
     if _sel_fds is None:
         _sel_fds = _discover_agent_fds(api)
+        # Having live fds means the subagent session to the master is up; surface
+        # the connect/disconnect state for the systemd STATUS= line.
+        _st.agentx_connected = bool(_sel_fds)
     if not _sel_fds:
         time.sleep(max_timeout)
         _sel_fds = None   # re-discover once the agent's fds appear
@@ -2708,6 +2726,7 @@ def _agent_wait(api, max_timeout: float) -> bool:
         ready, _, _ = select.select(_sel_fds, [], [], max_timeout)
     except (OSError, ValueError):
         _sel_fds = None   # stale fd (master reconnect) — rediscover next time
+        _st.agentx_connected = False
         return False
     if not ready:
         _sel_fds = None   # idle timeout — cheap moment to refresh the fd list
@@ -3984,6 +4003,80 @@ def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
     )
 
 
+# --------------------------------------------------------------------------
+# systemd sd_notify protocol (Type=notify / WatchdogSec=)
+#
+# Implemented inline with stdlib `socket` — no dependency — matching this file's
+# self-contained design.  Every call is a no-op when $NOTIFY_SOCKET is unset
+# (i.e. not run under systemd), and never raises: a notify failure must not
+# disturb data serving.
+# --------------------------------------------------------------------------
+
+def _sd_notify(state: str) -> bool:
+    """Send one datagram to the systemd notify socket ($NOTIFY_SOCKET).
+
+    Returns True if sent, False when off-systemd or on error.  `state` is a
+    newline-separated set of FIELD=value lines (e.g. "READY=1", "STOPPING=1",
+    "WATCHDOG=1", "STATUS=...")."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return False
+    if addr[0] == "@":                 # Linux abstract namespace socket
+        addr = "\0" + addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC) as sock:
+            sock.connect(addr)
+            sock.sendall(state.encode("utf-8"))
+        return True
+    except OSError as exc:
+        LOGGER.debug("sd_notify(%r) failed: %s", state, exc)
+        return False
+
+
+def _sd_status_text() -> str:
+    """Compose the STATUS= line shown by `systemctl status`.
+
+    'agentx <state>; <N> disks, <M> OIDs; updated <ts>'.  An active collection
+    error is surfaced first so it becomes the headline."""
+    conn    = "connected" if _st.agentx_connected else "disconnected"
+    n_disks = _st.last_device_count
+    n_oids  = len(_st.oid_map)
+    updated = (_st.last_update_ts.strftime("%Y-%m-%d %H:%M:%SZ")
+               if _st.last_update_ts is not None else "never")
+    summary = (f"agentx {conn}; {n_disks} disk{'' if n_disks == 1 else 's'}, "
+               f"{n_oids} OIDs; updated {updated}")
+    if _st.last_err_code != EXIT_SUCCESS and _st.last_err_msg:
+        return f"ERROR: {_st.last_err_msg} | {summary}"
+    return summary
+
+
+def _sd_notify_status(extra: str = "") -> None:
+    """Push a STATUS= update, optionally shipping another field (e.g. READY=1)
+    in the same datagram."""
+    payload = f"STATUS={_sd_status_text()}"
+    if extra:
+        payload = extra + "\n" + payload
+    _sd_notify(payload)
+
+
+def _sd_watchdog_interval() -> float:
+    """Ping period (seconds) for the systemd watchdog, or 0.0 when disabled.
+
+    WATCHDOG_USEC is the unit's WatchdogSec in microseconds; we ping at half that
+    (the systemd convention).  WATCHDOG_PID, when set, must match our PID — the
+    env can be inherited by child processes that must not answer the watchdog."""
+    usec = os.environ.get("WATCHDOG_USEC")
+    if not usec:
+        return 0.0
+    wpid = os.environ.get("WATCHDOG_PID")
+    if wpid and wpid != str(os.getpid()):
+        return 0.0
+    try:
+        return max(0.0, int(usec) / 1_000_000.0 / 2.0)
+    except ValueError:
+        return 0.0
+
+
 # Signals that should trigger an orderly shutdown: Ctrl-C (SIGINT), systemd /
 # `kill` stop (SIGTERM), and terminal hangup (SIGHUP).  Ctrl-D is intentionally
 # NOT handled — it is an EOF on stdin, not a signal, and the daemon never reads
@@ -4109,6 +4202,7 @@ def main() -> None:
         tables  = _register_tables(agent)
 
         agent.start()
+        _st.agentx_connected = True   # subagent session to the master is up
 
         # Open + load persisted state BEFORE the first build so loaded hashes
         # match the current data (timestamps are preserved, not advanced) and
@@ -4121,6 +4215,9 @@ def main() -> None:
         # Devices present at startup must not raise device-discovered traps; arm
         # detection only after the first build has seeded all baselines.
         _st.initial_scan_done = True
+
+        # Tell systemd we are up and serving (no-op when not under systemd).
+        _sd_notify_status("READY=1")
 
         if args.once:
             return   # finally closes the state DB
@@ -4151,6 +4248,16 @@ def main() -> None:
         walk_count  = 0
         walk_start  = 0.0
         walk_last   = 0.0
+
+        # systemd watchdog: ping WATCHDOG=1 every wd_interval seconds (0 = off).
+        # The loop already wakes at least every NOTIFY_POLL_INTERVAL, so pings
+        # land on time.  prev_conn tracks the agentx connect/disconnect flag so a
+        # transition refreshes the STATUS= line.
+        wd_interval = _sd_watchdog_interval()
+        wd_last     = time.monotonic()
+        if wd_interval:
+            LOGGER.info("systemd watchdog enabled: ping every %.1fs", wd_interval)
+        prev_conn = _st.agentx_connected
 
         while True:
             # Block on the agent's fds (processing packets as fast as they
@@ -4199,12 +4306,27 @@ def main() -> None:
                 _log_published(len(snapshot), time.monotonic() - before)
                 # Send the traps detected during that refresh (sole net-snmp caller).
                 _drain_and_send_traps()
+                # Refresh the systemd STATUS= line (disk/OID/updated/error fields).
+                _sd_notify_status()
+
+            # Surface agentx connect/disconnect transitions to systemd.
+            if _st.agentx_connected != prev_conn:
+                prev_conn = _st.agentx_connected
+                LOGGER.info("agentx %s",
+                            "connected" if prev_conn else "disconnected")
+                _sd_notify_status()
+
+            # Pet the systemd watchdog (no-op when WatchdogSec= is unset).
+            if wd_interval and now - wd_last >= wd_interval:
+                _sd_notify("WATCHDOG=1")
+                wd_last = now
     except KeyboardInterrupt as exc:
         LOGGER.info("received %s — shutting down", str(exc) or "interrupt")
     finally:
         # Reset signal disposition first so a second Ctrl-C / SIGTERM during the
         # bounded shutdown below force-terminates instead of corrupting cleanup.
         _restore_default_signals()
+        _sd_notify("STOPPING=1")   # tell systemd we are tearing down
         stop_event.set()
         _refresh_request.set()   # wake the worker so it observes stop promptly
         # The udev thread blocks on udevadm's stdout; terminate it to unblock.
