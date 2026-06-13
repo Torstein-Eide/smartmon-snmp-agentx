@@ -134,6 +134,11 @@ _SELFTEST_EXEC_STATUS = {i: i for i in range(16)}
 # Part 1 — Data collection (smartd JSON state files)
 # ==========================================================================
 
+# Known protocol suffixes for smartd JSON state files; compiled once since
+# _discover_devices() is now called on the main-loop change-detection path.
+_PROTO_SUFFIX = re.compile(r'\.(ata|sat|nvme|scsi|sas)\.json$')
+
+
 def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
     """Return sorted list of smartd JSON state file paths in state_dir.
 
@@ -147,7 +152,6 @@ def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
 
     # Keep only files whose names end with a known protocol suffix;
     # exclude Seagate FARM supplementary logs (.farm.ata.json).
-    _PROTO_SUFFIX = re.compile(r'\.(ata|sat|nvme|scsi|sas)\.json$')
     files = [f for f in all_files
              if _PROTO_SUFFIX.search(os.path.basename(f))
              and not f.endswith(".farm.ata.json")]
@@ -414,6 +418,19 @@ def _table_fingerprint(entries: list, prefix: tuple) -> int:
     return _fnv1a_32("\x01".join(parts).encode("utf-8", errors="replace"))
 
 
+def _rows_fingerprint(rows: dict) -> int:
+    """Deterministic fingerprint of the per-table {indexes: {col: (typ, val)}}
+    structure built in _publish_tables, used to skip republishing unchanged
+    tables to net-snmp."""
+    parts = []
+    for indexes in sorted(rows):
+        cells = rows[indexes]
+        for col in sorted(cells):
+            typ, val = cells[col]
+            parts.append(f"{indexes}\x00{col}\x00{typ}\x00{val}")
+    return _fnv1a_32("\x01".join(parts).encode("utf-8", errors="replace"))
+
+
 # ==========================================================================
 # Part 3 — OID table builder (_State, _build)
 # ==========================================================================
@@ -433,8 +450,14 @@ class _State:
     ttl:            int
     checksums:      dict   # table key -> fingerprint int
     timestamps:     dict   # table key -> datetime
+    dev_checksums:  dict   # (table_id, d_idx) -> fingerprint int
+    dev_timestamps: dict   # (table_id, d_idx) -> datetime
+    sub_checksums:  dict   # (table_id, d_idx, sub1) -> fingerprint int
+    sub_timestamps: dict   # (table_id, d_idx, sub1) -> datetime
     state_dir:      str
     config_devices: Optional[list]
+    file_mtimes:    dict   # path -> mtime float; used for inotify-equivalent change detection
+    published_fp:   dict   # table name -> fingerprint of last content pushed to net-snmp
 
     def __init__(self):
         self.oid_keys              = []
@@ -443,11 +466,21 @@ class _State:
         self.ttl                   = CACHE_TTL
         self.checksums             = {}
         self.timestamps            = {}
+        # Per-device SATA change tracking for the ByDevice change table:
+        #   key (table_id, d_idx) -> fingerprint int / datetime
+        self.dev_checksums         = {}
+        self.dev_timestamps        = {}
+        # Per-subindex SATA change tracking for the BySubindex change table:
+        #   key (table_id, d_idx, sub1) -> fingerprint int / datetime
+        self.sub_checksums         = {}
+        self.sub_timestamps        = {}
         self.state_dir             = ""
         self.config_devices        = None
         self.poll_failure_threshold = 1
         # Per-device selftest progress: dev_idx -> {start_ns, last_remaining, polling_min, estimated_completion}
         self.selftest_progress: dict = {}
+        self.file_mtimes: dict = {}
+        self.published_fp: dict = {}
 
 
 _st = _State()
@@ -463,6 +496,7 @@ _TABLE_PREFIXES = {
     "nvme_selftest":        _full((3, 1, 18, 1)),
     "nvme_errlog":          _full((3, 1, 21, 1)),
     "nvme_capability":      _full((3, 1, 24, 1)),
+    "sata_info":            _full((4, 1, 3, 1)),
     "sata_health":          _full((4, 1, 6, 1)),
     "sata_attr":            _full((4, 1, 9, 1)),
     "sata_errorlog":        _full((4, 1, 12, 1)),
@@ -496,7 +530,7 @@ _SATA_CHANGE_TABLE_NAMES = {
 }
 
 _SATA_CHANGE_TABLE_LC_KEYS = {
-    1:  None,            # sata_info has no dedicated LC timestamp
+    1:  "sata_info",
     2:  "sata_health",
     3:  "sata_attr",
     4:  "sata_errorlog",
@@ -518,11 +552,76 @@ def _sata_change_ts(table_id: int, fallback: datetime) -> datetime:
     return fallback
 
 
-def _add_sata_changes(add, sata_dev_counts: Dict[int, Dict[int, int]],
+_SATA_BYSUBINDEX_TIDS = (5, 11)   # tableIds tracked by the BySubindex change table
+
+
+def _sata_track_changes(entries: list,
+                        sata_dev_counts: Dict[int, Dict[int, int]],
+                        sata_dev_subidx: set, ts: datetime):
+    """Compute per-device and per-subindex SATA change timestamps.
+
+    The ByDevice/BySubindex change tables must advance LastChange only for the
+    device (and subindex) whose rows actually changed — a global per-table
+    timestamp would advance every device's row whenever any one device changed.
+    Returns (dev_ts, sub_ts):
+        dev_ts[(table_id, d_idx)]        -> datetime
+        sub_ts[(table_id, d_idx, sub1)]  -> datetime
+    """
+    # Seed buckets for every (table_id, d_idx) so a table with 0 rows for a
+    # device still gets a stable (constant-empty) fingerprint rather than
+    # falling back to the ever-advancing cycle timestamp.
+    dev_parts: Dict[tuple, list] = {}
+    for d_idx in sata_dev_counts:
+        for tid in range(1, 13):
+            dev_parts[(tid, d_idx)] = []
+    sub_parts: Dict[tuple, list] = {}
+    for d_idx, tid, sub1 in sata_dev_subidx:
+        sub_parts[(tid, d_idx, sub1)] = []
+
+    tbl = [(tid,
+            _TABLE_PREFIXES[_SATA_CHANGE_TABLE_LC_KEYS[tid]],
+            len(_TABLE_PREFIXES[_SATA_CHANGE_TABLE_LC_KEYS[tid]]))
+           for tid in range(1, 13)]
+    for oid, typ, val in entries:
+        for tid, prefix, plen in tbl:
+            if oid[:plen] == prefix:
+                d_idx = oid[plen + 1]
+                cell  = f"{oid[plen:]}\x00{typ}\x00{val}"
+                dev_parts.setdefault((tid, d_idx), []).append(cell)
+                if tid in _SATA_BYSUBINDEX_TIDS and len(oid) > plen + 2:
+                    sub1 = oid[plen + 2]
+                    sub_parts.setdefault((tid, d_idx, sub1), []).append(cell)
+                break
+
+    dev_ts: Dict[tuple, datetime] = {}
+    for key, parts in dev_parts.items():
+        fp = _fnv1a_32("\x01".join(sorted(parts)).encode("utf-8", errors="replace"))
+        if fp != _st.dev_checksums.get(key):
+            _st.dev_checksums[key]  = fp
+            _st.dev_timestamps[key] = ts
+        dev_ts[key] = _st.dev_timestamps.get(key, ts)
+
+    sub_ts: Dict[tuple, datetime] = {}
+    for key, parts in sub_parts.items():
+        fp = _fnv1a_32("\x01".join(sorted(parts)).encode("utf-8", errors="replace"))
+        if fp != _st.sub_checksums.get(key):
+            _st.sub_checksums[key]  = fp
+            _st.sub_timestamps[key] = ts
+        sub_ts[key] = _st.sub_timestamps.get(key, ts)
+
+    return dev_ts, sub_ts
+
+
+def _add_sata_changes(add, entries: list,
+                      sata_dev_counts: Dict[int, Dict[int, int]],
                       sata_dev_subidx: set, ts: datetime,
                       total_counts: Dict[int, int]) -> None:
     """Populate the smartSATAChanges subtree (.4.1.2)."""
+    dev_ts, sub_ts = _sata_track_changes(entries, sata_dev_counts,
+                                         sata_dev_subidx, ts)
+
     # MetadataTable  (.4.1.2.1.1)  — 12 rows, INDEX { tableId }
+    # Aggregate "any device changed this table" => global per-table timestamp.
     MT = (4, 1, 2, 1, 1)
     for tid in range(1, 13):
         row_count = total_counts.get(tid, 0)
@@ -536,14 +635,14 @@ def _add_sata_changes(add, sata_dev_counts: Dict[int, Dict[int, int]],
     for d_idx, dc in sata_dev_counts.items():
         for tid in range(1, 13):
             row_count = dc.get(tid, 0)
-            lc        = _sata_change_ts(tid, ts)
+            lc        = dev_ts.get((tid, d_idx), ts)
             add(BDT+(2, d_idx, tid), *_gauge(row_count))
             add(BDT+(3, d_idx, tid), *_datetimeval(lc))
 
     # BySubindexTable  (.4.1.2.3.1)  — INDEX { deviceIndex, tableId, subindex1 }
     BST = (4, 1, 2, 3, 1)
     for d_idx, tid, sub1 in sorted(sata_dev_subidx):
-        lc = _sata_change_ts(tid, ts)
+        lc = sub_ts.get((tid, d_idx, sub1), ts)
         add(BST+(4, d_idx, tid, sub1), *_datetimeval(lc))
 
 
@@ -703,15 +802,6 @@ def _build(devices: list, ts: datetime,
         for sfx in ((4, 1, 35, 0), (4, 1, 36, 0)):
             add(sfx, *_gauge(0))
 
-    # Build smartSATAChanges subtree
-    total_sata_counts = {
-        1: n_ata, 2: n_ata, 3: n_sata_attrs, 4: n_sata_errorlog,
-        5: n_sata_errorcmd, 6: n_sata_selftest, 7: n_sata_erc,
-        8: n_sata_phyevent, 9: n_sata_selective, 10: n_sata_logdir,
-        11: n_sata_devstat, 12: n_sata_pending_def,
-    }
-    _add_sata_changes(add, sata_dev_counts, sata_dev_subidx, ts, total_sata_counts)
-
     # ---- Fingerprint tables; advance LastChange only when content changes ----
     _LC_MAP = {
         "device":               (2, 1, 2, 0),
@@ -745,6 +835,24 @@ def _build(devices: list, ts: datetime,
             _st.timestamps[tname] = ts
             LOGGER.notice("table %s changed (fp %08x)", tname, fp & 0xFFFFFFFF)
         add(lc_suffix, "datetimeval", _st.timestamps.get(tname, ts))
+
+    # sata_info has no SNMP LastChange scalar but needs a stable fingerprint
+    # timestamp for the ByDevice change table (tableId=1).
+    fp_si = _table_fingerprint(entries, _TABLE_PREFIXES["sata_info"])
+    if fp_si != _st.checksums.get("sata_info"):
+        _st.checksums["sata_info"]  = fp_si
+        _st.timestamps["sata_info"] = ts
+        LOGGER.notice("table sata_info changed (fp %08x)", fp_si & 0xFFFFFFFF)
+
+    # Build smartSATAChanges subtree after timestamps are updated so
+    # MetadataTable lastChange reflects the current cycle's changes.
+    total_sata_counts = {
+        1: n_ata, 2: n_ata, 3: n_sata_attrs, 4: n_sata_errorlog,
+        5: n_sata_errorcmd, 6: n_sata_selftest, 7: n_sata_erc,
+        8: n_sata_phyevent, 9: n_sata_selective, 10: n_sata_logdir,
+        11: n_sata_devstat, 12: n_sata_pending_def,
+    }
+    _add_sata_changes(add, entries, sata_dev_counts, sata_dev_subidx, ts, total_sata_counts)
 
     entries.sort(key=lambda e: e[0])
     _st.oid_keys = [e[0] for e in entries]
@@ -2244,15 +2352,6 @@ def _register_tables(agent: Any) -> Dict[str, Any]:
     return tables
 
 
-def _split_table_oid(oid: Oid, prefix: Oid, index_count: int):
-    if oid[:len(prefix)] != prefix:
-        return None
-    rest = oid[len(prefix):]
-    if len(rest) != index_count + 1:
-        return None
-    return rest[0], rest[1:]
-
-
 def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
     now = datetime.now(timezone.utc)
     defns = _scalar_definitions()
@@ -2284,21 +2383,49 @@ def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
 
 
 def _publish_tables(agent: Any, tables: Dict[str, Any]) -> None:
+    # Bucket every OID into its table in a single pass over oid_map (O(M))
+    # instead of rescanning the whole map once per table (O(tables * M)).
+    # Table entry prefixes have only a couple of distinct lengths, so each
+    # OID is probed against that small set of prefix slices.
+    ctx: Dict[str, dict] = {}            # name -> {table, columns, index_count, rows}
+    prefix_to_name: Dict[Tuple, str] = {}
+    prefix_lens: set = set()
     for name, table in tables.items():
-        defn        = TABLE_DEFINITIONS[name]
-        prefix      = defn["entry_prefix"]
-        index_count = defn["indexes"]
-        columns     = defn["columns"]
-        rows: Dict[Tuple, Dict[int, Tuple[str, object]]] = {}
+        defn   = TABLE_DEFINITIONS[name]
+        prefix = defn["entry_prefix"]
+        prefix_to_name[prefix] = name
+        prefix_lens.add(len(prefix))
+        ctx[name] = {"table":       table,
+                     "columns":     defn["columns"],
+                     "index_count": defn["indexes"],
+                     "rows":        {}}
+    probe_lens = sorted(prefix_lens)
 
-        for oid, (snmp_type, value) in _st.oid_map.items():
-            split = _split_table_oid(oid, prefix, index_count)
-            if split is None:
+    for oid, (snmp_type, value) in _st.oid_map.items():
+        for plen in probe_lens:
+            name = prefix_to_name.get(oid[:plen])
+            if name is None:
                 continue
-            column, indexes = split
-            if column not in columns:
+            c    = ctx[name]
+            rest = oid[plen:]
+            if len(rest) != c["index_count"] + 1 or rest[0] not in c["columns"]:
                 continue
-            rows.setdefault(indexes, {})[column] = (snmp_type, value)
+            c["rows"].setdefault(rest[1:], {})[rest[0]] = (snmp_type, value)
+            break
+
+    for name, c in ctx.items():
+        rows    = c["rows"]
+        columns = c["columns"]
+        table   = c["table"]
+
+        # Skip the net-snmp rebuild when this table's content is identical to
+        # what we last pushed — avoids the per-cell setRowCell() C-call storm
+        # for tables that are static between refreshes. The previously
+        # published rows stay registered and continue serving requests.
+        fp = _rows_fingerprint(rows)
+        if fp == _st.published_fp.get(name):
+            continue
+        _st.published_fp[name] = fp
 
         table.clear()
         for indexes in sorted(rows):
@@ -2343,6 +2470,41 @@ def _collect_and_build(ts: datetime) -> None:
     LOGGER.notice("built OID table: %d devices (%d errors)", len(devices), errors)
 
 
+def _snapshot_file_mtimes() -> None:
+    """Record current fixture file mtimes so _files_modified() has a baseline."""
+    try:
+        files = _discover_devices(_st.state_dir, _st.config_devices)
+    except CollectionError:
+        return
+    _st.file_mtimes.clear()
+    for path in files:
+        try:
+            _st.file_mtimes[path] = os.stat(path).st_mtime
+        except OSError:
+            pass
+
+
+def _files_modified() -> bool:
+    """Return True if any fixture file has been added, removed, or modified since last snapshot."""
+    if not _st.file_mtimes:
+        return False
+    try:
+        files = _discover_devices(_st.state_dir, _st.config_devices)
+    except CollectionError:
+        return False
+    current: dict = {}
+    for path in files:
+        try:
+            current[path] = os.stat(path).st_mtime
+        except OSError:
+            pass
+    changed = current != _st.file_mtimes
+    if changed:
+        _st.file_mtimes.clear()
+        _st.file_mtimes.update(current)
+    return changed
+
+
 def _refresh() -> None:
     now = time.monotonic()
     if _st.oid_keys and now - _st.last_load < _st.ttl:
@@ -2361,6 +2523,8 @@ def _refresh() -> None:
             pass   # keep last good data
         else:
             _build([], ts, EXIT_PARTIAL_FAILURE, f"unexpected: {exc}")
+    finally:
+        _snapshot_file_mtimes()
     _st.last_load = now
 
 
@@ -2498,12 +2662,23 @@ def main() -> None:
 
     wakeup_alarm = _register_wakeup_alarm(1)   # keep referenced
     next_refresh = time.monotonic() + max(1, _st.ttl)
+    next_mtime_check = 0.0
 
     try:
         while True:
             agent.check_and_process(block=True)
             now = time.monotonic()
-            if now >= next_refresh:
+            # check_and_process() returns once per SNMP packet; throttle the
+            # glob+stat scan to ~1s so a tree walk can't trigger a scan storm.
+            modified = False
+            if now >= next_mtime_check:
+                next_mtime_check = now + 1.0
+                modified = _files_modified()
+            if modified:
+                _st.last_load = 0.0  # force _refresh() past TTL guard
+                _refresh_and_publish(agent, scalars, tables)
+                next_refresh = now + max(1, _st.ttl)
+            elif now >= next_refresh:
                 _refresh_and_publish(agent, scalars, tables)
                 next_refresh = now + max(1, _st.ttl)
     except KeyboardInterrupt:
