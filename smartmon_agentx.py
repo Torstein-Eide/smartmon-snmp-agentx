@@ -49,7 +49,6 @@ logging.Logger.verbose = _verbose
 logging.Logger.notice  = _notice
 
 LOGGER = logging.getLogger("smartmon")
-LOG = LOGGER
 
 # --------------------------------------------------------------------------
 # SNMP constants
@@ -209,7 +208,7 @@ def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
                               f"no smartd JSON state files found in {state_dir!r}")
 
     files = sorted(files)
-    LOGGER.debug("discovered %d state files in %r", len(files), state_dir)
+    LOGGER.verbose("discovered %d state files in %r", len(files), state_dir)
     return files
 
 
@@ -383,7 +382,7 @@ def _merge_farm(raw: dict, spec: dict) -> None:
     fl = fjson.get("seagate_farm_log")
     if isinstance(fl, dict) and "page_4_environment_statistics" in fl:
         raw["seagate_farm_log"] = fl
-        LOGGER.info("FARM log merged for %s", spec["dev"])
+        LOGGER.verbose("FARM log merged for %s", spec["dev"])
 
 
 def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
@@ -391,7 +390,9 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
 
     Accepts a non-zero exit when the output is still valid JSON (SMART status
     bits set).  Returns None on real failure; flags perm issues for guidance."""
+    _t0 = time.monotonic()
     proc = _run_smartctl(["-x", "-j"] + spec["dev_args"] + [spec["dev"]])
+    elapsed = time.monotonic() - _t0
     out = proc.stdout or ""
     if proc.returncode != 0 and "json_format_version" not in out:
         if _looks_like_perm_failure(proc):
@@ -407,7 +408,7 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
                        spec["dev"], exc)
         return None
     _merge_farm(raw, spec)
-    LOGGER.debug("collected %s (type=%s)", spec["dev"], spec["dtype"])
+    LOGGER.verbose("collected %s (type=%s) in %.3fs", spec["dev"], spec["dtype"], elapsed)
     return spec["key"], raw
 
 
@@ -424,7 +425,7 @@ def _collect_all() -> List[Tuple[str, dict]]:
     if _st.collect_specs is None or _rescan_event.is_set():
         _rescan_event.clear()
         _st.collect_specs = _discover_drives()
-        LOGGER.info("discovered %d drive(s) via smartctl", len(_st.collect_specs))
+        LOGGER.verbose("discovered %d drive(s) via smartctl", len(_st.collect_specs))
     specs = _st.collect_specs
     if not specs:
         # Retry discovery next cycle (a transient/permission scan failure leaves
@@ -500,7 +501,7 @@ def _merge_farm_file(raw: dict, farm_path: str) -> None:
     if isinstance(fl, dict) and (fl.get("supported")
                                  or any(k.startswith("page_") for k in fl)):
         raw["seagate_farm_log"] = fl
-        LOGGER.info("FARM log merged from %s", os.path.basename(farm_path))
+        LOGGER.verbose("FARM log merged from %s", os.path.basename(farm_path))
 
 
 def _parse_device_from_raw(raw: dict, path: str) -> dict:
@@ -585,6 +586,8 @@ def _parse_device_from_raw(raw: dict, path: str) -> dict:
     result["serial_number"]    = serial_number
     result["firmware_version"] = firmware_version
     result["wwn"]              = wwn
+    LOGGER.verbose("parsed device %s (proto=%s model=%r)",
+                   result["name"] or path, proto_str, model_name)
     return result
 
 
@@ -798,6 +801,11 @@ class _State:
         self.selftest_progress: dict = {}
         self.file_mtimes: dict = {}
         self.published_fp: dict = {}
+        # Last counts logged at INFO; the "built OID table" / "published N OIDs"
+        # lines only emit at INFO when these change (otherwise VERBOSE), so a
+        # steady-state collect-mode poll does not repeat them every cycle.
+        self.last_built_devices    = -1
+        self.last_published_oids   = -1
         # ---- Notification baseline state (change detection across refreshes) ----
         # Set True after the first build so device-discovered traps are suppressed
         # for the devices present at startup.
@@ -919,7 +927,7 @@ def state_db_open(path: str) -> bool:
     Returns False on failure — non-fatal; timestamps still work within a run."""
     global _db, _db_path
     if not path:
-        LOGGER.info("state_db: disabled (no state_db configured)")
+        LOGGER.verbose("state_db: disabled (no state_db configured)")
         return True
     existed = os.path.exists(path)
     try:
@@ -929,13 +937,13 @@ def state_db_open(path: str) -> bool:
         _db.executescript(_STATE_DB_SCHEMA)
         _db.commit()
     except (sqlite3.Error, OSError) as exc:
-        LOGGER.warning("state_db: cannot open %r: %s", path, exc)
+        LOGGER.warning("state_db: cannot open %r: %s", path, exc, exc_info=True)
         if _db is not None:
             _db.close()
         _db = None
         return False
     _db_path = path
-    LOGGER.info("state_db: %s %r", "opened" if existed else "created", path)
+    LOGGER.verbose("state_db: %s %r", "opened" if existed else "created", path)
     return True
 
 
@@ -952,7 +960,7 @@ def state_db_load() -> None:
             _st.checksums[name]  = h
             _st.timestamps[name] = _from_epoch(ts)
             n += 1
-        LOGGER.info("state_db: loaded %d table timestamp(s)", n)
+        LOGGER.verbose("state_db: loaded %d table timestamp(s)", n)
 
         for dev, tid, h, ts in cur.execute(
                 "SELECT dev_id, table_id, hash, last_change FROM sata_by_dev_state"):
@@ -990,7 +998,7 @@ def state_db_load() -> None:
             }
         cur.close()
     except sqlite3.Error as exc:
-        LOGGER.warning("state_db: load failed: %s", exc)
+        LOGGER.warning("state_db: load failed: %s", exc, exc_info=True)
 
 
 def state_db_save() -> None:
@@ -1056,7 +1064,7 @@ def state_db_save() -> None:
                   int(p["estimated_completion"]))
                  for dev, p in _st.selftest_progress.items()])
     except sqlite3.Error as exc:
-        LOGGER.warning("state_db: save failed: %s", exc)
+        LOGGER.warning("state_db: save failed: %s", exc, exc_info=True)
 
 
 def state_db_close() -> None:
@@ -1426,7 +1434,7 @@ def _build(devices: list, ts: datetime,
         if fp != _st.checksums.get(tname):
             _st.checksums[tname]  = fp
             _st.timestamps[tname] = ts
-            LOGGER.notice("table %s changed (fp %08x)", tname, fp & 0xFFFFFFFF)
+            LOGGER.verbose("table %s changed (fp %08x)", tname, fp & 0xFFFFFFFF)
         add(lc_suffix, "datetimeval", _st.timestamps.get(tname, ts))
 
     # sata_info has no SNMP LastChange scalar but needs a stable fingerprint
@@ -1435,7 +1443,7 @@ def _build(devices: list, ts: datetime,
     if fp_si != _st.checksums.get("sata_info"):
         _st.checksums["sata_info"]  = fp_si
         _st.timestamps["sata_info"] = ts
-        LOGGER.notice("table sata_info changed (fp %08x)", fp_si & 0xFFFFFFFF)
+        LOGGER.verbose("table sata_info changed (fp %08x)", fp_si & 0xFFFFFFFF)
 
     # Build smartSATAChanges subtree after timestamps are updated so
     # MetadataTable lastChange reflects the current cycle's changes.
@@ -1521,6 +1529,7 @@ def _add_nvme_health(add, dev: dict, d_idx: int) -> None:
     Cols 3-6 are commented out in MIB (moved to SENSOR-MIB)."""
     T  = (3, 1, 15, 1)
     h  = _parse_nvme_health(dev["raw"])
+    LOGGER.verbose("parsed nvme health d_idx=%d", d_idx)
     hi = 1   # single health row per controller
     smart_ok = dev.get("smart_passed")
     overall  = 1 if smart_ok else (2 if smart_ok is False else 0)
@@ -1881,6 +1890,7 @@ def _parse_sata_info(raw: dict) -> dict:
 def _add_sata_info(add, dev: dict, d_idx: int) -> None:
     T = (4, 1, 3, 1)
     i = _parse_sata_info(dev["raw"])
+    LOGGER.verbose("parsed sata info d_idx=%d", d_idx)
     add(T+(1,  d_idx), *_integer(i["ata_version"]))
     add(T+(2,  d_idx), *_integer(i["sata_version"]))
     add(T+(3,  d_idx), *_gauge(i["rotation_rate"]))
@@ -2019,6 +2029,7 @@ def _add_sata_health(add, dev: dict, d_idx: int) -> None:
     """SATA health table (.4.1.6.1) — INDEX { smartmonDeviceIndex }."""
     T = (4, 1, 6, 1)
     h = _parse_sata_health(dev["raw"])
+    LOGGER.verbose("parsed sata health d_idx=%d", d_idx)
     smart_ok = dev.get("smart_passed")
     overall  = 1 if smart_ok else (2 if smart_ok is False else 0)
 
@@ -2096,6 +2107,7 @@ def _parse_sata_attrs(raw: dict) -> List[dict]:
 def _add_sata_attrs(add, dev: dict, d_idx: int) -> int:
     T    = (4, 1, 9, 1)
     rows = _parse_sata_attrs(dev["raw"])
+    LOGGER.verbose("parsed sata attrs d_idx=%d (%d rows)", d_idx, len(rows))
     for a in rows:
         ai = a["id"]
         add(T+(2,  d_idx, ai), *_string(a["name"]))
@@ -2129,6 +2141,7 @@ def _add_sas_health(add, dev: dict, d_idx: int) -> None:
     """SAS health table (.5.1.6.1) — INDEX { smartmonDeviceIndex, healthIdx(=1) }."""
     T  = (5, 1, 6, 1)
     h  = _parse_sas_health(dev["raw"])
+    LOGGER.verbose("parsed sas health d_idx=%d", d_idx)
     hi = 1
     add(T+(1, d_idx, hi), *_integer(h["overall"]))
     add(T+(2, d_idx, hi), *_gauge(h["grown_defects"]))
@@ -2167,6 +2180,7 @@ def _add_sas_error_counters(add, dev: dict, d_idx: int) -> None:
     Col 1 is direction (NOT-ACCESSIBLE index); data starts at col 2."""
     T    = (5, 1, 9, 1)
     rows = _parse_sas_error_counters(dev["raw"])
+    LOGGER.verbose("parsed sas error counters d_idx=%d (%d rows)", d_idx, len(rows))
     for r in rows:
         di = r["direction"]
         add(T+(2, d_idx, di), *_counter64(r["ecc_delayed"]))
@@ -2652,25 +2666,28 @@ def _discover_agent_fds(api) -> list:
             if (_SEL_FDSET.fds_bits[fd // _NFDBITS] >> (fd % _NFDBITS)) & 1]
 
 
-def _agent_wait(api, max_timeout: float) -> None:
+def _agent_wait(api, max_timeout: float) -> bool:
     """Block until a net-snmp fd is readable or max_timeout elapses.
 
-    Keeps the loop responsive to client packets (so walks run at full speed) yet
-    wakes at least every max_timeout to flush queued traps/snapshots."""
+    Returns True when a packet arrived (fds were readable), False on idle timeout
+    or the no-fd/stale-fd paths — the caller uses this to track SNMP request
+    bursts.  Keeps the loop responsive to client packets (so walks run at full
+    speed) yet wakes at least every max_timeout to flush queued traps/snapshots."""
     global _sel_fds
     if _sel_fds is None:
         _sel_fds = _discover_agent_fds(api)
     if not _sel_fds:
         time.sleep(max_timeout)
         _sel_fds = None   # re-discover once the agent's fds appear
-        return
+        return False
     try:
         ready, _, _ = select.select(_sel_fds, [], [], max_timeout)
     except (OSError, ValueError):
         _sel_fds = None   # stale fd (master reconnect) — rediscover next time
-        return
+        return False
     if not ready:
         _sel_fds = None   # idle timeout — cheap moment to refresh the fd list
+    return bool(ready)
 
 
 def _vb_append(api, vars_ref, oid_tuple, kind, value) -> None:
@@ -2716,7 +2733,7 @@ def _send_trap(trap_oid: tuple, varbinds: list) -> None:
     try:
         api = _get_trap_api()
     except Exception as exc:        # pragma: no cover - missing net-snmp
-        LOG.error("trap: net-snmp API unavailable: %s", exc)
+        LOGGER.error("trap: net-snmp API unavailable: %s", exc)
         return
     vars_p = api.netsnmp_variable_list_p()   # NULL list head
     vars_ref = ctypes.byref(vars_p)
@@ -2771,7 +2788,7 @@ def _notify_device_discovered(d_idx: int, dev: dict) -> None:
     vb.append((_full((2, 1, 3, 1, 4)) + (d_idx,), "int", dev["device_type"]))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full((2, 3, 1)), vb))
-    LOG.info("notify: device_discovered d_idx=%d path=%s", d_idx, dev["device_path"])
+    LOGGER.info("notify: device_discovered d_idx=%d path=%s", d_idx, dev["device_path"])
 
 
 def _notify_device_removed(info: dict) -> None:
@@ -2779,7 +2796,7 @@ def _notify_device_removed(info: dict) -> None:
     vb = _vb_device_identity(d_idx, info["name"], info["device_path"])
     vb.append((_full((2, 1, 3, 1, 4)) + (d_idx,), "int", info["dev_type"]))
     _notify_q.put((_full((2, 3, 2)), vb))
-    LOG.info("notify: device_removed d_idx=%d path=%s", d_idx, info["device_path"])
+    LOGGER.info("notify: device_removed d_idx=%d path=%s", d_idx, info["device_path"])
 
 
 def _notify_device_poll_failed(info: dict) -> None:
@@ -2788,7 +2805,7 @@ def _notify_device_poll_failed(info: dict) -> None:
     vb.append((_full((2, 1, 3, 1, 6)) + (d_idx,), "int", _POLL_RESULT["failed"]))
     vb.append((_full((2, 1, 7, 0)), "uint", _st.poll_failure_threshold))
     _notify_q.put((_full((2, 3, 3)), vb))
-    LOG.info("notify: device_poll_failed d_idx=%d path=%s", d_idx, info["device_path"])
+    LOGGER.notice("notify: device_poll_failed d_idx=%d path=%s", d_idx, info["device_path"])
 
 
 def _notify_health_changed(d_idx: int, dev: dict, new_status: int) -> None:
@@ -2807,7 +2824,7 @@ def _notify_health_changed(d_idx: int, dev: dict, new_status: int) -> None:
         vb.append((_full((5, 1, 6, 1, 1)) + (d_idx, 1), "int", new_status))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((trap, vb))
-    LOG.info("notify: health_changed d_idx=%d proto=%s status=%d", d_idx, proto, new_status)
+    LOGGER.notice("notify: health_changed d_idx=%d proto=%s status=%d", d_idx, proto, new_status)
 
 
 def _notify_nvme_selftest_failed(d_idx: int, dev: dict, st: dict) -> None:
@@ -2819,7 +2836,7 @@ def _notify_nvme_selftest_failed(d_idx: int, dev: dict, st: dict) -> None:
     vb.append((_full((3, 1, 18, 1, 5)) + (d_idx, e), "str",   st["result_text"]))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full((3, 2, 2)), vb))
-    LOG.info("notify: nvme_selftest_failed d_idx=%d entry=%d", d_idx, e)
+    LOGGER.notice("notify: nvme_selftest_failed d_idx=%d entry=%d", d_idx, e)
 
 
 def _notify_sata_selftest_failed(d_idx: int, dev: dict, st: dict) -> None:
@@ -2829,7 +2846,7 @@ def _notify_sata_selftest_failed(d_idx: int, dev: dict, st: dict) -> None:
     vb.append((_full((4, 1, 18, 1, 3)) + (d_idx, e), "int", st["result"]))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full((4, 2, 3)), vb))
-    LOG.info("notify: sata_selftest_failed d_idx=%d entry=%d", d_idx, e)
+    LOGGER.notice("notify: sata_selftest_failed d_idx=%d entry=%d", d_idx, e)
 
 
 def _notify_sata_attr_failing(d_idx: int, dev: dict, a: dict) -> None:
@@ -2841,7 +2858,7 @@ def _notify_sata_attr_failing(d_idx: int, dev: dict, a: dict) -> None:
     vb.append((_full((4, 1, 9, 1, 8)) + (d_idx, ai), "gauge", a["thresh"]))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full((4, 2, 2)), vb))
-    LOG.info("notify: sata_attr_failing d_idx=%d attr=%d value=%d thresh=%d",
+    LOGGER.notice("notify: sata_attr_failing d_idx=%d attr=%d value=%d thresh=%d",
              d_idx, ai, a["value"], a["thresh"])
 
 
@@ -2850,7 +2867,7 @@ def _notify_sas_uncorrected(d_idx: int, dev: dict, direction: int, count: int) -
     vb.append((_full((5, 1, 9, 1, 8)) + (d_idx, direction), "c64", count))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full((5, 2, 3)), vb))
-    LOG.info("notify: sas_uncorrected d_idx=%d dir=%d count=%d", d_idx, direction, count)
+    LOGGER.notice("notify: sas_uncorrected d_idx=%d dir=%d count=%d", d_idx, direction, count)
 
 
 # Sensor MIB threshold column for each alarm state, and the trap OID suffix.
@@ -2873,7 +2890,7 @@ def _notify_sensor_alarm(d_idx: int, dev: dict, s: dict, state: int) -> None:
     vb.append((_full((6, 1, 3, 1, 9)) + (d_idx, si), "str", s["units_display"]))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full(trap_suffix), vb))
-    LOG.info("notify: sensor alarm d_idx=%d sensor=%s state=%d value=%d",
+    LOGGER.notice("notify: sensor alarm d_idx=%d sensor=%s state=%d value=%d",
              d_idx, s["name"], state, s["value"])
 
 
@@ -2886,7 +2903,7 @@ def _notify_sensor_recovered(d_idx: int, dev: dict, s: dict) -> None:
     vb.append((_full((6, 1, 3, 1, 9)) + (d_idx, si), "str", s["units_display"]))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full((6, 2, 5)), vb))
-    LOG.info("notify: sensor_recovered d_idx=%d sensor=%s", d_idx, s["name"])
+    LOGGER.notice("notify: sensor_recovered d_idx=%d sensor=%s", d_idx, s["name"])
 
 
 # ---- signal extraction (current values used for change detection) ----
@@ -3496,6 +3513,7 @@ def _register_scalars(agent: Any) -> Dict[Oid, Any]:
     scalars = {}
     for oid, snmp_type in _scalar_definitions().items():
         scalars[oid] = _make_scalar(agent, _scalar_oid(oid[len(BASE_OID):]), snmp_type)
+    LOGGER.info("registered %d scalars", len(scalars))
     return scalars
 
 
@@ -3511,6 +3529,7 @@ def _register_tables(agent: Any) -> Dict[str, Any]:
             indexes=[agent.Unsigned32() for _ in range(defn["indexes"])],
             columns=columns,
         )
+    LOGGER.info("registered %d tables", len(tables))
     return tables
 
 
@@ -3597,6 +3616,17 @@ def _publish_tables(agent: Any, tables: Dict[str, Any], oid_map: dict) -> None:
                 row.setRowCell(col, _make_value(agent, vtype, val))
 
 
+def _log_published(n_oids: int, elapsed: float) -> None:
+    """Log a publish at INFO only when the OID count changed since the last INFO
+    line; otherwise VERBOSE. Keeps steady-state collect-mode polls from repeating
+    'published N OIDs' every cycle when nothing was added or removed."""
+    if n_oids != _st.last_published_oids:
+        LOGGER.info("published %d OIDs in %.2fs", n_oids, elapsed)
+        _st.last_published_oids = n_oids
+    else:
+        LOGGER.verbose("published %d OIDs in %.2fs", n_oids, elapsed)
+
+
 def _refresh_and_publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any]) -> None:
     """Synchronous refresh + publish on the main thread.
 
@@ -3606,7 +3636,7 @@ def _refresh_and_publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, 
     before = time.monotonic()
     _refresh()
     _publish(agent, scalars, tables, _st.oid_map)
-    LOG.info("published %d OIDs in %.2fs", len(_st.oid_map), time.monotonic() - before)
+    _log_published(len(_st.oid_map), time.monotonic() - before)
 
 
 def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
@@ -3622,6 +3652,9 @@ def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
 # test's wait window.  CI runs with ttl=0 for fast trap delivery; production
 # sets a larger TTL to trade trap/refresh latency for lower idle cost.
 NOTIFY_POLL_INTERVAL = 0.05
+# Seconds of SNMP inactivity after which the main loop prints a VERBOSE summary
+# of the just-finished request burst (start line + count/duration/rate).
+SNMP_IDLE_SUMMARY_SEC = 10.0
 
 
 def _udev_monitor_loop(stop: threading.Event) -> None:
@@ -3635,6 +3668,7 @@ def _udev_monitor_loop(stop: threading.Event) -> None:
     discovery (collect_specs forced to None)."""
     cmd = ["udevadm", "monitor", "--kernel", "--udev", "--property",
            "--subsystem-match=block"]
+    LOGGER.info("udev monitor started")
     while not stop.is_set():
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -3682,6 +3716,7 @@ def _collector_loop(stop: threading.Event) -> None:
     IO); change detection inside _build() appends trap descriptors onto _notify_q
     and the rebuilt oid_map onto _publish_q.  The main loop pops both and is the
     sole net-snmp caller — this thread never touches net-snmp."""
+    LOGGER.info("collector thread started")
     while not stop.is_set():
         poll_interval = _st.ttl if _st.ttl > 0 else NOTIFY_POLL_INTERVAL
         # wait() returns early only on shutdown (_refresh_request set in finally).
@@ -3702,6 +3737,7 @@ def _collector_loop(stop: threading.Event) -> None:
         # so we skip the redundant publish.
         if _st.oid_map is not prev_map:
             _publish_q.put(_st.oid_map)
+    LOGGER.info("collector thread stopped")
 
 
 def _set_error_scalar(code: int, message: str) -> None:
@@ -3718,14 +3754,18 @@ def _collect_and_build(ts: datetime) -> None:
     # Collect mode pulls smartctl directly and parses in-memory (no state_dir);
     # file mode globs state_dir and parses the JSON files.  Both produce a list
     # of (key, device-dict) pairs that the shared removal/build logic consumes.
+    t0 = time.monotonic()
     if _st.collect:
         collected = _collect_all()
+        t1 = time.monotonic()
         items   = [(key, _parse_device_from_raw(raw, key)) for key, raw in collected]
         present = {key for key, _ in collected}
     else:
         files   = _discover_devices(_st.state_dir, _st.config_devices)
+        t1 = time.monotonic()
         items   = [(path, _parse_device_json(path)) for path in files]
         present = set(files)
+    t2 = time.monotonic()
 
     # Removal: a device whose key disappeared since the last cycle.  In collect
     # mode a drive that fails to pull is simply absent and counts as removed.
@@ -3755,7 +3795,15 @@ def _collect_and_build(ts: datetime) -> None:
     err_code = EXIT_PARTIAL_FAILURE if errors else EXIT_SUCCESS
     err_msg  = f"{errors} device(s) failed to parse" if errors else ""
     _build(devices, ts, err_code, err_msg)
-    LOGGER.notice("built OID table: %d devices (%d errors)", len(devices), errors)
+    LOGGER.verbose("refresh timing: collect %.3fs, parse %.3fs, build %.3fs "
+                   "(%d devices)", t1 - t0, t2 - t1, time.monotonic() - t2, len(devices))
+    if errors:
+        LOGGER.notice("built OID table: %d devices (%d errors)", len(devices), errors)
+    elif len(devices) != _st.last_built_devices:
+        LOGGER.info("built OID table: %d devices", len(devices))
+        _st.last_built_devices = len(devices)
+    else:
+        LOGGER.verbose("built OID table: %d devices", len(devices))
 
 
 def _file_signature(path: str) -> Optional[tuple]:
@@ -3819,7 +3867,7 @@ def _refresh() -> None:
     if _st.oid_keys and now - _st.last_load < _st.ttl:
         LOGGER.debug("cache hit (age=%.1fs ttl=%ds)", now - _st.last_load, _st.ttl)
         return
-    LOGGER.notice("refreshing data (age=%.1fs ttl=%ds)",
+    LOGGER.verbose("refreshing data (age=%.1fs ttl=%ds)",
                   now - _st.last_load if _st.last_load else 0, _st.ttl)
     ts = datetime.now(timezone.utc)
     try:
@@ -3867,7 +3915,7 @@ def _load_config(path: str) -> dict:
                     if len(parts) == 2:
                         cfg[parts[0]] = parts[1]
     except OSError as exc:
-        LOGGER.warning("could not read config %s: %s", path, exc)
+        LOGGER.warning("could not read config %s: %s", path, exc, exc_info=True)
     return cfg
 
 
@@ -3947,6 +3995,10 @@ def main() -> None:
 
     _configure_smartmon(args, cfg)
 
+    LOGGER.info("smartmon AgentX v%d starting: mode=%s source=%s socket=%s "
+                "cache_timeout=%ds", VERSION, "collect" if _st.collect else "file",
+                "smartctl" if _st.collect else _st.state_dir, agentx_socket, _st.ttl)
+
     if not _st.collect and not _st.state_dir:
         LOGGER.error("state_dir not configured; pass --state-dir or set it in the config file")
         sys.exit(EXIT_CONFIG_ERROR)
@@ -4013,12 +4065,18 @@ def main() -> None:
                                        name="smartmon-udev", daemon=True)
         udev_thread.start()
 
+    # SNMP request-burst tracking for the VERBOSE performance summary.
+    walk_active = False
+    walk_count  = 0
+    walk_start  = 0.0
+    walk_last   = 0.0
+
     try:
         while True:
             # Block on the agent's fds (processing packets as fast as they
             # arrive) but wake at least every NOTIFY_POLL_INTERVAL so the worker's
             # queued traps and snapshots are flushed even with no client traffic.
-            _agent_wait(api, NOTIFY_POLL_INTERVAL)
+            active = _agent_wait(api, NOTIFY_POLL_INTERVAL)
 
             # Process all packets that are now pending.  We deliberately do NOT
             # poke the worker per packet: it polls file mtimes every
@@ -4027,24 +4085,40 @@ def main() -> None:
             # the bulk of the walk slowdown) with no benefit.
             agent.check_and_process(block=False)
 
+            # Track SNMP request bursts: log the start of activity, count the
+            # request iterations (a proxy for GET/GETNEXT PDUs served), and print a
+            # one-line summary once the burst has been idle for SNMP_IDLE_SUMMARY_SEC.
+            now = time.monotonic()
+            if active:
+                if not walk_active:
+                    walk_active, walk_start, walk_count = True, now, 0
+                    LOGGER.verbose("SNMP request activity started")
+                walk_count += 1
+                walk_last = now
+            elif walk_active and now - walk_last >= SNMP_IDLE_SUMMARY_SEC:
+                dur  = walk_last - walk_start
+                rate = walk_count / dur if dur > 0 else 0.0
+                LOGGER.verbose("SNMP activity summary: ~%d requests over %.1fs "
+                               "(%.0f req/s)", walk_count, dur, rate)
+                walk_active = False
+
             # Drain to the most recent snapshot; publish it on this (main) thread.
             # A snapshot is only queued when the worker actually rebuilt, and that
             # same rebuild is the only thing that queues traps — so trap sending is
             # coupled to a real data refresh and skipped on every other iteration.
-            if not _publish_q.empty():
-                snapshot = None
-                while not _publish_q.empty():
-                    snapshot = _publish_q.get_nowait()
-                if snapshot is not None:
-                    before = time.monotonic()
-                    _publish(agent, scalars, tables, snapshot)
-                    LOG.info("published %d OIDs in %.2fs",
-                             len(snapshot), time.monotonic() - before)
-                    # Send the traps detected during that refresh (sole net-snmp caller).
-                    _drain_and_send_traps()
+            snapshot = None
+            while not _publish_q.empty():
+                snapshot = _publish_q.get_nowait()
+            if snapshot is not None:
+                before = time.monotonic()
+                _publish(agent, scalars, tables, snapshot)
+                _log_published(len(snapshot), time.monotonic() - before)
+                # Send the traps detected during that refresh (sole net-snmp caller).
+                _drain_and_send_traps()
     except KeyboardInterrupt:
         pass
     finally:
+        LOGGER.info("smartmon AgentX shutting down")
         stop_event.set()
         _refresh_request.set()   # wake the worker so it observes stop promptly
         # The udev thread blocks on udevadm's stdout; terminate it to unblock.
