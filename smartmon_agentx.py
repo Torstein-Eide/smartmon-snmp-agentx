@@ -13,8 +13,10 @@ import glob
 import json
 import logging
 import os
+import queue
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -484,6 +486,17 @@ class _State:
 
 
 _st = _State()
+
+# Producer/consumer handoff: the worker thread builds a fresh oid_map and puts
+# it here; the main thread drains it and runs the (net-snmp-touching) publish.
+# Only the worker mutates _st; only the main thread reads queued snapshots.
+_publish_q: "queue.Queue[dict]" = queue.Queue()
+
+# Lazy refresh: after the initial load there is NO background refresh timer.
+# The main thread sets this event whenever a client (SNMP/AgentX) packet wakes
+# check_and_process, and the worker only re-reads state files when asked — and
+# even then only past the TTL guard (or when fixture mtimes changed).
+_refresh_request = threading.Event()
 
 # Table prefix tuples for fingerprinting (full OID prefix of each table entry)
 _TABLE_PREFIXES = {
@@ -2352,11 +2365,11 @@ def _register_tables(agent: Any) -> Dict[str, Any]:
     return tables
 
 
-def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
+def _publish_scalars(scalars: Dict[Oid, Any], oid_map: dict) -> None:
     now = datetime.now(timezone.utc)
     defns = _scalar_definitions()
     for oid, scalar in scalars.items():
-        snmp_type, value = _st.oid_map.get(oid, (None, None))
+        snmp_type, value = oid_map.get(oid, (None, None))
         if snmp_type is None:
             dtype = defns[oid]
             if dtype == "datetimeval":
@@ -2382,7 +2395,7 @@ def _publish_scalars(scalars: Dict[Oid, Any]) -> None:
             scalar.update(_as_int(value))
 
 
-def _publish_tables(agent: Any, tables: Dict[str, Any]) -> None:
+def _publish_tables(agent: Any, tables: Dict[str, Any], oid_map: dict) -> None:
     # Bucket every OID into its table in a single pass over oid_map (O(M))
     # instead of rescanning the whole map once per table (O(tables * M)).
     # Table entry prefixes have only a couple of distinct lengths, so each
@@ -2401,7 +2414,7 @@ def _publish_tables(agent: Any, tables: Dict[str, Any]) -> None:
                      "rows":        {}}
     probe_lens = sorted(prefix_lens)
 
-    for oid, (snmp_type, value) in _st.oid_map.items():
+    for oid, (snmp_type, value) in oid_map.items():
         for plen in probe_lens:
             name = prefix_to_name.get(oid[:plen])
             if name is None:
@@ -2436,11 +2449,60 @@ def _publish_tables(agent: Any, tables: Dict[str, Any]) -> None:
 
 
 def _refresh_and_publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any]) -> None:
+    """Synchronous refresh + publish on the main thread.
+
+    Used for the initial publish at startup and for `--once`. In daemon mode the
+    steady-state refresh runs on the worker thread (_collector_loop) and publish
+    is driven from the queued snapshot in main()."""
     before = time.monotonic()
     _refresh()
-    _publish_scalars(scalars)
-    _publish_tables(agent, tables)
+    _publish(agent, scalars, tables, _st.oid_map)
     LOG.info("published %d OIDs in %.2fs", len(_st.oid_map), time.monotonic() - before)
+
+
+def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
+             oid_map: dict) -> None:
+    """Push one oid_map snapshot to net-snmp. MAIN THREAD ONLY (net-snmp is not
+    thread-safe)."""
+    _publish_scalars(scalars, oid_map)
+    _publish_tables(agent, tables, oid_map)
+
+
+def _collector_loop(stop: threading.Event) -> None:
+    """Producer thread: owns all data collection and _st mutation.
+
+    Lazy / client-driven: blocks on _refresh_request until the main thread (on
+    client packet activity) asks for a refresh — there is no proactive timer.
+    When asked, it runs _refresh() (discover→parse→_build, pure Python + file
+    IO), which still honours the TTL guard, so a burst of requests within the
+    TTL re-reads nothing; fixture mtime changes force a rebuild past the TTL.
+    Hands the freshly built oid_map to the main thread over _publish_q; never
+    touches net-snmp."""
+    next_mtime_check = 0.0
+    while not stop.is_set():
+        # Wait until asked (short timeout only so shutdown is observed promptly).
+        if not _refresh_request.wait(timeout=1.0):
+            continue
+        _refresh_request.clear()
+        if stop.is_set():
+            break
+
+        now = time.monotonic()
+        modified = False
+        if now >= next_mtime_check:
+            next_mtime_check = now + 1.0
+            modified = _files_modified()
+
+        prev_map = _st.oid_map
+        if modified:
+            _st.last_load = 0.0          # force _refresh() past the TTL guard
+        _refresh()                       # TTL guard inside decides whether to rebuild
+
+        # _build() rebinds _st.oid_map to a brand-new dict only when it actually
+        # rebuilt; on the keep-last-good error path the identity is unchanged,
+        # so we skip the redundant publish.
+        if _st.oid_map is not prev_map:
+            _publish_q.put(_st.oid_map)
 
 
 def _set_error_scalar(code: int, message: str) -> None:
@@ -2562,21 +2624,6 @@ def _load_config(path: str) -> dict:
     return cfg
 
 
-def _register_wakeup_alarm(interval_s: int) -> Any:
-    import ctypes
-    import netsnmpapi
-    SA_REPEAT = 1
-    callback_type = ctypes.CFUNCTYPE(None, ctypes.c_uint, ctypes.c_void_p)
-    callback = callback_type(lambda reg, arg: None)
-    lib = netsnmpapi.libnsa
-    lib.snmp_alarm_register.restype  = ctypes.c_uint
-    lib.snmp_alarm_register.argtypes = [
-        ctypes.c_uint, ctypes.c_uint, callback_type, ctypes.c_void_p,
-    ]
-    lib.snmp_alarm_register(max(1, int(interval_s)), SA_REPEAT, callback, None)
-    return callback
-
-
 def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
     ttl       = args.ttl if args.ttl is not None else int(cfg.get("ttl", CACHE_TTL))
     log_level = args.log_level or str(cfg.get("log_level", "WARNING")).upper()
@@ -2660,29 +2707,43 @@ def main() -> None:
     if args.once:
         return
 
-    wakeup_alarm = _register_wakeup_alarm(1)   # keep referenced
-    next_refresh = time.monotonic() + max(1, _st.ttl)
-    next_mtime_check = 0.0
+    # Producer/consumer split, lazy refresh: the worker thread owns all data
+    # collection and _st mutation; the main thread answers SNMP via
+    # check_and_process and only publishes the snapshots the worker hands it
+    # over _publish_q. There is NO background refresh timer — after the initial
+    # synchronous build+publish above, the worker stays idle until a client
+    # packet wakes check_and_process, at which point the main thread asks it to
+    # refresh (still TTL-gated). check_and_process(block=True) blocks on the
+    # AgentX socket, so it wakes on client GET/GETNEXT and master keepalives.
+    stop_event = threading.Event()
+    worker = threading.Thread(target=_collector_loop, args=(stop_event,),
+                              name="smartmon-collector", daemon=True)
+    worker.start()
 
     try:
         while True:
             agent.check_and_process(block=True)
-            now = time.monotonic()
-            # check_and_process() returns once per SNMP packet; throttle the
-            # glob+stat scan to ~1s so a tree walk can't trigger a scan storm.
-            modified = False
-            if now >= next_mtime_check:
-                next_mtime_check = now + 1.0
-                modified = _files_modified()
-            if modified:
-                _st.last_load = 0.0  # force _refresh() past TTL guard
-                _refresh_and_publish(agent, scalars, tables)
-                next_refresh = now + max(1, _st.ttl)
-            elif now >= next_refresh:
-                _refresh_and_publish(agent, scalars, tables)
-                next_refresh = now + max(1, _st.ttl)
+            # A client (or master) packet arrived: ask the worker to refresh
+            # (the TTL guard makes this a no-op until the cache expires).
+            _refresh_request.set()
+            # Drain to the most recent snapshot; publish it on this (main) thread.
+            snapshot = None
+            while True:
+                try:
+                    snapshot = _publish_q.get_nowait()
+                except queue.Empty:
+                    break
+            if snapshot is not None:
+                before = time.monotonic()
+                _publish(agent, scalars, tables, snapshot)
+                LOG.info("published %d OIDs in %.2fs",
+                         len(snapshot), time.monotonic() - before)
     except KeyboardInterrupt:
         pass
+    finally:
+        stop_event.set()
+        _refresh_request.set()   # wake the worker so it observes stop promptly
+        worker.join(timeout=2.0)
 
 
 if __name__ == "__main__":
