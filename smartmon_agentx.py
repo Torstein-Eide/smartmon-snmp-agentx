@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import getpass
 import glob
 import json
 import logging
@@ -17,6 +18,8 @@ import os
 import queue
 import re
 import select
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -184,6 +187,229 @@ def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
     return files
 
 
+# ==========================================================================
+# Part 1b — Native collection (smartctl pulled directly, no state_dir files)
+#
+# Enabled by `collect: true` / --collect.  A native Python port of
+# bin/smartmon-collect: scan drives, run `smartctl -x -j` per drive, merge the
+# Seagate FARM log, and hand the parsed objects straight to the build pipeline.
+# When not root, smartctl is wrapped in `sudo -n` so only smartctl needs a
+# sudoers grant; a failed pull emits one-shot guidance on how to add it.
+# ==========================================================================
+
+# stderr fragments that indicate the smartctl call was blocked by privilege,
+# not by a real device error — used to surface actionable sudoers guidance.
+_PERM_HINTS = ("a password is required", "sudo:", "permission denied",
+               "open device", "must be root", "operation not permitted")
+
+
+def _smartctl_cmd() -> List[str]:
+    """Base smartctl argv: bare when root, wrapped in `sudo -n` otherwise."""
+    path = shutil.which("smartctl") or "smartctl"
+    if os.geteuid() == 0:
+        return [path]
+    return ["sudo", "-n", path]
+
+
+def _run_smartctl(args: List[str], timeout: int = 60) -> "subprocess.CompletedProcess":
+    """Run smartctl with the configured base argv.
+
+    Never raises: a non-zero exit is returned as-is, and a missing binary or a
+    timeout (hung drive) is surfaced as a synthetic failed result so a single
+    stuck device can't take down the whole collect cycle."""
+    cmd = _smartctl_cmd() + args
+    try:
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "smartctl timed out")
+    except OSError as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def _looks_like_perm_failure(proc: "subprocess.CompletedProcess") -> bool:
+    err = (proc.stderr or "").lower()
+    return any(h in err for h in _PERM_HINTS)
+
+
+def _warn_sudoers_once() -> None:
+    """Log, at most once per run, how to grant the agent passwordless smartctl."""
+    if _st.sudoers_warned:
+        return
+    _st.sudoers_warned = True
+    user = getpass.getuser()
+    path = shutil.which("smartctl") or "/usr/sbin/smartctl"
+    LOGGER.error(
+        "cannot read SMART data as non-root user %r — smartctl needs privilege. "
+        "Grant passwordless access with:\n"
+        "    echo '%s ALL=(root) NOPASSWD: %s' | sudo tee /etc/sudoers.d/smartmon-agentx",
+        user, user, path)
+
+
+def _drive_suffix(dtype: str, dev: str) -> str:
+    """Map a smartctl device type / node to a protocol suffix (ata/nvme/...)."""
+    if dtype.startswith("nvme"):
+        return "nvme"
+    if dtype == "sat":
+        return "sat"
+    if dtype in ("scsi", "sas"):
+        return "scsi"
+    if dtype == "ata":
+        return "ata"
+    # auto / unknown: derive from the device node name
+    return "nvme" if "/nvme" in dev else "ata"
+
+
+def _byid_name(dev: str) -> str:
+    """Return a stable /dev/disk/by-id name for `dev`, else an encoded node path.
+
+    Mirrors bin/smartmon-collect: prefer nvme-/ata-/scsi- aliases over
+    eui./wwn./dm- ones, skip partitions, and keep the shortest among ties."""
+    try:
+        real = os.path.realpath(dev)
+    except OSError:
+        real = dev
+    # NVMe controller nodes (/dev/nvmeN) — by-id symlinks target /dev/nvmeNn1.
+    real_alt = ""
+    m = re.match(r"/dev/nvme(\d+)$", real)
+    if m:
+        real_alt = f"/dev/nvme{m.group(1)}n1"
+
+    byid = "/dev/disk/by-id"
+    chosen = ""
+    if os.path.isdir(byid):
+        for base in os.listdir(byid):
+            link = os.path.join(byid, base)
+            if not os.path.islink(link):
+                continue
+            try:
+                target = os.path.realpath(link)
+            except OSError:
+                continue
+            if target not in (real, real_alt):
+                continue
+            if "-part" in base:
+                continue
+            preferred = base.startswith(("nvme-", "ata-", "scsi-"))
+            if not chosen:
+                chosen = base
+            elif preferred and not chosen.startswith(("nvme-", "ata-", "scsi-")):
+                chosen = base
+            elif preferred and len(base) < len(chosen):
+                chosen = base
+    if chosen:
+        return chosen
+    return dev.lstrip("/").replace("/", "_")
+
+
+def _discover_drives() -> List[dict]:
+    """Scan for drives via smartctl; return one spec dict per drive.
+
+    Spec: {dev, dtype, dev_args, suffix, key}.  `key` is the synthesized stable
+    identity used as dev["path"] downstream (removal / consec_fail tracking)."""
+    proc = _run_smartctl(["--scan-open"])
+    out = proc.stdout or ""
+    if proc.returncode != 0 and not out.strip():
+        proc = _run_smartctl(["--scan"])
+        out = proc.stdout or ""
+    if not out.strip():
+        if _looks_like_perm_failure(proc):
+            _warn_sudoers_once()
+        return []
+
+    specs: List[dict] = []
+    for line in out.splitlines():
+        # Line format: /dev/DEVICE -d TYPE # comment
+        parts = line.split()
+        if not parts or not parts[0].startswith("/dev/"):
+            continue
+        dev = parts[0]
+        dflag = parts[1] if len(parts) > 1 else ""
+        dtype = parts[2] if len(parts) > 2 else ""
+        if dflag == "-d" and dtype:
+            dev_args = ["-d", dtype]
+        else:
+            dtype = "auto"
+            dev_args = []
+        suffix = _drive_suffix(dtype, dev)
+        key = f"collect:{_byid_name(dev)}.{suffix}"
+        specs.append({"dev": dev, "dtype": dtype, "dev_args": dev_args,
+                      "suffix": suffix, "key": key})
+    return specs
+
+
+def _merge_farm(raw: dict, spec: dict) -> None:
+    """For ATA/SAT drives, fetch GP Log 0xa6 when -x signals FARM support but
+    omits the page data, and splice it into raw (mirrors bin/smartmon-collect)."""
+    if spec["suffix"] not in ("ata", "sat"):
+        return
+    farm = raw.get("seagate_farm_log")
+    if not isinstance(farm, dict) or not farm.get("supported"):
+        return
+    if "page_4_environment_statistics" in farm:
+        return  # already fully present in the -x output
+    proc = _run_smartctl(["-l", "farm", "-j"] + spec["dev_args"] + [spec["dev"]])
+    try:
+        fjson = json.loads(proc.stdout or "")
+    except json.JSONDecodeError:
+        return
+    fl = fjson.get("seagate_farm_log")
+    if isinstance(fl, dict) and "page_4_environment_statistics" in fl:
+        raw["seagate_farm_log"] = fl
+        LOGGER.info("FARM log merged for %s", spec["dev"])
+
+
+def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
+    """Pull one drive: run `smartctl -x -j`, merge FARM, return (key, raw).
+
+    Accepts a non-zero exit when the output is still valid JSON (SMART status
+    bits set).  Returns None on real failure; flags perm issues for guidance."""
+    proc = _run_smartctl(["-x", "-j"] + spec["dev_args"] + [spec["dev"]])
+    out = proc.stdout or ""
+    if proc.returncode != 0 and "json_format_version" not in out:
+        if _looks_like_perm_failure(proc):
+            _warn_sudoers_once()
+        else:
+            LOGGER.warning("smartctl failed for %s (type=%s) — skipped",
+                           spec["dev"], spec["dtype"])
+        return None
+    try:
+        raw = json.loads(out)
+    except json.JSONDecodeError as exc:
+        LOGGER.warning("smartctl output for %s was not valid JSON: %s",
+                       spec["dev"], exc)
+        return None
+    _merge_farm(raw, spec)
+    LOGGER.debug("collected %s (type=%s)", spec["dev"], spec["dtype"])
+    return spec["key"], raw
+
+
+def _collect_all() -> List[Tuple[str, dict]]:
+    """Discover and pull every drive.  Sequential today; this loop is the seam
+    for a future ThreadPoolExecutor (parallel per-disk pulls).
+
+    Raises CollectionError when no drives are found, or when drives exist but
+    every pull is blocked (e.g. missing sudoers grant)."""
+    specs = _discover_drives()
+    LOGGER.info("discovered %d drive(s) via smartctl", len(specs))
+    if not specs:
+        raise CollectionError(EXIT_NO_DEVICES, "no drives discovered via smartctl")
+
+    collected: List[Tuple[str, dict]] = []
+    for spec in specs:
+        res = _collect_one(spec)
+        if res is not None:
+            collected.append(res)
+
+    if not collected:
+        if _st.sudoers_warned:
+            raise CollectionError(EXIT_PERMISSION_DENIED,
+                                  "smartctl could not access any drive (privilege)")
+        raise CollectionError(EXIT_PARTIAL_FAILURE,
+                              "smartctl could not collect any drive")
+    return collected
+
+
 def _parse_device_info_string(s: str) -> dict:
     """Parse smartd device_info like 'MODEL, S/N:SN, WWN:w, FW:fw, SIZE'."""
     result: Dict[str, str] = {"model": "", "serial": "", "firmware": "", "wwn": ""}
@@ -215,10 +441,23 @@ def _parse_device_json(path: str) -> dict:
     try:
         with open(path) as fh:
             raw = json.load(fh)
-        result["raw"] = raw
     except (OSError, json.JSONDecodeError) as exc:
         result["read_error"] = str(exc)
         return result
+    return _parse_device_from_raw(raw, path)
+
+
+def _parse_device_from_raw(raw: dict, path: str) -> dict:
+    """Derive a device dict from an already-loaded smartctl JSON object.
+
+    Shared by the file reader (_parse_device_json) and collect mode, which feeds
+    the live `smartctl -x -j` output here directly without touching disk."""
+    result: Dict[str, Any] = {
+        "path": path, "name": "", "device_path": "", "protocol": "",
+        "device_type": 0, "poll_time": None, "smart_passed": None,
+        "model_family": "", "model_name": "", "serial_number": "",
+        "firmware_version": "", "wwn": "", "raw": raw, "read_error": None,
+    }
 
     device = raw.get("device") or {}
     device_name = device.get("name", "")
@@ -483,6 +722,10 @@ class _State:
         self.state_dir             = ""
         self.config_devices        = None
         self.poll_failure_threshold = 1
+        # Collect mode: pull SMART data directly via smartctl instead of reading
+        # state_dir JSON files.  sudoers_warned gates the one-shot guidance log.
+        self.collect               = False
+        self.sudoers_warned        = False
         # Notification config (mirrors AgentxConfig in the C++ daemon).
         self.test_mode             = False
         self.sensor_hysteresis     = 0
@@ -3108,33 +3351,42 @@ def _handle_collection_error(exc: CollectionError, ts: datetime) -> None:
 
 
 def _collect_and_build(ts: datetime) -> None:
-    files   = _discover_devices(_st.state_dir, _st.config_devices)
-    present = set(files)
+    # Collect mode pulls smartctl directly and parses in-memory (no state_dir);
+    # file mode globs state_dir and parses the JSON files.  Both produce a list
+    # of (key, device-dict) pairs that the shared removal/build logic consumes.
+    if _st.collect:
+        collected = _collect_all()
+        items   = [(key, _parse_device_from_raw(raw, key)) for key, raw in collected]
+        present = {key for key, _ in collected}
+    else:
+        files   = _discover_devices(_st.state_dir, _st.config_devices)
+        items   = [(path, _parse_device_json(path)) for path in files]
+        present = set(files)
 
-    # Removal: a device whose state file disappeared since the last cycle.
-    for path in [p for p in _st.file_identity if p not in present]:
-        info = _st.file_identity.pop(path)
-        _st.consec_fail.pop(path, None)
+    # Removal: a device whose key disappeared since the last cycle.  In collect
+    # mode a drive that fails to pull is simply absent and counts as removed.
+    for key in [p for p in _st.file_identity if p not in present]:
+        info = _st.file_identity.pop(key)
+        _st.consec_fail.pop(key, None)
         if _st.initial_scan_done:
             _notify_device_removed(info)
         _forget_device_baselines(info["d_idx"])
 
     devices = []
     errors  = 0
-    for path in files:
-        dev = _parse_device_json(path)
+    for key, dev in items:
         if dev["read_error"]:
-            LOGGER.warning("parse error %s: %s", path, dev["read_error"])
+            LOGGER.warning("parse error %s: %s", key, dev["read_error"])
             errors += 1
             # Poll failure: file still present but unparseable.  Fire once the
             # consecutive-failure count reaches the configured threshold.
-            info = _st.file_identity.get(path)
+            info = _st.file_identity.get(key)
             if info:
-                _st.consec_fail[path] = _st.consec_fail.get(path, 0) + 1
-                if _st.consec_fail[path] >= _st.poll_failure_threshold:
+                _st.consec_fail[key] = _st.consec_fail.get(key, 0) + 1
+                if _st.consec_fail[key] >= _st.poll_failure_threshold:
                     _notify_device_poll_failed(info)
         else:
-            _st.consec_fail.pop(path, None)
+            _st.consec_fail.pop(key, None)
             devices.append(dev)
     err_code = EXIT_PARTIAL_FAILURE if errors else EXIT_SUCCESS
     err_msg  = f"{errors} device(s) failed to parse" if errors else ""
@@ -3144,6 +3396,8 @@ def _collect_and_build(ts: datetime) -> None:
 
 def _snapshot_file_mtimes() -> None:
     """Record current fixture file mtimes so _files_modified() has a baseline."""
+    if _st.collect:
+        return  # no state_dir files in collect mode
     try:
         files = _discover_devices(_st.state_dir, _st.config_devices)
     except CollectionError:
@@ -3158,6 +3412,8 @@ def _snapshot_file_mtimes() -> None:
 
 def _files_modified() -> bool:
     """Return True if any fixture file has been added, removed, or modified since last snapshot."""
+    if _st.collect:
+        return True  # collect mode polls smartctl every cycle; no mtime gate
     if not _st.file_mtimes:
         return False
     try:
@@ -3243,6 +3499,8 @@ def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
     _st.ttl           = ttl
     _st.state_dir     = args.state_dir or cfg.get("state_dir", "")
     _st.config_devices = list(devices) if devices else None
+    _st.collect       = bool(args.collect) or \
+        str(cfg.get("collect", "")).lower() in ("1", "true", "yes")
 
     # Notification config (mirror of the C++ AgentxConfig keys).
     def _cfg_int(key, default):
@@ -3287,6 +3545,9 @@ def main() -> None:
                         help="path to the net-snmp AgentX master socket (default: %(default)s)")
     parser.add_argument("-f", dest="foreground", action="store_true",
                         help="run in foreground (default)")
+    parser.add_argument("--collect", action="store_true", default=None,
+                        help="pull SMART data directly via smartctl instead of "
+                             "reading state_dir JSON files")
     parser.add_argument("--once", action="store_true",
                         help="collect and publish once, then exit")
     args = parser.parse_args()
@@ -3300,7 +3561,7 @@ def main() -> None:
 
     _configure_smartmon(args, cfg)
 
-    if not _st.state_dir:
+    if not _st.collect and not _st.state_dir:
         LOGGER.error("state_dir not configured; pass --state-dir or set it in the config file")
         sys.exit(EXIT_CONFIG_ERROR)
 
