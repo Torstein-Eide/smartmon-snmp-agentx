@@ -1,4 +1,5 @@
 # Build outputs
+*__pycache__*
 .*
 *.o
 *.a
