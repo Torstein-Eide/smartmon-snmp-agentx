@@ -18,7 +18,7 @@
 # Collect mode: poll smartctl directly instead of reading state_dir files.
 # When true, smartctl runs as root if the agent is root, otherwise via
 # `sudo -n smartctl` (grant the agent passwordless smartctl in sudoers).
-collect: false
+collect: true
 
 # Directory of JSON state files (REQUIRED in file mode; ignored in collect
 # mode).  In file mode the agent refuses to start if this is unset.
@@ -30,7 +30,7 @@ agentx_socket: /var/agentx/master
 # Data refresh / poll interval in seconds.  In file mode this is how long
 # parsed data is cached before re-reading; in collect mode it is the smartctl
 # poll interval.
-cache_timeout: 300
+cache_timeout: 30
 
 # Path to a SQLite database for persisting table-change timestamps and
 # notification baselines across restarts.  The agent creates the file if it

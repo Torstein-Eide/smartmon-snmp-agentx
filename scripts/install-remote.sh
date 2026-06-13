@@ -268,6 +268,27 @@ else
     echo "  WARNING: no snmpd group found (Debian-snmp / snmp); add smartmon manually" >&2
 fi
 
+# ---- Grant the daemon passwordless smartctl (collect mode) ----------------
+# In collect mode the agent runs as the unprivileged 'smartmon' user and shells
+# out to 'sudo -n smartctl' to read SMART data.  Install a sudoers drop-in so
+# that escalation works without a password.  The grant is limited to the four
+# read-only invocations the agent actually issues — device scan plus SMART/FARM
+# data reads — so destructive smartctl subcommands (-t self-test, --set, drive
+# security/sanitize) are NOT runnable as root via this rule.  The candidate file
+# is validated with 'visudo -cf' before it is moved into place, so a malformed
+# entry can never lock sudo out of /etc/sudoers.d.
+SMARTCTL_PATH="\$(command -v smartctl 2>/dev/null || echo /usr/sbin/smartctl)"
+SUDOERS_FILE="/etc/sudoers.d/smartmon-agentx"
+SUDOERS_TMP="\$(mktemp)"
+printf '# smartmon-snmp-agentx: collect mode runs read-only smartctl as root.\n# Managed by install-remote.sh (scan + SMART/FARM data reads only).\nsmartmon ALL=(root) NOPASSWD: %s --scan-open, %s --scan, %s -x -j *, %s -l farm -j *\n' "\$SMARTCTL_PATH" "\$SMARTCTL_PATH" "\$SMARTCTL_PATH" "\$SMARTCTL_PATH" > "\$SUDOERS_TMP"
+if sudo visudo -cf "\$SUDOERS_TMP" >/dev/null 2>&1; then
+    sudo install -m 0440 -o root -g root "\$SUDOERS_TMP" "\$SUDOERS_FILE"
+    echo "  installed sudoers: \$SUDOERS_FILE (smartmon -> \$SMARTCTL_PATH)"
+else
+    echo "  WARNING: generated sudoers failed visudo validation; not installed" >&2
+fi
+rm -f "\$SUDOERS_TMP"
+
 # ---- Create and secure the state directory --------------------------------
 sudo mkdir -p "\$STATE_DIR"
 sudo chown root:smartmon "\$STATE_DIR"
