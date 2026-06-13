@@ -856,6 +856,13 @@ _refresh_request = threading.Event()
 # collector runs collapse into a single rescan.
 _rescan_event = threading.Event()
 
+# Set by the worker after every poll cycle so the main thread refreshes the
+# systemd STATUS= line.  This is decoupled from _publish_q (which only carries a
+# snapshot when the data actually changed): liveness — the "updated" timestamp —
+# must advance every poll even when nothing is republished to net-snmp.  Sending
+# the datagram stays on the main thread to keep one sd_notify caller.
+_status_event = threading.Event()
+
 
 # ==========================================================================
 # Part 3b — SQLite state persistence (Python port of agentxd_state_db.cpp)
@@ -3768,7 +3775,15 @@ def _collector_loop(stop: threading.Event) -> None:
         if stop.is_set():
             break
 
-        if not _files_modified():
+        modified = _files_modified()
+        # Stamp the poll and ask the main thread to refresh the systemd STATUS=
+        # line every cycle — the "updated" timestamp proves the agent is still
+        # polling, so it must advance even when the data is unchanged.  The
+        # net-snmp republish below stays gated on a real content change.
+        _st.last_update_ts = datetime.now(timezone.utc)
+        _status_event.set()
+
+        if not modified:
             continue
 
         prev_map = _st.oid_map
@@ -4306,7 +4321,12 @@ def main() -> None:
                 _log_published(len(snapshot), time.monotonic() - before)
                 # Send the traps detected during that refresh (sole net-snmp caller).
                 _drain_and_send_traps()
-                # Refresh the systemd STATUS= line (disk/OID/updated/error fields).
+
+            # Refresh the systemd STATUS= line whenever the worker completed a
+            # poll (disk/OID/updated/error fields), even when nothing was
+            # republished — this is what keeps the "updated" timestamp moving.
+            if _status_event.is_set():
+                _status_event.clear()
                 _sd_notify_status()
 
             # Surface agentx connect/disconnect transitions to systemd.
