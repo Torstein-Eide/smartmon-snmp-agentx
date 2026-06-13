@@ -19,6 +19,7 @@ import queue
 import re
 import select
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -764,6 +765,242 @@ _publish_q: "queue.Queue[dict]" = queue.Queue()
 # even then only past the TTL guard (or when fixture mtimes changed).
 _refresh_request = threading.Event()
 
+
+# ==========================================================================
+# Part 3b — SQLite state persistence (Python port of agentxd_state_db.cpp)
+#
+# Persists table change hashes + LastChange timestamps and the notification
+# baselines so they survive a daemon restart: LastChange scalars stay accurate
+# and traps don't re-storm on the first build after a restart.  Disabled when no
+# state_db path is configured (timestamps still work within a single run).
+#
+# Threading: the connection is opened + loaded on the main thread *before* the
+# worker starts, and thereafter only state_db_save() (called from _build) on the
+# worker thread touches it; close() runs after the worker joins.  Access is
+# therefore never concurrent, so check_same_thread=False is safe.
+#
+# Every DB call is wrapped so a persistence error can never break data serving.
+# ==========================================================================
+
+_db: "Optional[sqlite3.Connection]" = None
+_db_path: str = ""
+
+_STATE_DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS table_state (
+    table_name  TEXT PRIMARY KEY,
+    hash        INTEGER NOT NULL,
+    last_change INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sata_by_dev_state (
+    dev_id      INTEGER NOT NULL,
+    table_id    INTEGER NOT NULL,
+    hash        INTEGER NOT NULL,
+    last_change INTEGER NOT NULL,
+    PRIMARY KEY (dev_id, table_id)
+);
+CREATE TABLE IF NOT EXISTS sata_sub_state (
+    dev_id      INTEGER NOT NULL,
+    table_id    INTEGER NOT NULL,
+    sub1        INTEGER NOT NULL,
+    hash        INTEGER NOT NULL,
+    last_change INTEGER NOT NULL,
+    PRIMARY KEY (dev_id, table_id, sub1)
+);
+CREATE TABLE IF NOT EXISTS sensor_alarm_state (
+    dev_id      INTEGER NOT NULL,
+    sensor_idx  INTEGER NOT NULL,
+    alarm_state INTEGER NOT NULL,
+    last_sent   INTEGER NOT NULL,
+    PRIMARY KEY (dev_id, sensor_idx)
+);
+CREATE TABLE IF NOT EXISTS sata_attr_alarm (
+    dev_id  INTEGER NOT NULL,
+    attr_id INTEGER NOT NULL,
+    PRIMARY KEY (dev_id, attr_id)
+);
+CREATE TABLE IF NOT EXISTS sas_uncorrected_baseline (
+    dev_id      INTEGER NOT NULL,
+    direction   INTEGER NOT NULL,
+    uncorrected INTEGER NOT NULL,
+    PRIMARY KEY (dev_id, direction)
+);
+CREATE TABLE IF NOT EXISTS sata_selftest_progress (
+    dev_id               INTEGER PRIMARY KEY,
+    start_ns             INTEGER NOT NULL,
+    last_remaining       INTEGER NOT NULL,
+    polling_min          INTEGER NOT NULL,
+    estimated_completion INTEGER NOT NULL
+);
+"""
+
+
+def _epoch(dt: datetime) -> int:
+    """datetime -> integer epoch seconds (for persisting a LastChange ts)."""
+    return int(dt.timestamp())
+
+
+def _from_epoch(ts: int) -> datetime:
+    """Integer epoch seconds -> UTC-aware datetime."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def state_db_open(path: str) -> bool:
+    """Open (or create) the state DB.  Empty path disables persistence.
+
+    Returns False on failure — non-fatal; timestamps still work within a run."""
+    global _db, _db_path
+    if not path:
+        LOGGER.info("state_db: disabled (no state_db configured)")
+        return True
+    existed = os.path.exists(path)
+    try:
+        parent = os.path.dirname(path) or "."
+        os.makedirs(parent, exist_ok=True)
+        _db = sqlite3.connect(path, check_same_thread=False)
+        _db.executescript(_STATE_DB_SCHEMA)
+        _db.commit()
+    except (sqlite3.Error, OSError) as exc:
+        LOGGER.warning("state_db: cannot open %r: %s", path, exc)
+        if _db is not None:
+            _db.close()
+        _db = None
+        return False
+    _db_path = path
+    LOGGER.info("state_db: %s %r", "opened" if existed else "created", path)
+    return True
+
+
+def state_db_load() -> None:
+    """Load persisted state into _st.  Call once after open, before first build."""
+    if _db is None:
+        return
+    try:
+        cur = _db.cursor()
+
+        n = 0
+        for name, h, ts in cur.execute(
+                "SELECT table_name, hash, last_change FROM table_state"):
+            _st.checksums[name]  = h
+            _st.timestamps[name] = _from_epoch(ts)
+            n += 1
+        LOGGER.info("state_db: loaded %d table timestamp(s)", n)
+
+        for dev, tid, h, ts in cur.execute(
+                "SELECT dev_id, table_id, hash, last_change FROM sata_by_dev_state"):
+            _st.dev_checksums[(tid, dev)]  = h
+            _st.dev_timestamps[(tid, dev)] = _from_epoch(ts)
+
+        for dev, tid, sub1, h, ts in cur.execute(
+                "SELECT dev_id, table_id, sub1, hash, last_change FROM sata_sub_state"):
+            _st.sub_checksums[(tid, dev, sub1)]  = h
+            _st.sub_timestamps[(tid, dev, sub1)] = _from_epoch(ts)
+
+        # sensor last_sent is persisted as wall-clock epoch but compared against
+        # time.monotonic() at runtime; rebase it so "elapsed since last sent" is
+        # preserved across restart without ever yielding a future monotonic time.
+        mono_now, wall_now = time.monotonic(), time.time()
+        for dev, sidx, astate, last_wall in cur.execute(
+                "SELECT dev_id, sensor_idx, alarm_state, last_sent FROM sensor_alarm_state"):
+            key = (dev, sidx)
+            _st.sensor_alarm_state[key]     = astate
+            _st.sensor_alarm_last_sent[key] = mono_now - max(0.0, wall_now - last_wall)
+
+        for dev, attr in cur.execute("SELECT dev_id, attr_id FROM sata_attr_alarm"):
+            _st.attr_failing.setdefault(dev, set()).add(attr)
+
+        for dev, direction, unc in cur.execute(
+                "SELECT dev_id, direction, uncorrected FROM sas_uncorrected_baseline"):
+            _st.sas_uncorrected[(dev, direction)] = unc
+
+        for dev, start_ns, last_rem, pmin, est in cur.execute(
+                "SELECT dev_id, start_ns, last_remaining, polling_min,"
+                " estimated_completion FROM sata_selftest_progress"):
+            _st.selftest_progress[dev] = {
+                "start_ns": start_ns, "last_remaining": last_rem,
+                "polling_min": pmin, "estimated_completion": est,
+            }
+        cur.close()
+    except sqlite3.Error as exc:
+        LOGGER.warning("state_db: load failed: %s", exc)
+
+
+def state_db_save() -> None:
+    """Snapshot the full in-memory baseline to the DB in one transaction.
+
+    Mirrors the per-key writes of the C++ daemon but, given the Python agent
+    rebuilds the whole table set each cycle, a clear+rewrite is simpler and drops
+    removed-device rows for free.  Called at the end of _build (worker thread)."""
+    if _db is None:
+        return
+    try:
+        wall_now, mono_now = time.time(), time.monotonic()
+        sensor_rows = [
+            (dev, sidx, _st.sensor_alarm_state[(dev, sidx)],
+             int(wall_now - (mono_now - _st.sensor_alarm_last_sent.get((dev, sidx), mono_now))))
+            for (dev, sidx) in _st.sensor_alarm_state
+        ]
+        with _db:   # transaction: commits on success, rolls back on error
+            _db.execute("DELETE FROM table_state")
+            _db.executemany(
+                "INSERT INTO table_state (table_name, hash, last_change) VALUES (?,?,?)",
+                [(name, h, _epoch(_st.timestamps.get(name, _from_epoch(0))))
+                 for name, h in _st.checksums.items()])
+
+            _db.execute("DELETE FROM sata_by_dev_state")
+            _db.executemany(
+                "INSERT INTO sata_by_dev_state (dev_id, table_id, hash, last_change)"
+                " VALUES (?,?,?,?)",
+                [(dev, tid, h, _epoch(_st.dev_timestamps.get((tid, dev), _from_epoch(0))))
+                 for (tid, dev), h in _st.dev_checksums.items()])
+
+            _db.execute("DELETE FROM sata_sub_state")
+            _db.executemany(
+                "INSERT INTO sata_sub_state (dev_id, table_id, sub1, hash, last_change)"
+                " VALUES (?,?,?,?,?)",
+                [(dev, tid, sub1, h,
+                  _epoch(_st.sub_timestamps.get((tid, dev, sub1), _from_epoch(0))))
+                 for (tid, dev, sub1), h in _st.sub_checksums.items()])
+
+            _db.execute("DELETE FROM sensor_alarm_state")
+            _db.executemany(
+                "INSERT INTO sensor_alarm_state (dev_id, sensor_idx, alarm_state, last_sent)"
+                " VALUES (?,?,?,?)", sensor_rows)
+
+            _db.execute("DELETE FROM sata_attr_alarm")
+            _db.executemany(
+                "INSERT INTO sata_attr_alarm (dev_id, attr_id) VALUES (?,?)",
+                [(dev, attr) for dev, attrs in _st.attr_failing.items() for attr in attrs])
+
+            _db.execute("DELETE FROM sas_uncorrected_baseline")
+            _db.executemany(
+                "INSERT INTO sas_uncorrected_baseline (dev_id, direction, uncorrected)"
+                " VALUES (?,?,?)",
+                [(dev, direction, unc)
+                 for (dev, direction), unc in _st.sas_uncorrected.items()])
+
+            _db.execute("DELETE FROM sata_selftest_progress")
+            _db.executemany(
+                "INSERT INTO sata_selftest_progress"
+                " (dev_id, start_ns, last_remaining, polling_min, estimated_completion)"
+                " VALUES (?,?,?,?,?)",
+                [(dev, p["start_ns"], p["last_remaining"], p["polling_min"],
+                  int(p["estimated_completion"]))
+                 for dev, p in _st.selftest_progress.items()])
+    except sqlite3.Error as exc:
+        LOGGER.warning("state_db: save failed: %s", exc)
+
+
+def state_db_close() -> None:
+    global _db, _db_path
+    if _db is not None:
+        LOGGER.info("state_db: closing %r", _db_path)
+        try:
+            _db.close()
+        except sqlite3.Error:
+            pass
+        _db = None
+        _db_path = ""
+
 # Table prefix tuples for fingerprinting (full OID prefix of each table entry)
 _TABLE_PREFIXES = {
     "device":               _full((2, 1, 3, 1)),
@@ -1153,6 +1390,10 @@ def _build(devices: list, ts: datetime,
         except Exception as exc:    # never let a trap bug break data serving
             LOGGER.error("notify: detection failed for d_idx=%d: %s", d_idx, exc,
                          exc_info=True)
+
+    # Persist the freshly-updated hashes/timestamps and notification baselines so
+    # they survive a restart (no-op when state_db is unconfigured).
+    state_db_save()
 
 
 # --------------------------------------------------------------------------
@@ -3548,6 +3789,10 @@ def main() -> None:
     parser.add_argument("--collect", action="store_true", default=None,
                         help="pull SMART data directly via smartctl instead of "
                              "reading state_dir JSON files")
+    parser.add_argument("--state-db", metavar="PATH", default=None,
+                        help="SQLite file persisting change timestamps and "
+                             "notification baselines across restarts (default: "
+                             "off, or the config file's state_db key)")
     parser.add_argument("--once", action="store_true",
                         help="collect and publish once, then exit")
     args = parser.parse_args()
@@ -3585,12 +3830,21 @@ def main() -> None:
     tables  = _register_tables(agent)
 
     agent.start()
+
+    # Open + load persisted state BEFORE the first build so loaded hashes match
+    # the current data (timestamps are preserved, not advanced) and notification
+    # baselines suppress restart trap storms.
+    state_db_path = args.state_db if args.state_db is not None else cfg.get("state_db", "")
+    state_db_open(state_db_path)
+    state_db_load()
+
     _refresh_and_publish(agent, scalars, tables)
     # Devices present at startup must not raise device-discovered traps; arm
     # detection only after the first build has seeded all baselines.
     _st.initial_scan_done = True
 
     if args.once:
+        state_db_close()
         return
 
     # Producer/consumer split: the worker thread owns all data collection and
@@ -3644,6 +3898,7 @@ def main() -> None:
         stop_event.set()
         _refresh_request.set()   # wake the worker so it observes stop promptly
         worker.join(timeout=2.0)
+        state_db_close()         # safe: the worker (sole save() caller) has joined
 
 
 if __name__ == "__main__":
