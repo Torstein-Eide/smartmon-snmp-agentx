@@ -28,7 +28,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = 1
+VERSION = "0.1.0"
+__version__ = VERSION
 
 VERBOSE = 15
 NOTICE  = 25
@@ -4052,6 +4053,9 @@ def main() -> None:
                              "off, or the config file's state_db key)")
     parser.add_argument("--once", action="store_true",
                         help="collect and publish once, then exit")
+    parser.add_argument("--version", action="version",
+                        version=f"smartmon-snmp-agentx {VERSION}",
+                        help="print version and exit")
     args = parser.parse_args()
 
     cfg = _load_config(args.config)
@@ -4063,7 +4067,7 @@ def main() -> None:
 
     _configure_smartmon(args, cfg)
 
-    LOGGER.info("smartmon AgentX v%d starting: mode=%s source=%s socket=%s "
+    LOGGER.info("smartmon AgentX v%s starting: mode=%s source=%s socket=%s "
                 "cache_timeout=%ds", VERSION, "collect" if _st.collect else "file",
                 "smartctl" if _st.collect else _st.state_dir, agentx_socket, _st.ttl)
 
