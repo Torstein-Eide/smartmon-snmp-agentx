@@ -207,7 +207,15 @@ def start_agentxd(binary: str, run_dir: Path, socket_path: Path,
                   live_fixtures: Path, agentxd_log: Path,
                   daemons: DaemonSet) -> int:
     conf = run_dir / "agentxd.conf"
-    conf.write_text(f"state_dir     {live_fixtures}\nagentx_socket {socket_path}\n")
+    # cache_timeout 0 makes the worker re-stat the state files every
+    # NOTIFY_POLL_INTERVAL instead of every cache_timeout seconds (default 30s).
+    # The stability/notification tests mutate a fixture and expect the change to
+    # surface within ~1s; without this the worker wouldn't even look for 30s.
+    conf.write_text(
+        f"state_dir     {live_fixtures}\n"
+        f"agentx_socket {socket_path}\n"
+        f"cache_timeout 0\n"
+    )
     extra = os.environ.get("AGENTXD_EXTRA_ARGS", "").split()
     cmd = [sys.executable, binary] if binary.endswith(".py") else [binary]
     pid = daemons.start(
