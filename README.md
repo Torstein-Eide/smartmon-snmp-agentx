@@ -272,7 +272,7 @@ snmpwalk -v2c -c public -m ALL localhost \
 | `--cache-timeout SEC` | Data refresh / poll interval in seconds (config key: `cache_timeout`) |
 | `--state-db PATH` | SQLite persistence file (overrides config `state_db`) |
 | `--agentx-socket PATH` | AgentX master socket path |
-| `--log-level LEVEL` | `DEBUG`, `VERBOSE`, `INFO`, `NOTICE`, `WARNING`, `ERROR` |
+| `--log-level LEVEL` | `DEBUG-AGENTX`, `DEBUG`, `VERBOSE`, `INFO`, `NOTICE`, `WARNING`, `ERROR`. `DEBUG-AGENTX` is `DEBUG` plus raw net-snmp AgentX PDU tracing to the log file/stderr. |
 | `--log-file PATH` | Append log output to this file in addition to stderr |
 | `--once` | Collect and publish once, then exit |
 | `-h, --help` | Print usage and exit |
@@ -317,6 +317,26 @@ ci/run_docker_py.sh
 
 This builds a container (`ci/Dockerfile.agentx_py`) with `python3-netsnmpagent`
 and runs the full integration test suite against the Python agent.
+
+---
+
+## Resource usage
+
+The agent is lightweight. Typical footprint for ~12,000 published OIDs
+(≈11 drives), as seen in `htop`:
+
+| Metric | Value | Meaning |
+|--------|-------|---------|
+| **RES** (resident) | ~50 MB | Actual physical RAM. Roughly ~29 MB Python interpreter, ~14 MB shared libraries, ~5–8 MB OID data. This is the number that matters. |
+| **SHR** (shared) | ~14 MB | Shared library code (`libpython`, `libnetsnmp`, `libc`, …), shared system-wide. |
+| **VIRT** (virtual) | ~210 MB | Reserved address space, *not* consumed — dominated by the three thread stacks and glibc malloc arenas. Safe to ignore. |
+
+OID data scales linearly at ~300 bytes per OID. Per-drive raw `smartctl` JSON is
+freed after each build (not retained). During a refresh the worker briefly holds
+a second copy of the OID map (~2× transient) while handing it to the main thread.
+
+Setting `MALLOC_ARENA_MAX=2` in the service environment shrinks VIRT cosmetically
+but does not meaningfully change RES.
 
 ---
 
