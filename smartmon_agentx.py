@@ -1542,11 +1542,13 @@ def _add_nvme_health(add, dev: dict, d_idx: int) -> None:
     add(T+(18, d_idx, hi), *_counter64(h["num_err_log_entries"]))
     add(T+(19, d_idx, hi), *_counter64(h["warning_temp_time"]))
     add(T+(20, d_idx, hi), *_counter64(h["critical_comp_time"]))
+    # smartctl emits the running operation as nvme_self_test_log.
+    # current_self_test_operation {value, string}; "No self-test in progress"
+    # (value 0) is a real, reportable state, so keep the descriptive string.
     st_log = dev["raw"].get("nvme_self_test_log") or {}
-    cur_st = st_log.get("current_self_test") or {}
-    cur_code = cur_st.get("code") or {}
-    st_val = int(cur_code.get("value", 0))
-    st_str = "" if st_val == 0 else str(cur_code.get("string") or "")
+    cur_op = st_log.get("current_self_test_operation") or {}
+    st_val = int(cur_op.get("value", 0))
+    st_str = str(cur_op.get("string") or "")
     add(T+(22, d_idx, hi), *_gauge(st_val))
     add(T+(23, d_idx, hi), *_string(st_str))
 
@@ -1782,7 +1784,10 @@ def _add_nvme_capability(add, dev: dict, d_idx: int) -> int:
     lpa = raw.get("nvme_log_page_attributes") or {}
     add(T+(1, d_idx, ci), *_gauge(int(fw.get("value", 0) or 0)))
     add(T+(2, d_idx, ci), *_gauge(int(fw.get("slots", 0) or 0)))
-    add(T+(3, d_idx, ci), *_integer(2 if fw.get("activation_without_reset") else 1))
+    # firmwareResetRequired (frmw "activation without reset"): standard smartctl
+    # doesn't decode this, so when the capability object is absent report false
+    # (no reset required) rather than defaulting to true.
+    add(T+(3, d_idx, ci), *_integer(1 if (fw and not fw.get("activation_without_reset")) else 2))
     add(T+(4, d_idx, ci), *_gauge(int(adm.get("value", 0) or 0)))
     add(T+(5, d_idx, ci), *_gauge(int(nvm.get("value", 0) or 0)))
     add(T+(6, d_idx, ci), *_gauge(int(lpa.get("value", 0) or 0)))

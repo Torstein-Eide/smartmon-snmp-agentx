@@ -102,13 +102,11 @@
     ]
   },
   "nvme_self_test_log": {
-    "current_self_test": {
-      "code": {
-        "value": 0,
-        "string": "No self-test in progress"
-      },
-      "completion_percent": 0
+    "current_self_test_operation": {
+      "value": 0,
+      "string": "No self-test in progress"
     },
+    "current_self_test_completion_percent": 0,
     "count": 2,
     "table": [
       {
