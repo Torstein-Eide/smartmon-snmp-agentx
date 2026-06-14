@@ -384,6 +384,22 @@ def _set_json_path(data, path: str, value) -> None:
         data[last] = value
 
 
+def _bump_value(value):
+    """Return value + 1 for numeric mutation values (including all-digit
+    strings), preserving type; None when the value cannot be incremented.
+
+    Used to perturb a stalled stability mutation so the agent re-parses and
+    records a strictly later LastChange timestamp.
+    """
+    if isinstance(value, bool):
+        return None  # bool is an int subclass; never treat True/False as numeric
+    if isinstance(value, (int, float)):
+        return value + 1
+    if isinstance(value, str) and re.fullmatch(r"-?\d+", value):
+        return str(int(value) + 1)
+    return None
+
+
 def run_stability_check(check: dict, live_fixtures: Path,
                         ent_oid: str, all_indices: dict[str, str],
                         snmp_port: int, community: str,
@@ -434,8 +450,9 @@ def run_stability_check(check: dict, live_fixtures: Path,
             label = mut.get("label", f"mutation {mut_idx + 1}")
             expected_oid = substitute_oid(mut["expected_change_oid"], None, all_indices)
 
+            cur_value = mut["new_value"]
             data = json.loads(fixture_path.read_bytes())
-            _set_json_path(data, mut["json_path"], mut["new_value"])
+            _set_json_path(data, mut["json_path"], cur_value)
             fixture_path.write_text(json.dumps(data))
 
             walk_suffix = walk_defs.get(walk_label, "")
@@ -452,6 +469,20 @@ def run_stability_check(check: dict, live_fixtures: Path,
                 after_expected = extract_oid_value(new_walk_path, ent_oid, expected_oid)
                 if after_expected != before_expected:
                     break
+                # LastChange has not advanced yet — most often the re-parse landed
+                # in the same one-second DateAndTime bucket as the baseline, so the
+                # changed table stamps an identical second and the value reads as
+                # unchanged.  Re-walking alone won't help: the fixture is untouched,
+                # so the agent won't re-parse.  Nudge the mutated value by +1 and
+                # rewrite, forcing a re-parse (new mtime) that records a strictly
+                # later timestamp.  The bump accumulates so each rewrite differs
+                # from the currently cached content (and therefore re-hashes).
+                bumped = _bump_value(cur_value)
+                if bumped is not None:
+                    cur_value = bumped
+                    data = json.loads(fixture_path.read_bytes())
+                    _set_json_path(data, mut["json_path"], cur_value)
+                    fixture_path.write_text(json.dumps(data))
 
             symbols: list[str] = []
             mut_oid_failed = 0
