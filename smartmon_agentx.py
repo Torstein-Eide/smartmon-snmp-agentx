@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -3867,30 +3867,45 @@ def _get_custom_api():
     return _custom_api
 
 
+_CLONG_SIZE = ctypes.sizeof(ctypes.c_long)
+# reginfo pointer address -> its rootoid region tuple (regions are stable for the
+# life of a registration, so the tuple is built once per table, not per request).
+_region_cache: Dict[int, tuple] = {}
+
+
 def _custom_cvalue(api: Any, stype: str, value: object) -> tuple:
-    """Map an oid_map (type, value) onto (asn_type, payload) for the handler:
-    payload is an int for the integer-family types, bytes for octet strings."""
+    """Pre-render an oid_map (type, value) into (asn_type, value_arg, value_len)
+    ready to pass straight to snmp_set_var_typed_value in the hot path.
+
+    value_arg is bytes (octet-string family) or a ctypes byref to a kept-alive
+    scalar (integer family); the byref holds its target alive, so it stays valid
+    as long as the view dict does.  Doing this once per publish keeps the
+    per-request handler allocation-free."""
     if stype == "integer":
-        return (api.ASN_INTEGER, int(value))
+        return (api.ASN_INTEGER, ctypes.byref(ctypes.c_long(int(value))), _CLONG_SIZE)
     if stype == "gauge":
-        return (api.ASN_UNSIGNED, int(value) & 0xFFFFFFFF)
+        return (api.ASN_UNSIGNED,
+                ctypes.byref(ctypes.c_long(int(value) & 0xFFFFFFFF)), _CLONG_SIZE)
     if stype == "counter64":
-        return (api.ASN_COUNTER64, int(value))
+        c = api.counter64(); v = int(value)
+        c.high, c.low = (v >> 32) & 0xFFFFFFFF, v & 0xFFFFFFFF
+        return (api.ASN_COUNTER64, ctypes.byref(c), ctypes.sizeof(c))
     if stype == "string":
-        return (api.ASN_OCTET_STR, _as_text(value).encode())
+        b = _as_text(value).encode();                       return (api.ASN_OCTET_STR, b, len(b))
     if stype == "bits":
-        return (api.ASN_OCTET_STR,
-                bytes(value) if isinstance(value, (bytes, bytearray)) else b"")
+        b = bytes(value) if isinstance(value, (bytes, bytearray)) else b""
+        return (api.ASN_OCTET_STR, b, len(b))
     if stype == "datetimeval":
-        return (api.ASN_OCTET_STR,
-                _encode_datetimeval(value) if isinstance(value, datetime) else b"")
+        b = _encode_datetimeval(value) if isinstance(value, datetime) else b""
+        return (api.ASN_OCTET_STR, b, len(b))
     raise ValueError(f"unsupported SNMP type {stype!r}")
 
 
 def _custom_tables_view(oid_map: dict) -> tuple:
     """Project every custom-handler table out of an oid_map snapshot into
-    (vals, oids): vals maps full-OID-tuple -> (asn_type, payload) ready for the
-    handler, and oids is the sorted key list used for GETNEXT successor lookup."""
+    (vals, oids).  vals maps full-OID-tuple -> (asn_type, value_arg, value_len,
+    name_array, name_len), all pre-rendered so the request handler only makes the
+    two net-snmp C calls; oids is the sorted key list for GETNEXT lookup."""
     api, _ = _get_custom_api()
     entry_cols = _CUSTOM_ENTRY_COLS
     lens       = _CUSTOM_ENTRY_LENS
@@ -3898,7 +3913,10 @@ def _custom_tables_view(oid_map: dict) -> tuple:
     for oid, (stype, value) in oid_map.items():
         for plen in lens:
             if len(oid) > plen and oid[:plen] in entry_cols:
-                vals[oid] = _custom_cvalue(api, stype, value)
+                asn, varg, vlen = _custom_cvalue(api, stype, value)
+                nlen = len(oid)
+                name = (ctypes.c_ulong * nlen)(*oid)
+                vals[oid] = (asn, varg, vlen, name, nlen)
                 break
     return vals, sorted(vals)
 
@@ -3912,60 +3930,60 @@ def _custom_known_column(cur: tuple) -> bool:
     return False
 
 
-def _custom_emit(core: Any, api: Any, vb: Any, asn_type: int, payload: object) -> None:
-    """Copy one cell value into the response varbind via snmp_set_var_typed_value."""
-    if isinstance(payload, (bytes, bytearray)):
-        buf = bytes(payload)
-        core.snmp_set_var_typed_value(vb, asn_type, buf, len(buf))
-    elif asn_type == api.ASN_COUNTER64:
-        c = api.counter64()
-        c.high = (int(payload) >> 32) & 0xFFFFFFFF
-        c.low  = int(payload) & 0xFFFFFFFF
-        core.snmp_set_var_typed_value(vb, asn_type, ctypes.byref(c), ctypes.sizeof(c))
-    else:
-        cv = ctypes.c_long(int(payload))
-        core.snmp_set_var_typed_value(vb, asn_type, ctypes.byref(cv), ctypes.sizeof(cv))
-
-
 def _custom_node_handler(handler, reginfo, reqinfo, requests) -> int:
     """Shared net-snmp Node_Handler for every custom table. MAIN THREAD ONLY
-    (invoked from the agent's request processing in the select loop)."""
+    (invoked from the agent's request processing in the select loop).  The hot
+    path is kept lean: prebuilt value/OID buffers, cached region, and the two
+    net-snmp setters bound to locals."""
     try:
         api, core = _get_custom_api()
+        set_typed = core.snmp_set_var_typed_value
+        set_objid = core.snmp_set_var_objid
         mode = reqinfo.contents.mode
         vals = _st.custom_vals
         oids = _st.custom_oids
         # GETNEXT successors are constrained to this registration's own region so
         # we never hand the master an OID outside the subtree it asked about.
-        reg    = ctypes.cast(reginfo, api.netsnmp_handler_registration_p).contents
-        region = tuple(reg.rootoid[i] for i in range(reg.rootoid_len))
-        rlen   = len(region)
+        regaddr = ctypes.cast(reginfo, ctypes.c_void_p).value
+        region  = _region_cache.get(regaddr)
+        if region is None:
+            reg = ctypes.cast(reginfo, api.netsnmp_handler_registration_p).contents
+            region = tuple(reg.rootoid[i] for i in range(reg.rootoid_len))
+            _region_cache[regaddr] = region
+        rlen = len(region)
         req  = requests
-        while req:
-            rc  = req.contents
-            vb  = rc.requestvb
-            v   = vb.contents
-            cur = tuple(v.name[i] for i in range(v.name_length))
-            if mode == _MODE_GET:
+        if mode == _MODE_GETNEXT:
+            while req:
+                rc = req.contents
+                vb = rc.requestvb
+                v  = vb.contents
+                cur = tuple(v.name[:v.name_length])
+                # inclusive (region edge) -> first key >= cur; else first > cur.
+                idx = (bisect.bisect_left(oids, cur) if rc.inclusive
+                       else bisect.bisect_right(oids, cur))
+                if idx < len(oids):
+                    nxt = oids[idx]
+                    if nxt[:rlen] == region:
+                        asn, varg, vlen, name, nlen = vals[nxt]
+                        set_objid(vb, name, nlen)
+                        set_typed(vb, asn, varg, vlen)
+                # else: leave varbind untouched -> agent returns endOfMibView,
+                # so the walk moves on to the next registered region.
+                req = rc.next
+        elif mode == _MODE_GET:
+            while req:
+                rc = req.contents
+                vb = rc.requestvb
+                v  = vb.contents
+                cur = tuple(v.name[:v.name_length])
                 cell = vals.get(cur)
                 if cell is None:
                     exc = (_SNMP_NOSUCHINSTANCE if _custom_known_column(cur)
                            else _SNMP_NOSUCHOBJECT)
-                    core.snmp_set_var_typed_value(vb, exc, None, 0)
+                    set_typed(vb, exc, None, 0)
                 else:
-                    _custom_emit(core, api, vb, cell[0], cell[1])
-            elif mode == _MODE_GETNEXT:
-                # inclusive (region edge) -> first key >= cur; else first > cur.
-                idx = (bisect.bisect_left(oids, cur) if rc.inclusive
-                       else bisect.bisect_right(oids, cur))
-                if idx < len(oids) and oids[idx][:rlen] == region:
-                    nxt  = oids[idx]
-                    name = (ctypes.c_ulong * len(nxt))(*nxt)
-                    core.snmp_set_var_objid(vb, name, len(nxt))
-                    _custom_emit(core, api, vb, *vals[nxt])
-                # else: leave varbind untouched -> agent returns endOfMibView,
-                # so the walk moves on to the next registered region.
-            req = rc.next
+                    set_typed(vb, cell[0], cell[1], cell[2])
+                req = rc.next
     except Exception:
         LOGGER.exception("custom table handler failure")
     return 0   # SNMP_ERR_NOERROR
