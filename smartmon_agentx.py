@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.0"
+VERSION = "0.1.2"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -3719,6 +3719,12 @@ def _udev_monitor_loop(stop: threading.Event) -> None:
     cmd = ["udevadm", "monitor", "--kernel", "--udev", "--property",
            "--subsystem-match=block"]
     LOGGER.info("udev monitor started")
+    # If udevadm exits almost immediately it cannot watch for events (e.g. its
+    # NETLINK_KOBJECT_UEVENT socket is blocked by sandboxing — see
+    # RestrictAddressFamilies in the systemd unit).  Count such fast exits and,
+    # after a few, give up and fall back to per-poll discovery rather than
+    # respawning every 5s and spamming the log.
+    quick_exits = 0
     while not stop.is_set():
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -3729,6 +3735,7 @@ def _udev_monitor_loop(stop: threading.Event) -> None:
             _st.collect_specs = None
             return
         _st.udev_proc = proc
+        started = time.monotonic()
         action = devtype = None
         try:
             for line in proc.stdout:               # blocks until next line
@@ -3752,9 +3759,21 @@ def _udev_monitor_loop(stop: threading.Event) -> None:
                 proc.terminate()
             except Exception:
                 pass
-        if not stop.is_set():
-            LOGGER.warning("udevadm monitor exited; restarting in 5s")
-            stop.wait(5.0)
+        if stop.is_set():
+            break
+        if time.monotonic() - started < 3.0:
+            quick_exits += 1
+            if quick_exits >= 3:
+                LOGGER.warning("udevadm monitor keeps exiting immediately "
+                               "(check AF_NETLINK is permitted by the unit's "
+                               "RestrictAddressFamilies); falling back to "
+                               "per-poll drive discovery")
+                _st.collect_specs = None
+                return
+        else:
+            quick_exits = 0
+        LOGGER.warning("udevadm monitor exited; restarting in 5s")
+        stop.wait(5.0)
 
 
 def _collector_loop(stop: threading.Event) -> None:
@@ -4051,14 +4070,15 @@ def _sd_notify(state: str) -> bool:
 def _sd_status_text() -> str:
     """Compose the STATUS= line shown by `systemctl status`.
 
-    'agentx <state>; <N> disks, <M> OIDs; updated <ts>'.  An active collection
-    error is surfaced first so it becomes the headline."""
+    'v<ver> agentx <state>; <N> disks, <M> OIDs; updated <ts>'.  An active
+    collection error is surfaced first so it becomes the headline."""
     conn    = "connected" if _st.agentx_connected else "disconnected"
     n_disks = _st.last_device_count
     n_oids  = len(_st.oid_map)
     updated = (_st.last_update_ts.strftime("%Y-%m-%d %H:%M:%SZ")
                if _st.last_update_ts is not None else "never")
-    summary = (f"agentx {conn}; {n_disks} disk{'' if n_disks == 1 else 's'}, "
+    summary = (f"v{VERSION} agentx {conn}; "
+               f"{n_disks} disk{'' if n_disks == 1 else 's'}, "
                f"{n_oids} OIDs; updated {updated}")
     if _st.last_err_code != EXIT_SUCCESS and _st.last_err_msg:
         return f"ERROR: {_st.last_err_msg} | {summary}"
@@ -4326,6 +4346,7 @@ def main() -> None:
             # poll (disk/OID/updated/error fields), even when nothing was
             # republished — this is what keeps the "updated" timestamp moving.
             if _status_event.is_set():
+
                 _status_event.clear()
                 _sd_notify_status()
 

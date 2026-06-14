@@ -64,8 +64,11 @@ ReadOnlyPaths=-/run/smartmontools/json
 ReadWritePaths=/var/agentx /run/agentx /var/lib/smartmontools/snmp-agent
 
 # Network: AgentX uses Unix sockets by default; also allow TCP/UDP in
-# case snmpd uses an agentxsocket tcp: address
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# case snmpd uses an agentxsocket tcp: address.  AF_NETLINK is required by
+# `udevadm monitor` (collect mode hotplug discovery), which listens on a
+# NETLINK_KOBJECT_UEVENT socket; without it udevadm exits immediately and the
+# monitor thread respawns it in a tight loop.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 # Kernel and process hardening
 ProtectKernelTunables=yes

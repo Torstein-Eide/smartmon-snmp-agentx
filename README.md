@@ -388,6 +388,30 @@ echo 'smartmon ALL=(root) NOPASSWD: /usr/sbin/smartctl' \
     | sudo tee /etc/sudoers.d/smartmon-agentx
 ```
 
+**Frequent `sudo`/PAM session log lines in collect mode:**
+Messages like
+```text
+sudo[…]: smartmon : PWD=/ ; USER=root ; COMMAND=/usr/sbin/smartctl -x -j -d nvme /dev/nvme1
+sudo[…]: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=997)
+sudo[…]: pam_unix(sudo:session): session closed for user root
+```
+are emitted by **sudo/PAM**, not by the agent, and are normal. In collect mode
+the agent runs `sudo -n smartctl` once per device every `cache_timeout` seconds,
+so each poll produces a few lines per drive. To reduce the volume:
+
+- Raise `cache_timeout` in `/etc/smartmontools/snmp-agentx.yaml` to poll less
+  often.
+- Silence sudo's own command log line for this user by adding a `Defaults` line
+  to the sudoers drop-in:
+  ```bash
+  echo 'Defaults:smartmon !syslog' \
+      | sudo tee -a /etc/sudoers.d/smartmon-agentx
+  ```
+  The `pam_unix(sudo:session)` *session opened/closed* lines come from PAM's
+  session stack (`/etc/pam.d/sudo`), not from sudoers, so they persist unless
+  you also adjust PAM — which affects all sudo use on the host and is generally
+  not worth it.
+
 **snmpwalk returns "No Such Object":**
 The agent may not have registered yet.  Check:
 ```bash
