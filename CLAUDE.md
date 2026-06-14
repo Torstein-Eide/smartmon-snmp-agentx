@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Two implementations — know which branch you are on
 
-This repo holds **two implementations of the same SNMP AgentX subagent**, on
-different branches:
+The same SNMP AgentX subagent exists as **two implementations** on different
+branches:
 
 - **`master`** — the original C++ daemon (`smartmon-snmp-agentxd`); source in
-  `src/*.cpp`, built with the top-level `Makefile` (`/build-make`).
+  `src/*.cpp`, built with a `Makefile` (`/build-make`).
 - **`python`** (this branch) — a single self-contained Python script,
-  `smartmon_agentx.py`, that is the active line of development.
+  `smartmon_agentx.py`, the active line of development.
 
-On the `python` branch there is **no `src/` tree**. The top-level `Makefile`,
-`tests/Makefile`, and `tests/test_*.cpp` are carried over from `master` and
-reference `src/` files that do not exist here — do **not** run `make` / `make
-test` on this branch; they will fail. Everything below describes the Python
-agent. The MIB sources (`doc/*.mib`), the CI harness (`ci/`), the SNMP fixtures
+The C++ build (`src/`, `Makefile`, `tests/*.cpp`, the C++ Dockerfiles, and the
+`snmp-agentxd` GitHub workflow) has been **removed from this branch** — it lives
+only on `master`. Everything below describes the Python agent. The MIB sources
+(`doc/*.mib`), the Python CI harness (`ci/run_integration_test.py`,
+`ci/Dockerfile.agentx_py`, `ci/run_docker_py.sh`), the SNMP fixtures
 (`tests/fixtures/`, `tests/fixture-variants/`), the systemd units, and the
-install scripts are shared with `master`.
+install scripts are shared with (or ported from) `master`.
 
 ## Versioning
 

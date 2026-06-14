@@ -1,42 +1,10 @@
 # Build outputs
 *__pycache__*
 .*
-*.o
-*.a
-*.la
-*.lo
-*.so
-*.dylib
-*.dll
-*.exe
-.deps/
-.libs/
-
-# Autotools generated files
-/Makefile.in
-aclocal.m4
-autom4te.cache/
-config.cache
-config.guess
-config.h
-config.h.in
-config.log
-config.status
-config.sub
-configure
-depcomp
-install-sh
-libtool
-ltmain.sh
-missing
-stamp-h1
 
 # Generated project artifacts
-/smartmon-snmp-agentxd
-/smartmon-snmp-agentxd.service
-/man/smartmon-snmp-agentxd.8
-/tests/test_datasrc
-/tests/test_json
+/smartmon-snmp-agentx.service
+/man/smartmon-snmp-agentx.8
 
 # Local test/runtime output
 .tmp/
