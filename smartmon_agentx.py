@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import ctypes
+import ctypes.util
 import getpass
 import glob
 import json
@@ -29,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -598,20 +600,26 @@ def _parse_device_from_raw(raw: dict, path: str) -> dict:
 # Part 2 — SNMP type helpers and FNV-1a index assignment
 # ==========================================================================
 
+# Sentinel returned by the numeric helpers when the source value is missing
+# (None). _build's add() drops these so the OID never enters the oid_map — for
+# the custom-handler sensor table that surfaces as noSuchInstance, the honest
+# SNMP representation of "no data" rather than a fabricated 0.
+_OMIT = object()
+
 def _truthvalue(b) -> tuple:
     return ("integer", "1" if b else "2")
 
 def _gauge(v) -> tuple:
-    return ("gauge", str(int(v) if v is not None else 0))
+    return (_OMIT, None) if v is None else ("gauge", str(int(v)))
 
 def _counter64(v) -> tuple:
-    return ("counter64", str(int(v) if v is not None else 0))
+    return (_OMIT, None) if v is None else ("counter64", str(int(v)))
 
 def _string(v) -> tuple:
     return ("string", "" if v is None else str(v))
 
 def _integer(v) -> tuple:
-    return ("integer", str(int(v) if v is not None else 0))
+    return (_OMIT, None) if v is None else ("integer", str(int(v)))
 
 def _msb_pos(v: int) -> int:
     """Return the 0-based position of the most significant set bit (0 if v==0)."""
@@ -807,6 +815,14 @@ class _State:
         self.selftest_progress: dict = {}
         self.file_mtimes: dict = {}
         self.published_fp: dict = {}
+        # Sensor table is served by a custom net-snmp handler (not table_dataset)
+        # so missing cells answer noSuchInstance instead of a fabricated 0/"".
+        # The main thread refreshes these from each published oid_map snapshot;
+        # the handler (also main thread) reads them. sensor_vals maps the full
+        # OID tuple -> (asn_type, value); sensor_oids is the sorted key list used
+        # for GETNEXT successor lookup.
+        self.sensor_vals: dict = {}
+        self.sensor_oids: list = []
         # Last counts logged at INFO; the "built OID table" / "published N OIDs"
         # lines only emit at INFO when these change (otherwise VERBOSE), so a
         # steady-state collect-mode poll does not repeat them every cycle.
@@ -1266,6 +1282,8 @@ def _build(devices: list, ts: datetime,
     entries: List[Tuple] = []
 
     def add(suffix, typ, val):
+        if typ is _OMIT:
+            return                      # missing value → omit the OID (null)
         entries.append((_full(suffix), typ, val))
 
     # Count by protocol family
@@ -2592,10 +2610,13 @@ def _add_sensors(add, dev: dict, d_idx: int) -> int:
         add(T+(9,  d_idx, si), *_string(s["units_display"]))
         add(T+(10, d_idx, si), *_datetimeval(s["timestamp"]))
         add(T+(11, d_idx, si), *_gauge(0))                  # updateRate
-        add(T+(12, d_idx, si), *_integer(s["hi_crit"] or 0))
-        add(T+(13, d_idx, si), *_integer(s["hi_warn"] or 0))
-        add(T+(14, d_idx, si), *_integer(s["lo_warn"] or 0))
-        add(T+(15, d_idx, si), *_integer(s["lo_crit"] or 0))
+        # Thresholds the device does not expose are omitted (None -> not in the
+        # oid_map), so the custom sensor handler answers noSuchInstance for them
+        # rather than reporting a misleading limit of 0.
+        add(T+(12, d_idx, si), *_integer(s["hi_crit"]))
+        add(T+(13, d_idx, si), *_integer(s["hi_warn"]))
+        add(T+(14, d_idx, si), *_integer(s["lo_warn"]))
+        add(T+(15, d_idx, si), *_integer(s["lo_crit"]))
     return len(sensors)
 
 
@@ -3549,6 +3570,10 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
         "oid_suffix": (6, 1, 3),
         "entry_prefix": _full((6, 1, 3, 1)),
         "indexes": 2,
+        # Served by a custom oid_map-backed handler (_register_sensor_handler),
+        # not net-snmp's dense table_dataset, so unset cells answer
+        # noSuchInstance (RFC 1905) instead of a fabricated column default.
+        "custom_handler": True,
         "columns": {
             2: "integer", 3: "string", 4: "string", 5: "integer",
             6: "integer", 7: "integer", 8: "integer", 9: "string",
@@ -3570,6 +3595,8 @@ def _register_scalars(agent: Any) -> Dict[Oid, Any]:
 def _register_tables(agent: Any) -> Dict[str, Any]:
     tables = {}
     for name, defn in TABLE_DEFINITIONS.items():
+        if defn.get("custom_handler"):
+            continue            # served by a custom handler, not table_dataset
         columns = [
             (col, _make_value(agent, snmp_type, "" if snmp_type in ("string", "datetimeval", "bits") else 0))
             for col, snmp_type in defn["columns"].items()
@@ -3689,12 +3716,237 @@ def _refresh_and_publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, 
     _log_published(len(_st.oid_map), time.monotonic() - before)
 
 
+# ==========================================================================
+# Custom sensor-table handler (.6.1.3)
+#
+# netsnmpagent.Table is built on net-snmp's table_dataset helper, which is
+# dense by design: every registered column is materialised in every row from
+# the column defaults, so an unset cell serves a fabricated 0/"".  The
+# SENSOR-MIB needs a missing value (e.g. a threshold the device does not expose)
+# to read as an RFC 1905 IMPLICIT NULL.  We therefore serve the sensor table
+# subtree ourselves with a raw net-snmp Node_Handler backed directly by the
+# (already sparse) oid_map: present cells return their value, a GET miss returns
+# noSuchInstance, and GETNEXT skips absent cells so walks stay correct.
+# AgentX (RFC 2741 §5.4) carries these exception types natively — nothing in the
+# protocol or snmpd changes; only this subtree bypasses table_dataset.
+# ==========================================================================
+
+# net-snmp request modes (agent/snmp_agent.h) and the RFC 1905 exception values.
+_MODE_GET          = 160           # SNMP_MSG_GET
+_MODE_GETNEXT      = 161           # SNMP_MSG_GETNEXT
+# RFC 1905 §4.2.1 VarBind value exceptions (asn1.h), both IMPLICIT NULL:
+#   noSuchObject[0]   — the OID prefix matches no accessible variable (column)
+#   noSuchInstance[1] — the column exists but this row has no such instance
+_SNMP_NOSUCHOBJECT   = 0x80
+_SNMP_NOSUCHINSTANCE = 0x81
+_SENSOR_HANDLER_PREFIX = _full((6, 1, 3))      # the subtree this handler owns
+_SENSOR_ENTRY_PREFIX   = _full((6, 1, 3, 1))   # row entry prefix (…Entry)
+_SENSOR_COLUMNS        = frozenset(TABLE_DEFINITIONS["sensor"]["columns"])
+
+_sensor_api: Any = None             # cached (netsnmpapi, libnetsnmp core)
+_sensor_handler_cb: Any = None      # kept alive: CFUNCTYPE net-snmp retains
+
+
+class _NsVarList(ctypes.Structure):
+    pass
+_NsVarList_p = ctypes.POINTER(_NsVarList)
+# Mirror of struct variable_list (net-snmp types.h). The value is a union of
+# pointers (one machine word); we never read it (net-snmp copies our value in),
+# so c_void_p models it for layout. oid == unsigned long (see netsnmpapi.c_oid).
+_NsVarList._fields_ = [
+    ("next_variable", _NsVarList_p),
+    ("name",          ctypes.POINTER(ctypes.c_ulong)),
+    ("name_length",   ctypes.c_size_t),
+    ("type",          ctypes.c_ubyte),
+    ("val",           ctypes.c_void_p),
+    ("val_len",       ctypes.c_size_t),
+    ("name_loc",      ctypes.c_ulong * 128),   # MAX_OID_LEN
+    ("buf",           ctypes.c_ubyte * 40),
+    ("data",          ctypes.c_void_p),
+    ("dataFreeHook",  ctypes.c_void_p),
+    ("index",         ctypes.c_int),
+]
+
+
+class _NsRequestInfo(ctypes.Structure):
+    pass
+_NsRequestInfo_p = ctypes.POINTER(_NsRequestInfo)
+_NsRequestInfo._fields_ = [
+    ("requestvb",       _NsVarList_p),
+    ("parent_data",     ctypes.c_void_p),
+    ("agent_req_info",  ctypes.c_void_p),
+    ("range_end",       ctypes.POINTER(ctypes.c_ulong)),
+    ("range_end_len",   ctypes.c_size_t),
+    ("delegated",       ctypes.c_int),
+    ("processed",       ctypes.c_int),
+    ("inclusive",       ctypes.c_int),
+    ("status",          ctypes.c_int),
+    ("index",           ctypes.c_int),
+    ("repeat",          ctypes.c_int),
+    ("orig_repeat",     ctypes.c_int),
+    ("requestvb_start", _NsVarList_p),
+    ("next",            _NsRequestInfo_p),
+    ("prev",            _NsRequestInfo_p),
+    ("subtree",         ctypes.c_void_p),
+]
+
+
+class _NsAgentReqInfo(ctypes.Structure):
+    _fields_ = [
+        ("mode",       ctypes.c_int),
+        ("asp",        ctypes.c_void_p),
+        ("agent_data", ctypes.c_void_p),
+    ]
+_NsAgentReqInfo_p = ctypes.POINTER(_NsAgentReqInfo)
+
+# int handler(mib_handler*, handler_registration*, agent_request_info*, request_info*)
+_NODE_HANDLER = ctypes.CFUNCTYPE(
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+    _NsAgentReqInfo_p, _NsRequestInfo_p)
+
+
+def _get_sensor_api():
+    """Prepare (once) and cache the ctypes entry points the sensor handler needs.
+    snmp_set_var_* live in libnetsnmp (core); registration in libnetsnmpagent."""
+    global _sensor_api
+    if _sensor_api is not None:
+        return _sensor_api
+    import netsnmpapi as api
+    core = ctypes.CDLL(ctypes.util.find_library("netsnmp"))
+    core.snmp_set_var_typed_value.argtypes = [
+        _NsVarList_p, ctypes.c_ubyte, ctypes.c_void_p, ctypes.c_size_t]
+    core.snmp_set_var_typed_value.restype = ctypes.c_int
+    core.snmp_set_var_objid.argtypes = [
+        _NsVarList_p, ctypes.POINTER(ctypes.c_ulong), ctypes.c_size_t]
+    core.snmp_set_var_objid.restype = ctypes.c_int
+    api.libnsa.netsnmp_register_handler.argtypes = [api.netsnmp_handler_registration_p]
+    api.libnsa.netsnmp_register_handler.restype  = ctypes.c_int
+    api.libnsa.netsnmp_inject_handler.argtypes = [
+        api.netsnmp_handler_registration_p, api.netsnmp_mib_handler_p]
+    api.libnsa.netsnmp_inject_handler.restype = ctypes.c_int
+    api.libnsa.netsnmp_get_bulk_to_next_handler.argtypes = []
+    api.libnsa.netsnmp_get_bulk_to_next_handler.restype = api.netsnmp_mib_handler_p
+    _sensor_api = (api, core)
+    return _sensor_api
+
+
+def _sensor_subtree_view(oid_map: dict) -> tuple:
+    """Project the sensor subtree out of an oid_map snapshot into (vals, oids):
+    vals maps full-OID-tuple -> (asn_type, payload) ready for the handler, and
+    oids is the sorted key list used for GETNEXT successor lookup."""
+    api, _ = _get_sensor_api()
+    prefix, plen = _SENSOR_HANDLER_PREFIX, len(_SENSOR_HANDLER_PREFIX)
+    vals: Dict[tuple, tuple] = {}
+    for oid, (stype, value) in oid_map.items():
+        if len(oid) <= plen or oid[:plen] != prefix:
+            continue
+        if stype == "integer":
+            vals[oid] = (api.ASN_INTEGER, int(value))
+        elif stype == "gauge":
+            vals[oid] = (api.ASN_UNSIGNED, int(value) & 0xFFFFFFFF)
+        elif stype == "counter64":
+            vals[oid] = (api.ASN_COUNTER64, int(value))
+        elif stype == "string":
+            vals[oid] = (api.ASN_OCTET_STR, _as_text(value).encode())
+        elif stype == "bits":
+            vals[oid] = (api.ASN_OCTET_STR,
+                         bytes(value) if isinstance(value, (bytes, bytearray)) else b"")
+        elif stype == "datetimeval":
+            vals[oid] = (api.ASN_OCTET_STR,
+                         _encode_datetimeval(value) if isinstance(value, datetime) else b"")
+    return vals, sorted(vals)
+
+
+def _sensor_emit(core: Any, api: Any, vb: Any, asn_type: int, payload: object) -> None:
+    """Copy one cell value into the response varbind via snmp_set_var_typed_value."""
+    if isinstance(payload, (bytes, bytearray)):
+        buf = bytes(payload)
+        core.snmp_set_var_typed_value(vb, asn_type, buf, len(buf))
+    elif asn_type == api.ASN_COUNTER64:
+        c = api.counter64()
+        c.high = (int(payload) >> 32) & 0xFFFFFFFF
+        c.low  = int(payload) & 0xFFFFFFFF
+        core.snmp_set_var_typed_value(vb, asn_type, ctypes.byref(c), ctypes.sizeof(c))
+    else:
+        cv = ctypes.c_long(int(payload))
+        core.snmp_set_var_typed_value(vb, asn_type, ctypes.byref(cv), ctypes.sizeof(cv))
+
+
+def _sensor_node_handler(handler, reginfo, reqinfo, requests) -> int:
+    """net-snmp Node_Handler for the sensor table. MAIN THREAD ONLY (invoked from
+    the agent's request processing in the select loop)."""
+    try:
+        api, core = _get_sensor_api()
+        mode = reqinfo.contents.mode
+        vals = _st.sensor_vals
+        oids = _st.sensor_oids
+        req  = requests
+        while req:
+            rc  = req.contents
+            vb  = rc.requestvb
+            v   = vb.contents
+            cur = tuple(v.name[i] for i in range(v.name_length))
+            if mode == _MODE_GET:
+                cell = vals.get(cur)
+                if cell is None:
+                    # RFC 1905: noSuchInstance if the column exists but this row
+                    # has no value; noSuchObject if the column itself is unknown.
+                    ep = _SENSOR_ENTRY_PREFIX
+                    known_col = (len(cur) > len(ep) and cur[:len(ep)] == ep
+                                 and cur[len(ep)] in _SENSOR_COLUMNS)
+                    exc = _SNMP_NOSUCHINSTANCE if known_col else _SNMP_NOSUCHOBJECT
+                    core.snmp_set_var_typed_value(vb, exc, None, 0)
+                else:
+                    _sensor_emit(core, api, vb, cell[0], cell[1])
+            elif mode == _MODE_GETNEXT:
+                # inclusive (region edge) -> first key >= cur; else first > cur.
+                idx = (bisect.bisect_left(oids, cur) if rc.inclusive
+                       else bisect.bisect_right(oids, cur))
+                if idx < len(oids):
+                    nxt  = oids[idx]
+                    name = (ctypes.c_ulong * len(nxt))(*nxt)
+                    core.snmp_set_var_objid(vb, name, len(nxt))
+                    cell = vals[nxt]
+                    _sensor_emit(core, api, vb, cell[0], cell[1])
+                # else: leave varbind untouched -> agent returns endOfMibView,
+                # so the walk moves on to the next registered region.
+            req = rc.next
+    except Exception:
+        LOGGER.exception("sensor handler failure")
+    return 0   # SNMP_ERR_NOERROR
+
+
+def _register_sensor_handler() -> None:
+    """Register the custom read-only handler for the sensor table subtree.
+    Call after the agent is constructed (net-snmp initialised) and before
+    agent.start()."""
+    global _sensor_handler_cb
+    api, _ = _get_sensor_api()
+    _sensor_handler_cb = _NODE_HANDLER(_sensor_node_handler)   # keep alive
+    name    = b"smartmonSensorTable"
+    reg_oid = (ctypes.c_ulong * len(_SENSOR_HANDLER_PREFIX))(*_SENSOR_HANDLER_PREFIX)
+    reginfo = api.libnsa.netsnmp_create_handler_registration(
+        name, ctypes.cast(_sensor_handler_cb, ctypes.c_void_p),
+        reg_oid, len(_SENSOR_HANDLER_PREFIX), api.HANDLER_CAN_RONLY)
+    if not reginfo:
+        raise RuntimeError("netsnmp_create_handler_registration failed")
+    # Auto-convert GETBULK into GETNEXT calls so the handler only sees GET/GETNEXT.
+    api.libnsa.netsnmp_inject_handler(reginfo, api.libnsa.netsnmp_get_bulk_to_next_handler())
+    rc = api.libnsa.netsnmp_register_handler(reginfo)
+    if rc != 0:
+        raise RuntimeError(f"netsnmp_register_handler failed (rc={rc})")
+    LOGGER.info("registered custom sensor table handler at %s",
+                _oid_str(_SENSOR_HANDLER_PREFIX))
+
+
 def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
              oid_map: dict) -> None:
     """Push one oid_map snapshot to net-snmp. MAIN THREAD ONLY (net-snmp is not
     thread-safe)."""
     _publish_scalars(scalars, oid_map)
     _publish_tables(agent, tables, oid_map)
+    # Refresh the custom sensor handler's view (sensor table is not in `tables`).
+    _st.sensor_vals, _st.sensor_oids = _sensor_subtree_view(oid_map)
 
 
 # Floor for the worker poll interval when TTL is 0 (poll-as-fast-as-possible).
@@ -4235,6 +4487,7 @@ def main() -> None:
 
         scalars = _register_scalars(agent)
         tables  = _register_tables(agent)
+        _register_sensor_handler()   # custom handler for the sensor table (.6.1.3)
 
         agent.start()
         _st.agentx_connected = True   # subagent session to the master is up
