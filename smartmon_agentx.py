@@ -3579,6 +3579,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sas_health": {
         "oid_suffix": (5, 1, 6),
         "entry_prefix": _full((5, 1, 6, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             1: "integer", 2: "gauge", 3: "counter64", 4: "integer", 5: "gauge",
@@ -3587,6 +3588,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sas_err": {
         "oid_suffix": (5, 1, 9),
         "entry_prefix": _full((5, 1, 9, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             2: "counter64", 3: "counter64", 4: "counter64", 5: "counter64",
