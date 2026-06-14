@@ -3335,24 +3335,28 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sata_change_meta": {
         "oid_suffix": (4, 1, 2, 1),
         "entry_prefix": _full((4, 1, 2, 1, 1)),
+        "custom_handler": True,
         "indexes": 1,
         "columns": {2: "string", 3: "gauge", 4: "datetimeval"},
     },
     "sata_change_by_device": {
         "oid_suffix": (4, 1, 2, 2),
         "entry_prefix": _full((4, 1, 2, 2, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {2: "gauge", 3: "datetimeval"},
     },
     "sata_change_by_subidx": {
         "oid_suffix": (4, 1, 2, 3),
         "entry_prefix": _full((4, 1, 2, 3, 1)),
+        "custom_handler": True,
         "indexes": 3,
         "columns": {4: "datetimeval"},
     },
     "sata_info": {
         "oid_suffix": (4, 1, 3),
         "entry_prefix": _full((4, 1, 3, 1)),
+        "custom_handler": True,
         "indexes": 1,
         "columns": {
             1: "integer", 2: "integer", 3: "gauge", 4: "integer",
@@ -3474,6 +3478,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sata_health": {
         "oid_suffix": (4, 1, 6),
         "entry_prefix": _full((4, 1, 6, 1)),
+        "custom_handler": True,
         "indexes": 1,
         "columns": {
             1: "integer", 2: "integer", 3: "integer",
@@ -3488,6 +3493,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sata_attr": {
         "oid_suffix": (4, 1, 9),
         "entry_prefix": _full((4, 1, 9, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             2: "string", 3: "bits", 4: "integer", 5: "integer",
@@ -3498,6 +3504,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sata_errorlog": {
         "oid_suffix": (4, 1, 12),
         "entry_prefix": _full((4, 1, 12, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             2: "gauge", 3: "counter64", 4: "string",
@@ -3509,6 +3516,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sata_errorcmd": {
         "oid_suffix": (4, 1, 15),
         "entry_prefix": _full((4, 1, 15, 1)),
+        "custom_handler": True,
         "indexes": 3,
         "columns": {
             2: "gauge", 3: "gauge", 4: "gauge", 5: "gauge",
@@ -3519,6 +3527,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sata_selftest": {
         "oid_suffix": (4, 1, 18),
         "entry_prefix": _full((4, 1, 18, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             2: "integer", 3: "integer", 4: "integer",
@@ -3528,36 +3537,42 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "sata_erc": {
         "oid_suffix": (4, 1, 21),
         "entry_prefix": _full((4, 1, 21, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {2: "integer", 3: "gauge"},
     },
     "sata_phyevent": {
         "oid_suffix": (4, 1, 24),
         "entry_prefix": _full((4, 1, 24, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {2: "string", 3: "gauge", 4: "counter64", 5: "integer"},
     },
     "sata_selective": {
         "oid_suffix": (4, 1, 27),
         "entry_prefix": _full((4, 1, 27, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {2: "counter64", 3: "counter64", 4: "gauge"},
     },
     "sata_logdir": {
         "oid_suffix": (4, 1, 34),
         "entry_prefix": _full((4, 1, 34, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {2: "string", 3: "integer", 4: "integer", 5: "gauge", 6: "gauge"},
     },
     "sata_devstat": {
         "oid_suffix": (4, 1, 40),
         "entry_prefix": _full((4, 1, 40, 1)),
+        "custom_handler": True,
         "indexes": 3,
         "columns": {3: "string", 4: "string", 5: "counter64", 6: "bits"},
     },
     "sata_pending_defects": {
         "oid_suffix": (4, 1, 43),
         "entry_prefix": _full((4, 1, 43, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {2: "counter64"},
     },
