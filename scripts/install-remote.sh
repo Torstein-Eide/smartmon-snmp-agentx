@@ -1,9 +1,10 @@
 #!/bin/bash
 # scripts/install-remote.sh — Deploy smartmon-snmp-agentx to a remote host via SSH
 #
-# Copies the Python agent (smartmon_agentx.py), support scripts, systemd units,
-# YAML config, and MIB files to a remote machine, then performs all setup
-# (Python deps, user creation, service installation, snmpd config) over SSH.
+# Copies the Python agent (smartmon_agentx.py), the systemd unit, YAML config,
+# and MIB files to a remote machine, then performs all setup (Python deps, user
+# creation, service installation, snmpd config) over SSH.  The agent collects
+# SMART data itself (collect mode); no separate collector is installed.
 #
 # Usage:
 #   scripts/install-remote.sh [OPTIONS] user@host
@@ -14,7 +15,6 @@
 #   --port PORT          SSH port (default: 22)
 #   --state-dir DIR      JSON state directory on remote
 #                        (default: /run/smartmontools/json)
-#   --no-collect         Skip installing the smartmon-collect service/timer
 #   --dry-run            Print what would be done, without executing
 #   -h, --help           Show this help
 #
@@ -44,7 +44,6 @@ SSH_KEY=""
 SSH_PORT=22
 STATE_DIR="/run/smartmontools/json"
 STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentx-state.db"
-INSTALL_COLLECT=1
 DRY_RUN=0
 REMOTE=""
 
@@ -60,7 +59,6 @@ while [ $# -gt 0 ]; do
         --ssh-key)      SSH_KEY="$2";      shift 2 ;;
         --port)         SSH_PORT="$2";     shift 2 ;;
         --state-dir)    STATE_DIR="$2";    shift 2 ;;
-        --no-collect)   INSTALL_COLLECT=0; shift   ;;
         --dry-run)      DRY_RUN=1;         shift   ;;
         -h|--help)
             sed -n '2,/^set -/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
@@ -141,19 +139,13 @@ copy_to_remote() {
 # ---------------------------------------------------------------------------
 # Assemble the list of files to deploy
 # ---------------------------------------------------------------------------
-BIN_SRC="$REPO_ROOT/bin"
 SYSTEMD_SRC="$REPO_ROOT/systemd"
 MAN_SRC="$REPO_ROOT/man"
 ETC_SRC="$REPO_ROOT/etc"
 
 AGENT_FILES=("$AGENT_SRC")
-[ "$INSTALL_COLLECT" -eq 1 ] && AGENT_FILES+=("$BIN_SRC/smartmon-collect")
 
 SERVICE_FILES=("$SYSTEMD_SRC/$AGENT_NAME.service.in")
-[ "$INSTALL_COLLECT" -eq 1 ] && SERVICE_FILES+=(
-    "$SYSTEMD_SRC/smartmon-collect.service"
-    "$SYSTEMD_SRC/smartmon-collect.timer"
-)
 
 MIB_FILES=("$REPO_ROOT"/doc/SMARTMON-*.mib)
 CONF_FILE_SRC="$ETC_SRC/$AGENT_NAME.yaml"
@@ -166,7 +158,6 @@ echo "  state_dir    : $STATE_DIR"
 echo "  state_db     : $STATE_DB"
 echo "  ssh port     : $SSH_PORT"
 echo "  agent        : $AGENT_SRC"
-echo "  install poll : $([ "$INSTALL_COLLECT" -eq 1 ] && echo yes || echo no)"
 [ "$DRY_RUN" -eq 1 ] && echo "  *** DRY RUN — no changes will be made ***"
 echo ""
 
@@ -212,7 +203,6 @@ SBINDIR="$SBINDIR"
 SYSCONFDIR="/etc"
 STATE_DIR="$STATE_DIR"
 STATE_DB="$STATE_DB"
-INSTALL_COLLECT="$INSTALL_COLLECT"
 SYSTEMD_DIR="$SYSTEMD_DIR"
 STAGE_DIR="$STAGE_DIR"
 
@@ -239,7 +229,6 @@ if [ -f "\$SBINDIR/smartmon_agentx.py" ]; then
     sudo chmod 755 "\$SBINDIR/\$AGENT_NAME"
     echo "  installed \$SBINDIR/\$AGENT_NAME"
 fi
-[ -f "\$SBINDIR/smartmon-collect" ] && sudo chmod 755 "\$SBINDIR/smartmon-collect"
 
 # ---- Create dedicated system user ----------------------------------------
 if ! id smartmon &>/dev/null 2>&1; then
@@ -311,14 +300,6 @@ if [ -f "\$AGENTX_SVC.in" ]; then
     sudo rm -f "\$AGENTX_SVC.in"
 fi
 
-# Patch state dir into the collect service if different from default
-if [ "\$INSTALL_COLLECT" = "1" ]; then
-    COLLECT_SVC="\$SYSTEMD_DIR/smartmon-collect.service"
-    if [ -f "\$COLLECT_SVC" ] && [ "\$STATE_DIR" != "/run/smartmontools/json" ]; then
-        sudo sed -i "s|/run/smartmontools/json|\$STATE_DIR|g" "\$COLLECT_SVC"
-    fi
-fi
-
 # ---- Install the man page (substitute @variables@) ------------------------
 MAN_IN="\$STAGE_DIR/\$AGENT_NAME.8.in"
 if [ -f "\$MAN_IN" ]; then
@@ -377,14 +358,6 @@ fi
 
 # ---- Reload and enable services ------------------------------------------
 sudo systemctl daemon-reload
-
-if [ "\$INSTALL_COLLECT" = "1" ]; then
-    sudo systemctl enable smartmon-collect.timer
-    sudo systemctl start  smartmon-collect.timer
-    # Run once immediately so data is available before the first timer tick
-    sudo systemctl start  smartmon-collect.service
-    echo "  enabled and started: smartmon-collect.timer"
-fi
 
 sudo systemctl enable "\$AGENT_NAME.service"
 sudo systemctl restart "\$AGENT_NAME.service"

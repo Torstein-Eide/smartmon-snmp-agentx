@@ -1,8 +1,8 @@
 #!/bin/bash
 # scripts/install-agentxd.sh — Deploy smartmon-snmp-agentx to the local system
 #
-# Installs the Python AgentX agent (smartmon_agentx.py), the smartmon-collect
-# script, systemd units, YAML config, and MIB files.  Must be run as root.
+# Installs the Python AgentX agent (smartmon_agentx.py), the systemd unit,
+# YAML config, and MIB files.  Must be run as root.
 #
 # Usage:
 #   sudo scripts/install-agentxd.sh [OPTIONS]
@@ -10,19 +10,19 @@
 # Options:
 #   --prefix PREFIX      Installation prefix (default: /usr)
 #   --state-dir DIR      JSON state directory (default: /run/smartmontools/json)
-#   --no-collect         Skip installing the smartmon-collect service/timer
 #   -h, --help           Show this help
 #
 # After installation the agent can be started with:
-#   systemctl enable --now smartmon-collect.timer smartmon-snmp-agentx
+#   systemctl enable --now smartmon-snmp-agentx
 #
 # Data sources (pick one):
-#   * smartmon-collect timer (default) — writes JSON into state_dir.
+#   * collect mode (default) — the agent polls smartctl directly; no separate
+#     collector is installed.  Set `collect: true` in the config (the shipped
+#     template already does).
 #   * smartd --jsonstate — add to /etc/smartd.conf:
 #       DEVICESCAN -x --jsonstate /run/smartmontools/json/
-#     then set state_dir to match (requires smartd >= 7.0 for -x).
-#   * collect mode — set `collect: true` in the config so the agent polls
-#     smartctl directly (needs device access; adjust the unit accordingly).
+#     then set state_dir to match and `collect: false` (requires smartd >= 7.0
+#     for -x).
 
 set -euo pipefail
 
@@ -32,7 +32,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREFIX="/usr"
 STATE_DIR="/run/smartmontools/json"
 STATE_DB="/var/lib/smartmontools/snmp-agent/snmp-agentx-state.db"
-INSTALL_COLLECT=1
 
 # Installed agent executable, systemd unit, config, and man page names.
 AGENT_NAME="smartmon-snmp-agentx"
@@ -45,7 +44,6 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --prefix)      PREFIX="$2";       shift 2 ;;
         --state-dir)   STATE_DIR="$2";    shift 2 ;;
-        --no-collect)  INSTALL_COLLECT=0; shift   ;;
         -h|--help)
             sed -n '2,/^set -/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -75,7 +73,6 @@ SYSCONFDIR="/etc"
 UNITDIR="/lib/systemd/system"
 MIBDIR="/usr/share/snmp/mibs"
 CONFDIR="$SYSCONFDIR/smartmontools"
-BIN_SRC="$REPO_ROOT/bin"
 MAN_SRC="$REPO_ROOT/man"
 SYSTEMD_SRC="$REPO_ROOT/systemd"
 
@@ -83,7 +80,6 @@ echo "=== Installing $AGENT_NAME ==="
 echo "  agent       : $AGENT_SRC"
 echo "  prefix      : $PREFIX"
 echo "  state_dir   : $STATE_DIR"
-echo "  collect svc : $([ "$INSTALL_COLLECT" -eq 1 ] && echo yes || echo no)"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -144,6 +140,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Grant the daemon passwordless smartctl (collect mode)
+# ---------------------------------------------------------------------------
+# In collect mode the agent runs as the unprivileged 'smartmon' user and shells
+# out to 'sudo -n smartctl' to read SMART data.  Install a sudoers drop-in so
+# that escalation works without a password.  The grant is limited to the four
+# read-only invocations the agent actually issues — device scan plus SMART/FARM
+# data reads — so destructive smartctl subcommands (-t self-test, --set, drive
+# security/sanitize) are NOT runnable as root via this rule.  The candidate file
+# is validated with 'visudo -cf' before it is moved into place, so a malformed
+# entry can never lock sudo out of /etc/sudoers.d.
+SMARTCTL_PATH="$(command -v smartctl 2>/dev/null || echo /usr/sbin/smartctl)"
+SUDOERS_FILE="/etc/sudoers.d/smartmon-agentx"
+SUDOERS_TMP="$(mktemp)"
+printf '# smartmon-snmp-agentx: collect mode runs read-only smartctl as root.\n# Managed by install-agentxd.sh (scan + SMART/FARM data reads only).\nsmartmon ALL=(root) NOPASSWD: %s --scan-open, %s --scan, %s -x -j *, %s -l farm -j *\n' "$SMARTCTL_PATH" "$SMARTCTL_PATH" "$SMARTCTL_PATH" "$SMARTCTL_PATH" > "$SUDOERS_TMP"
+if visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
+    install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
+    echo "  installed sudoers: $SUDOERS_FILE (smartmon -> $SMARTCTL_PATH)"
+else
+    echo "  WARNING: generated sudoers failed visudo validation; not installed" >&2
+fi
+rm -f "$SUDOERS_TMP"
+
+# ---------------------------------------------------------------------------
 # State directory (writable by root/collect, readable by smartmon user)
 # ---------------------------------------------------------------------------
 echo "--- creating state directory ---"
@@ -153,24 +172,13 @@ install -d -m 750 -o smartmon -g smartmon "$(dirname "$STATE_DB")"
 echo "  $(dirname "$STATE_DB") (mode 750, smartmon:smartmon)"
 
 # ---------------------------------------------------------------------------
-# Agent script + smartmon-collect
+# Agent script
 # ---------------------------------------------------------------------------
 echo "--- installing agent ---"
 install -d "$SBINDIR"
 # Install the Python script as an executable (it carries a python3 shebang).
 install -m 755 "$AGENT_SRC" "$SBINDIR/$AGENT_NAME"
 echo "  $SBINDIR/$AGENT_NAME"
-
-if [ "$INSTALL_COLLECT" -eq 1 ]; then
-    COLLECT_SCRIPT="$BIN_SRC/smartmon-collect"
-    if [ -f "$COLLECT_SCRIPT" ]; then
-        install -m 755 "$COLLECT_SCRIPT" "$SBINDIR/smartmon-collect"
-        echo "  $SBINDIR/smartmon-collect"
-    else
-        echo "  WARNING: smartmon-collect not found at $COLLECT_SCRIPT" >&2
-        INSTALL_COLLECT=0
-    fi
-fi
 
 # ---------------------------------------------------------------------------
 # Man page (substitute @variables@ from the .in source)
@@ -238,20 +246,6 @@ if [ -f "$UNIT_SRC" ]; then
     echo "  $UNIT_DEST"
 fi
 
-# collect service + timer
-if [ "$INSTALL_COLLECT" -eq 1 ]; then
-    for unit in smartmon-collect.service smartmon-collect.timer; do
-        src="$SYSTEMD_SRC/$unit"
-        [ -f "$src" ] || continue
-        dest="$UNITDIR/$unit"
-        install -m 644 "$src" "$dest"
-        # Patch state_dir if non-default
-        [ "$STATE_DIR" != "/run/smartmontools/json" ] && \
-            sed -i "s|/run/smartmontools/json|${STATE_DIR}|g" "$dest"
-        echo "  $dest"
-    done
-fi
-
 systemctl daemon-reload
 
 # ---------------------------------------------------------------------------
@@ -295,18 +289,13 @@ fi
 echo ""
 echo "=== Installation complete ==="
 echo ""
-if [ "$INSTALL_COLLECT" -eq 1 ]; then
-    echo "To use smartmon-collect (recommended — no smartd --jsonstate needed):"
-    echo "  systemctl enable --now smartmon-collect.timer"
-    echo "  systemctl enable --now $AGENT_NAME"
-    echo ""
-    echo "To use smartd --jsonstate instead:"
-    echo "  Add to /etc/smartd.conf:  DEVICESCAN -x -a (requires smartd >= 7.0)"
-    echo "  Set state_dir in $CONF_DEST to match --jsonstate path"
-    echo "  Then: systemctl enable --now $AGENT_NAME"
-else
-    echo "  systemctl enable --now $AGENT_NAME"
-fi
+echo "Collect mode (default — the agent polls smartctl directly):"
+echo "  systemctl enable --now $AGENT_NAME"
+echo ""
+echo "To use smartd --jsonstate instead:"
+echo "  Add to /etc/smartd.conf:  DEVICESCAN -x -a (requires smartd >= 7.0)"
+echo "  Set collect: false and state_dir in $CONF_DEST to match --jsonstate path"
+echo "  Then: systemctl enable --now $AGENT_NAME"
 echo ""
 echo "Verify:"
 echo '  snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.2'
