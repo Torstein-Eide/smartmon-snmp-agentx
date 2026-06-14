@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -815,14 +815,14 @@ class _State:
         self.selftest_progress: dict = {}
         self.file_mtimes: dict = {}
         self.published_fp: dict = {}
-        # Sensor table is served by a custom net-snmp handler (not table_dataset)
-        # so missing cells answer noSuchInstance instead of a fabricated 0/"".
-        # The main thread refreshes these from each published oid_map snapshot;
-        # the handler (also main thread) reads them. sensor_vals maps the full
-        # OID tuple -> (asn_type, value); sensor_oids is the sorted key list used
-        # for GETNEXT successor lookup.
-        self.sensor_vals: dict = {}
-        self.sensor_oids: list = []
+        # Tables flagged custom_handler are served by a custom net-snmp handler
+        # (not table_dataset) so missing cells answer noSuchInstance/noSuchObject
+        # instead of a fabricated 0/"".  The main thread refreshes these from each
+        # published oid_map snapshot; the handler (also main thread) reads them.
+        # custom_vals maps the full OID tuple -> (asn_type, value); custom_oids is
+        # the sorted key list used for GETNEXT successor lookup.
+        self.custom_vals: dict = {}
+        self.custom_oids: list = []
         # Last counts logged at INFO; the "built OID table" / "published N OIDs"
         # lines only emit at INFO when these change (otherwise VERBOSE), so a
         # steady-state collect-mode poll does not repeat them every cycle.
@@ -3371,6 +3371,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
         "oid_suffix": (2, 1, 3),
         "entry_prefix": _full((2, 1, 3, 1)),
         "indexes": 1,
+        "custom_handler": True,   # SMARTMON-COMMON-MIB device table -> NULL semantics
         "columns": {
             2: "string", 3: "string", 4: "integer", 5: "datetimeval",
             6: "integer", 7: "gauge",  8: "integer", 9: "string",
@@ -3717,18 +3718,20 @@ def _refresh_and_publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, 
 
 
 # ==========================================================================
-# Custom sensor-table handler (.6.1.3)
+# Custom table handlers (tables flagged "custom_handler" in TABLE_DEFINITIONS)
 #
 # netsnmpagent.Table is built on net-snmp's table_dataset helper, which is
 # dense by design: every registered column is materialised in every row from
-# the column defaults, so an unset cell serves a fabricated 0/"".  The
-# SENSOR-MIB needs a missing value (e.g. a threshold the device does not expose)
-# to read as an RFC 1905 IMPLICIT NULL.  We therefore serve the sensor table
-# subtree ourselves with a raw net-snmp Node_Handler backed directly by the
-# (already sparse) oid_map: present cells return their value, a GET miss returns
-# noSuchInstance, and GETNEXT skips absent cells so walks stay correct.
-# AgentX (RFC 2741 §5.4) carries these exception types natively — nothing in the
-# protocol or snmpd changes; only this subtree bypasses table_dataset.
+# the column defaults, so an unset cell serves a fabricated 0/"".  A MIB that
+# needs a missing value (e.g. a threshold the device does not expose) to read
+# as an RFC 1905 IMPLICIT NULL therefore serves its table subtree(s) here
+# instead, with a raw net-snmp Node_Handler backed directly by the (already
+# sparse) oid_map: present cells return their value, a GET miss returns
+# noSuchInstance/noSuchObject, and GETNEXT skips absent cells so walks stay
+# correct.  AgentX (RFC 2741 §5.4) carries these exception types natively —
+# nothing in the protocol or snmpd changes; only these subtrees bypass
+# table_dataset.  One shared handler serves every registered subtree; GETNEXT
+# is constrained to the registration's own region (reginfo->rootoid).
 # ==========================================================================
 
 # net-snmp request modes (agent/snmp_agent.h) and the RFC 1905 exception values.
@@ -3739,12 +3742,18 @@ _MODE_GETNEXT      = 161           # SNMP_MSG_GETNEXT
 #   noSuchInstance[1] — the column exists but this row has no such instance
 _SNMP_NOSUCHOBJECT   = 0x80
 _SNMP_NOSUCHINSTANCE = 0x81
-_SENSOR_HANDLER_PREFIX = _full((6, 1, 3))      # the subtree this handler owns
-_SENSOR_ENTRY_PREFIX   = _full((6, 1, 3, 1))   # row entry prefix (…Entry)
-_SENSOR_COLUMNS        = frozenset(TABLE_DEFINITIONS["sensor"]["columns"])
 
-_sensor_api: Any = None             # cached (netsnmpapi, libnetsnmp core)
-_sensor_handler_cb: Any = None      # kept alive: CFUNCTYPE net-snmp retains
+# Tables served by the custom handler, derived once from TABLE_DEFINITIONS.
+_CUSTOM_TABLES = [(name, defn) for name, defn in TABLE_DEFINITIONS.items()
+                  if defn.get("custom_handler")]
+# entry-prefix tuple -> frozenset(column numbers), for the noSuchInstance vs
+# noSuchObject decision and for projecting the subtree out of the oid_map.
+_CUSTOM_ENTRY_COLS = {defn["entry_prefix"]: frozenset(defn["columns"])
+                      for _, defn in _CUSTOM_TABLES}
+_CUSTOM_ENTRY_LENS = sorted({len(ep) for ep in _CUSTOM_ENTRY_COLS})
+
+_custom_api: Any = None             # cached (netsnmpapi, libnetsnmp core)
+_custom_handler_cb: Any = None      # kept alive: CFUNCTYPE net-snmp retains
 
 
 class _NsVarList(ctypes.Structure):
@@ -3805,12 +3814,12 @@ _NODE_HANDLER = ctypes.CFUNCTYPE(
     _NsAgentReqInfo_p, _NsRequestInfo_p)
 
 
-def _get_sensor_api():
-    """Prepare (once) and cache the ctypes entry points the sensor handler needs.
+def _get_custom_api():
+    """Prepare (once) and cache the ctypes entry points the custom handler needs.
     snmp_set_var_* live in libnetsnmp (core); registration in libnetsnmpagent."""
-    global _sensor_api
-    if _sensor_api is not None:
-        return _sensor_api
+    global _custom_api
+    if _custom_api is not None:
+        return _custom_api
     import netsnmpapi as api
     core = ctypes.CDLL(ctypes.util.find_library("netsnmp"))
     core.snmp_set_var_typed_value.argtypes = [
@@ -3826,38 +3835,56 @@ def _get_sensor_api():
     api.libnsa.netsnmp_inject_handler.restype = ctypes.c_int
     api.libnsa.netsnmp_get_bulk_to_next_handler.argtypes = []
     api.libnsa.netsnmp_get_bulk_to_next_handler.restype = api.netsnmp_mib_handler_p
-    _sensor_api = (api, core)
-    return _sensor_api
+    _custom_api = (api, core)
+    return _custom_api
 
 
-def _sensor_subtree_view(oid_map: dict) -> tuple:
-    """Project the sensor subtree out of an oid_map snapshot into (vals, oids):
-    vals maps full-OID-tuple -> (asn_type, payload) ready for the handler, and
-    oids is the sorted key list used for GETNEXT successor lookup."""
-    api, _ = _get_sensor_api()
-    prefix, plen = _SENSOR_HANDLER_PREFIX, len(_SENSOR_HANDLER_PREFIX)
+def _custom_cvalue(api: Any, stype: str, value: object) -> tuple:
+    """Map an oid_map (type, value) onto (asn_type, payload) for the handler:
+    payload is an int for the integer-family types, bytes for octet strings."""
+    if stype == "integer":
+        return (api.ASN_INTEGER, int(value))
+    if stype == "gauge":
+        return (api.ASN_UNSIGNED, int(value) & 0xFFFFFFFF)
+    if stype == "counter64":
+        return (api.ASN_COUNTER64, int(value))
+    if stype == "string":
+        return (api.ASN_OCTET_STR, _as_text(value).encode())
+    if stype == "bits":
+        return (api.ASN_OCTET_STR,
+                bytes(value) if isinstance(value, (bytes, bytearray)) else b"")
+    if stype == "datetimeval":
+        return (api.ASN_OCTET_STR,
+                _encode_datetimeval(value) if isinstance(value, datetime) else b"")
+    raise ValueError(f"unsupported SNMP type {stype!r}")
+
+
+def _custom_tables_view(oid_map: dict) -> tuple:
+    """Project every custom-handler table out of an oid_map snapshot into
+    (vals, oids): vals maps full-OID-tuple -> (asn_type, payload) ready for the
+    handler, and oids is the sorted key list used for GETNEXT successor lookup."""
+    api, _ = _get_custom_api()
+    entry_cols = _CUSTOM_ENTRY_COLS
+    lens       = _CUSTOM_ENTRY_LENS
     vals: Dict[tuple, tuple] = {}
     for oid, (stype, value) in oid_map.items():
-        if len(oid) <= plen or oid[:plen] != prefix:
-            continue
-        if stype == "integer":
-            vals[oid] = (api.ASN_INTEGER, int(value))
-        elif stype == "gauge":
-            vals[oid] = (api.ASN_UNSIGNED, int(value) & 0xFFFFFFFF)
-        elif stype == "counter64":
-            vals[oid] = (api.ASN_COUNTER64, int(value))
-        elif stype == "string":
-            vals[oid] = (api.ASN_OCTET_STR, _as_text(value).encode())
-        elif stype == "bits":
-            vals[oid] = (api.ASN_OCTET_STR,
-                         bytes(value) if isinstance(value, (bytes, bytearray)) else b"")
-        elif stype == "datetimeval":
-            vals[oid] = (api.ASN_OCTET_STR,
-                         _encode_datetimeval(value) if isinstance(value, datetime) else b"")
+        for plen in lens:
+            if len(oid) > plen and oid[:plen] in entry_cols:
+                vals[oid] = _custom_cvalue(api, stype, value)
+                break
     return vals, sorted(vals)
 
 
-def _sensor_emit(core: Any, api: Any, vb: Any, asn_type: int, payload: object) -> None:
+def _custom_known_column(cur: tuple) -> bool:
+    """True if cur addresses a defined column of some custom table (so a GET miss
+    is noSuchInstance rather than noSuchObject)."""
+    for ep, cols in _CUSTOM_ENTRY_COLS.items():
+        if len(cur) > len(ep) and cur[:len(ep)] == ep and cur[len(ep)] in cols:
+            return True
+    return False
+
+
+def _custom_emit(core: Any, api: Any, vb: Any, asn_type: int, payload: object) -> None:
     """Copy one cell value into the response varbind via snmp_set_var_typed_value."""
     if isinstance(payload, (bytes, bytearray)):
         buf = bytes(payload)
@@ -3872,14 +3899,19 @@ def _sensor_emit(core: Any, api: Any, vb: Any, asn_type: int, payload: object) -
         core.snmp_set_var_typed_value(vb, asn_type, ctypes.byref(cv), ctypes.sizeof(cv))
 
 
-def _sensor_node_handler(handler, reginfo, reqinfo, requests) -> int:
-    """net-snmp Node_Handler for the sensor table. MAIN THREAD ONLY (invoked from
-    the agent's request processing in the select loop)."""
+def _custom_node_handler(handler, reginfo, reqinfo, requests) -> int:
+    """Shared net-snmp Node_Handler for every custom table. MAIN THREAD ONLY
+    (invoked from the agent's request processing in the select loop)."""
     try:
-        api, core = _get_sensor_api()
+        api, core = _get_custom_api()
         mode = reqinfo.contents.mode
-        vals = _st.sensor_vals
-        oids = _st.sensor_oids
+        vals = _st.custom_vals
+        oids = _st.custom_oids
+        # GETNEXT successors are constrained to this registration's own region so
+        # we never hand the master an OID outside the subtree it asked about.
+        reg    = ctypes.cast(reginfo, api.netsnmp_handler_registration_p).contents
+        region = tuple(reg.rootoid[i] for i in range(reg.rootoid_len))
+        rlen   = len(region)
         req  = requests
         while req:
             rc  = req.contents
@@ -3889,54 +3921,52 @@ def _sensor_node_handler(handler, reginfo, reqinfo, requests) -> int:
             if mode == _MODE_GET:
                 cell = vals.get(cur)
                 if cell is None:
-                    # RFC 1905: noSuchInstance if the column exists but this row
-                    # has no value; noSuchObject if the column itself is unknown.
-                    ep = _SENSOR_ENTRY_PREFIX
-                    known_col = (len(cur) > len(ep) and cur[:len(ep)] == ep
-                                 and cur[len(ep)] in _SENSOR_COLUMNS)
-                    exc = _SNMP_NOSUCHINSTANCE if known_col else _SNMP_NOSUCHOBJECT
+                    exc = (_SNMP_NOSUCHINSTANCE if _custom_known_column(cur)
+                           else _SNMP_NOSUCHOBJECT)
                     core.snmp_set_var_typed_value(vb, exc, None, 0)
                 else:
-                    _sensor_emit(core, api, vb, cell[0], cell[1])
+                    _custom_emit(core, api, vb, cell[0], cell[1])
             elif mode == _MODE_GETNEXT:
                 # inclusive (region edge) -> first key >= cur; else first > cur.
                 idx = (bisect.bisect_left(oids, cur) if rc.inclusive
                        else bisect.bisect_right(oids, cur))
-                if idx < len(oids):
+                if idx < len(oids) and oids[idx][:rlen] == region:
                     nxt  = oids[idx]
                     name = (ctypes.c_ulong * len(nxt))(*nxt)
                     core.snmp_set_var_objid(vb, name, len(nxt))
-                    cell = vals[nxt]
-                    _sensor_emit(core, api, vb, cell[0], cell[1])
+                    _custom_emit(core, api, vb, *vals[nxt])
                 # else: leave varbind untouched -> agent returns endOfMibView,
                 # so the walk moves on to the next registered region.
             req = rc.next
     except Exception:
-        LOGGER.exception("sensor handler failure")
+        LOGGER.exception("custom table handler failure")
     return 0   # SNMP_ERR_NOERROR
 
 
-def _register_sensor_handler() -> None:
-    """Register the custom read-only handler for the sensor table subtree.
-    Call after the agent is constructed (net-snmp initialised) and before
-    agent.start()."""
-    global _sensor_handler_cb
-    api, _ = _get_sensor_api()
-    _sensor_handler_cb = _NODE_HANDLER(_sensor_node_handler)   # keep alive
-    name    = b"smartmonSensorTable"
-    reg_oid = (ctypes.c_ulong * len(_SENSOR_HANDLER_PREFIX))(*_SENSOR_HANDLER_PREFIX)
-    reginfo = api.libnsa.netsnmp_create_handler_registration(
-        name, ctypes.cast(_sensor_handler_cb, ctypes.c_void_p),
-        reg_oid, len(_SENSOR_HANDLER_PREFIX), api.HANDLER_CAN_RONLY)
-    if not reginfo:
-        raise RuntimeError("netsnmp_create_handler_registration failed")
-    # Auto-convert GETBULK into GETNEXT calls so the handler only sees GET/GETNEXT.
-    api.libnsa.netsnmp_inject_handler(reginfo, api.libnsa.netsnmp_get_bulk_to_next_handler())
-    rc = api.libnsa.netsnmp_register_handler(reginfo)
-    if rc != 0:
-        raise RuntimeError(f"netsnmp_register_handler failed (rc={rc})")
-    LOGGER.info("registered custom sensor table handler at %s",
-                _oid_str(_SENSOR_HANDLER_PREFIX))
+def _register_custom_handlers() -> None:
+    """Register the shared read-only handler for every custom-handler table
+    subtree.  Call after the agent is constructed (net-snmp initialised) and
+    before agent.start()."""
+    global _custom_handler_cb
+    if not _CUSTOM_TABLES:
+        return
+    api, _ = _get_custom_api()
+    _custom_handler_cb = _NODE_HANDLER(_custom_node_handler)   # keep alive
+    for name, defn in _CUSTOM_TABLES:
+        root    = _full(defn["oid_suffix"])
+        reg_oid = (ctypes.c_ulong * len(root))(*root)
+        reginfo = api.libnsa.netsnmp_create_handler_registration(
+            f"smartmon_{name}".encode(), ctypes.cast(_custom_handler_cb, ctypes.c_void_p),
+            reg_oid, len(root), api.HANDLER_CAN_RONLY)
+        if not reginfo:
+            raise RuntimeError(f"netsnmp_create_handler_registration failed for {name}")
+        # Auto-convert GETBULK into GETNEXT so the handler only sees GET/GETNEXT.
+        api.libnsa.netsnmp_inject_handler(reginfo, api.libnsa.netsnmp_get_bulk_to_next_handler())
+        rc = api.libnsa.netsnmp_register_handler(reginfo)
+        if rc != 0:
+            raise RuntimeError(f"netsnmp_register_handler failed for {name} (rc={rc})")
+    LOGGER.info("registered %d custom table handler(s): %s", len(_CUSTOM_TABLES),
+                ", ".join(name for name, _ in _CUSTOM_TABLES))
 
 
 def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
@@ -3945,8 +3975,8 @@ def _publish(agent: Any, scalars: Dict[Oid, Any], tables: Dict[str, Any],
     thread-safe)."""
     _publish_scalars(scalars, oid_map)
     _publish_tables(agent, tables, oid_map)
-    # Refresh the custom sensor handler's view (sensor table is not in `tables`).
-    _st.sensor_vals, _st.sensor_oids = _sensor_subtree_view(oid_map)
+    # Refresh the custom handler's view (custom tables are not in `tables`).
+    _st.custom_vals, _st.custom_oids = _custom_tables_view(oid_map)
 
 
 # Floor for the worker poll interval when TTL is 0 (poll-as-fast-as-possible).
@@ -4487,7 +4517,7 @@ def main() -> None:
 
         scalars = _register_scalars(agent)
         tables  = _register_tables(agent)
-        _register_sensor_handler()   # custom handler for the sensor table (.6.1.3)
+        _register_custom_handlers()  # custom handlers for custom_handler tables
 
         agent.start()
         _st.agentx_connected = True   # subagent session to the master is up
