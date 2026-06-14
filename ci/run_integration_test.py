@@ -875,6 +875,115 @@ def run_notifications(cfg: dict, live_fixtures: Path, fixture_variants: Path,
 
 
 # ---------------------------------------------------------------------------
+# Performance (GETBULK / GETNEXT / GET latency)
+# ---------------------------------------------------------------------------
+
+def _time_snmp(cmd: list[str], env: dict[str, str], runs: int
+               ) -> tuple[float, float, str]:
+    """Run cmd `runs` times; return (min_seconds, median_seconds, last_stdout)."""
+    times: list[float] = []
+    out = ""
+    for _ in range(max(1, runs)):
+        t0 = time.monotonic()
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        times.append(time.monotonic() - t0)
+        out = r.stdout + r.stderr
+    times.sort()
+    return times[0], times[len(times) // 2], out
+
+
+def run_performance(cfg: dict, snmp_port: int, community: str, ent_oid: str,
+                    snmp_env: dict[str, str], section_filter: Optional[str]
+                    ) -> tuple[int, int, int, list[tuple[str, list[str]]]]:
+    """Measure full-tree GETBULK and GETNEXT latency plus a batched GET, print the
+    numbers, and (optionally) assert configured millisecond thresholds.
+
+    Driven by the optional top-level `performance` config block; a metric with no
+    threshold is informational (passes as long as the agent returns data).
+    Returns (passed, failed, skipped, [(name, failures)])."""
+    name = "Performance"
+    perf = cfg.get("performance")
+    matched = not section_filter or any(
+        section_filter.lower() in s for s in (name.lower(), "perf"))
+    if not matched:
+        return 0, 0, 0, []
+    if not perf:
+        if section_filter:
+            print_section_result(name, 0, 0, 1, "no `performance` config block", [])
+            return 0, 0, 1, []
+        return 0, 0, 0, []
+
+    runs     = int(perf.get("iterations", 3))
+    sample_n = int(perf.get("get_sample", 40))
+    target   = f"127.0.0.1:{snmp_port}"
+    base     = ["-v2c", "-c", community, *SNMP_STABLE_OUTPUT_ARGS]
+    # Output is numeric (-OenU), so MIBs are not needed; drop MIBS=ALL/MIBDIRS so
+    # per-invocation MIB loading (~100ms+) does not swamp the measured latency.
+    perf_env = dict(snmp_env)
+    perf_env.pop("MIBDIRS", None)
+    perf_env["MIBS"] = ""
+    passed = failed = 0
+    failures: list[str] = []
+
+    print(_bold(f"=== Performance (median of {runs}) ==="))
+
+    def report(label: str, mn: float, md: float, extra: str,
+               ok: bool, detail: str) -> None:
+        nonlocal passed, failed
+        status = _green("ok") if ok else _red("FAIL")
+        print(f"  {label:20s} median={md * 1000:7.1f}ms  min={mn * 1000:7.1f}ms"
+              f"  {extra:14s} [{status}]")
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+            failures.append(f"FAIL: {label}\n      {detail}")
+
+    def oid_lines(text: str) -> list[str]:
+        return [l for l in text.splitlines() if l.strip() and " = " in l]
+
+    sample_src: list[str] = []
+
+    # GETBULK over the whole enterprise subtree.
+    if shutil.which("snmpbulkwalk"):
+        mn, md, out = _time_snmp(["snmpbulkwalk", *base, target, ent_oid], perf_env, runs)
+        lines = oid_lines(out)
+        sample_src = [l.split(" = ", 1)[0].strip() for l in lines]
+        thr = perf.get("max_getbulk_ms")
+        ok = len(lines) > 0 and (thr is None or md * 1000 <= thr)
+        report("GETBULK full tree", mn, md, f"oids={len(lines)}", ok,
+               f"oids={len(lines)} median={md * 1000:.1f}ms"
+               + (f" > max {thr}ms" if thr is not None else ""))
+    else:
+        print(_yellow("  snmpbulkwalk not found; skipping GETBULK metric"))
+
+    # GETNEXT over the whole subtree (snmpwalk).
+    mn, md, out = _time_snmp(["snmpwalk", *base, target, ent_oid], perf_env, runs)
+    lines = oid_lines(out)
+    if not sample_src:
+        sample_src = [l.split(" = ", 1)[0].strip() for l in lines]
+    thr = perf.get("max_getnext_ms")
+    ok = len(lines) > 0 and (thr is None or md * 1000 <= thr)
+    report("GETNEXT full tree", mn, md, f"oids={len(lines)}", ok,
+           f"oids={len(lines)} median={md * 1000:.1f}ms"
+           + (f" > max {thr}ms" if thr is not None else ""))
+
+    # GET a batch of existing OIDs sampled across the tree (one PDU, many varbinds).
+    if sample_src:
+        step   = max(1, len(sample_src) // sample_n)
+        sample = sample_src[::step][:sample_n]
+        mn, md, out = _time_snmp(["snmpget", *base, target, *sample], perf_env, runs)
+        bad = ("No Such" in out) or ("=" not in out)
+        thr = perf.get("max_get_ms")
+        ok  = (not bad) and (thr is None or md * 1000 <= thr)
+        report(f"GET {len(sample)} varbinds", mn, md, "", ok,
+               ("GET returned an error/no value" if bad else
+                f"median={md * 1000:.1f}ms > max {thr}ms"))
+
+    return passed, failed, 0, [(name, failures)] if failures else []
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1053,6 +1162,16 @@ def main() -> int:
         total_fail += nf
         total_skip += ns
         all_section_failures.extend(notif_failures)
+
+        # Performance (GETBULK / GETNEXT / GET latency)
+        print()
+        pp, pf, ps, perf_failures = run_performance(
+            cfg, snmp_port, community, ent_oid, snmp_env, section_filter
+        )
+        total_pass += pp
+        total_fail += pf
+        total_skip += ps
+        all_section_failures.extend(perf_failures)
 
         # Print collected failures
         if all_section_failures:

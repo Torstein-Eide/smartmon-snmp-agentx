@@ -12,6 +12,19 @@ config:
   agentx_register_poll_attempts: 40
   agentx_register_poll_interval: 0.5
 
+# Performance metrics: time a full-tree GETBULK and GETNEXT walk plus a batched
+# GET, reported as the median of `iterations` runs.  Runs as part of every full
+# pass (isolate with `--section performance`).  Metrics are informational unless
+# a max_*_ms threshold is set, in which case the metric FAILS when the median
+# exceeds it.  Thresholds are off by default since absolute timings are
+# machine-dependent; set them in CI against a known-good baseline if desired.
+performance:
+  iterations: 3
+  get_sample: 40        # number of OIDs to fetch in the batched GET PDU
+  # max_getbulk_ms: 1500
+  # max_getnext_ms: 2000
+  # max_get_ms: 500
+
 fixture_variants:
   patterns:
     - "*.failing.json"
