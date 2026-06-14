@@ -157,7 +157,7 @@ sections:
       - {label: "col17 mediaDataIntegrityErrors = 0",             col: 17, expected: "Counter64: 0"}
       - {label: "col18 errorInformationLogEntries = 0",           col: 18, expected: "Counter64: 0"}
       - {label: "col19 warningTemperatureTimeMinutes = 0",        col: 19, expected: "Counter64: 0"}
-      - {label: "col20 criticalTemperatureTimeMinutes = 0",       col: 20, expected: "Counter64: 0"}
+      - {label: "col20 criticalTemperatureTimeMinutes absent (not in fixture)", col: 20, absent: true}
       - {label: "col22 currentSelfTestOperationValue = 0",        col: 22, expected: "Gauge32: 0"}
       - {label: "col23 currentSelfTestOperationString",           col: 23, expected: 'STRING: "No self-test in progress"'}
 

@@ -669,6 +669,25 @@ def run_section(section: dict, walk_files: dict[str, Path],
             else:
                 oid_raw = t["oid"]
             oid_suffix = substitute_oid(oid_raw, device_idx, all_indices)
+            if t.get("absent"):
+                # Assert the OID is NOT in the walk (custom handler returns
+                # noSuchInstance for a column the device does not expose, so it
+                # is skipped on GETNEXT rather than served as a fabricated 0/"").
+                ent_esc = re.escape(ent_oid)
+                oid_pat = re.compile(rf"^\.?{ent_esc}{re.escape(oid_suffix)}\s*=\s*")
+                hit = next((l for l in walk_file.read_text().splitlines()
+                            if oid_pat.match(l)), None)
+                if hit is None:
+                    passed += 1
+                else:
+                    failed += 1
+                    failures.append(
+                        f"FAIL: {label}\n"
+                        f"      oid      : {ent_oid}{oid_suffix}\n"
+                        f"      expected : absent (noSuchInstance)\n"
+                        f"      found    : {hit}"
+                    )
+                continue
             expected_re = t["expected"]
             ok, actual = check_oid(ent_oid, walk_file, oid_suffix, expected_re)
             if ok:

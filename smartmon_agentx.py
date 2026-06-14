@@ -1549,23 +1549,26 @@ def _add_common_device(add, dev: dict, d_idx: int) -> None:
 
 def _parse_nvme_health(raw: dict) -> dict:
     h = raw.get("nvme_smart_health_information_log") or {}
+    # Fields used in arithmetic / _bits / change detection keep a 0 default;
+    # the directly-emitted counters use None so a field the drive omits drops
+    # out of the oid_map and reads as noSuchInstance rather than a fake 0.
     return {
         "critical_warning":        h.get("critical_warning", 0),
-        "available_spare":         h.get("available_spare", 0),
-        "available_spare_threshold": h.get("available_spare_threshold", 0),
-        "percentage_used":         h.get("percentage_used", 0),
+        "available_spare":         h.get("available_spare"),
+        "available_spare_threshold": h.get("available_spare_threshold"),
+        "percentage_used":         h.get("percentage_used"),
         "data_units_read":         h.get("data_units_read", 0),
         "data_units_written":      h.get("data_units_written", 0),
-        "host_reads":              h.get("host_reads", 0),
-        "host_writes":             h.get("host_writes", 0),
-        "controller_busy_minutes": h.get("controller_busy_time", 0),
-        "power_cycles":            h.get("power_cycles", 0),
-        "power_on_hours":          h.get("power_on_hours", 0),
-        "unsafe_shutdowns":        h.get("unsafe_shutdowns", 0),
-        "media_errors":            h.get("media_errors", 0),
-        "num_err_log_entries":     h.get("num_err_log_entries", 0),
-        "warning_temp_time":       h.get("warning_temp_time", 0),
-        "critical_comp_time":      h.get("critical_comp_time_minutes", 0),
+        "host_reads":              h.get("host_reads"),
+        "host_writes":             h.get("host_writes"),
+        "controller_busy_minutes": h.get("controller_busy_time"),
+        "power_cycles":            h.get("power_cycles"),
+        "power_on_hours":          h.get("power_on_hours"),
+        "unsafe_shutdowns":        h.get("unsafe_shutdowns"),
+        "media_errors":            h.get("media_errors"),
+        "num_err_log_entries":     h.get("num_err_log_entries"),
+        "warning_temp_time":       h.get("warning_temp_time"),
+        "critical_comp_time":      h.get("critical_comp_time_minutes"),
     }
 
 
@@ -3381,6 +3384,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_controller": {
         "oid_suffix": (3, 1, 3),
         "entry_prefix": _full((3, 1, 3, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             1: "gauge", 2: "gauge", 3: "counter64", 4: "counter64",
@@ -3391,6 +3395,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_namespace": {
         "oid_suffix": (3, 1, 6),
         "entry_prefix": _full((3, 1, 6, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             1: "gauge",
@@ -3402,6 +3407,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_power_state": {
         "oid_suffix": (3, 1, 9),
         "entry_prefix": _full((3, 1, 9, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             2: "integer", 3: "gauge", 6: "gauge", 7: "gauge",
@@ -3411,6 +3417,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_lba_format": {
         "oid_suffix": (3, 1, 12),
         "entry_prefix": _full((3, 1, 12, 1)),
+        "custom_handler": True,
         "indexes": 3,
         "columns": {
             2: "integer", 3: "gauge", 4: "gauge", 5: "gauge",
@@ -3419,6 +3426,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_health": {
         "oid_suffix": (3, 1, 15),
         "entry_prefix": _full((3, 1, 15, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             1: "integer", 2: "bits",
@@ -3432,6 +3440,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_selftest": {
         "oid_suffix": (3, 1, 18),
         "entry_prefix": _full((3, 1, 18, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             2: "gauge", 3: "integer", 4: "integer", 5: "string",
@@ -3442,6 +3451,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_errlog": {
         "oid_suffix": (3, 1, 21),
         "entry_prefix": _full((3, 1, 21, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             2: "counter64", 3: "gauge", 4: "gauge", 5: "gauge",
@@ -3453,6 +3463,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
     "nvme_capability": {
         "oid_suffix": (3, 1, 24),
         "entry_prefix": _full((3, 1, 24, 1)),
+        "custom_handler": True,
         "indexes": 2,
         "columns": {
             1: "gauge", 2: "gauge", 3: "integer",
