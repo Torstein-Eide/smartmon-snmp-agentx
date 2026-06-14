@@ -1,6 +1,9 @@
 # Build outputs
 *__pycache__*
 .*
+# ...but keep the dotpaths we track in git
+!.gitignore
+!.github/
 
 # Generated project artifacts
 /smartmon-snmp-agentx.service
