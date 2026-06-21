@@ -144,16 +144,17 @@ fi
 # ---------------------------------------------------------------------------
 # In collect mode the agent runs as the unprivileged 'smartmon' user and shells
 # out to 'sudo -n smartctl' to read SMART data.  Install a sudoers drop-in so
-# that escalation works without a password.  The grant is limited to the four
-# read-only invocations the agent actually issues — device scan plus SMART/FARM
-# data reads — so destructive smartctl subcommands (-t self-test, --set, drive
-# security/sanitize) are NOT runnable as root via this rule.  The candidate file
-# is validated with 'visudo -cf' before it is moved into place, so a malformed
-# entry can never lock sudo out of /etc/sudoers.d.
+# that escalation works without a password.  The grant is limited to the five
+# read-only invocations the agent actually issues — device scan, the standby
+# power-mode probe, and SMART/FARM data reads — so destructive smartctl
+# subcommands (-t self-test, --set, drive security/sanitize) are NOT runnable
+# as root via this rule.  The candidate file is validated with 'visudo -cf'
+# before it is moved into place, so a malformed entry can never lock sudo out
+# of /etc/sudoers.d.
 SMARTCTL_PATH="$(command -v smartctl 2>/dev/null || echo /usr/sbin/smartctl)"
 SUDOERS_FILE="/etc/sudoers.d/smartmon-agentx"
 SUDOERS_TMP="$(mktemp)"
-printf '# smartmon-snmp-agentx: collect mode runs read-only smartctl as root.\n# Managed by install-agentxd.sh (scan + SMART/FARM data reads only).\nsmartmon ALL=(root) NOPASSWD: %s --scan-open, %s --scan, %s -x -j *, %s -l farm -j *\n' "$SMARTCTL_PATH" "$SMARTCTL_PATH" "$SMARTCTL_PATH" "$SMARTCTL_PATH" > "$SUDOERS_TMP"
+printf '# smartmon-snmp-agentx: collect mode runs read-only smartctl as root.\n# Managed by install-agentxd.sh (scan + standby probe + SMART/FARM data reads only).\nsmartmon ALL=(root) NOPASSWD: %s --scan-open, %s --scan, %s -x -j *, %s -l farm -j *, %s -n standby -i -j *\n' "$SMARTCTL_PATH" "$SMARTCTL_PATH" "$SMARTCTL_PATH" "$SMARTCTL_PATH" "$SMARTCTL_PATH" > "$SUDOERS_TMP"
 if visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
     install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
     echo "  installed sudoers: $SUDOERS_FILE (smartmon -> $SMARTCTL_PATH)"
@@ -299,6 +300,6 @@ echo "  Then: systemctl enable --now $AGENT_NAME"
 echo ""
 echo "Verify:"
 echo '  snmpwalk -v2c -c public localhost 1.3.6.1.4.1.65891.1.1.2'
-echo '  snmpwalk -v2c -c public -m ALL localhost SMARTMON-COMMON-MIB::smartmonDeviceTable'
+echo '  snmpwalk -v2c -c public -m ALL localhost SMARTMON-COMMON-MIB::smartmonDeviceMetadataTable'
 echo ""
 echo "MIBs installed to $MIBDIR"
