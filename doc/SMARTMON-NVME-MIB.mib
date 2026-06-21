@@ -2,7 +2,7 @@ SMARTMON-NVME-MIB DEFINITIONS ::= BEGIN
 
 IMPORTS
     MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE,
-    Unsigned32
+    Unsigned32, Gauge32
         FROM SNMPv2-SMI
     DisplayString, TruthValue, DateAndTime
         FROM SNMPv2-TC
@@ -14,7 +14,7 @@ IMPORTS
     SmartmonPercentage, SmartmonNvmeSelfTestResult,
     SmartmonLogicalBlockAddress, SmartmonNvmeSelfTestOperation,
     SmartmonNvmeOptionalAdminCommands, SmartmonNvmeOptionalNvmCommands,
-    SmartmonNvmeLogPageAttributes,
+    SmartmonNvmeLogPageAttributes, SmartmonNvmeLinkPowerState,
     smartmonRoot
         FROM SMARTMON-TC-MIB
     smartmonDeviceIndex, smartmonDevicePath,
@@ -23,7 +23,7 @@ IMPORTS
         FROM SMARTMON-COMMON-MIB;
 
 smartmonNvmeMIB MODULE-IDENTITY
-    LAST-UPDATED "202606150000Z"
+    LAST-UPDATED "202606210000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl NVMe output.
@@ -46,6 +46,15 @@ smartmonNvmeMIB MODULE-IDENTITY
          available.
 
          This MIB requires SMARTMON-TC-MIB and SMARTMON-COMMON-MIB."
+    REVISION "202606210000Z"
+    DESCRIPTION
+        "Add smartmonNvmeLinkPowerState, smartmonNvmeMaxLinkSpeed,
+         smartmonNvmeMaxLinkWidth, smartmonNvmeCurrentLinkSpeed,
+         smartmonNvmeCurrentLinkWidth (cols 16-20) to
+         smartmonNvmeControllerTable -- the controller's live PCIe link
+         power state and negotiated speed/width, read from sysfs in
+         collect mode.  Requires SmartmonNvmeLinkPowerState
+         (SMARTMON-TC-MIB)."
     REVISION "202606150000Z"
     DESCRIPTION
         "Replace smartmonNvmeCurrentSelfTestOperationString with
@@ -129,7 +138,12 @@ SmartmonNvmeControllerEntry ::= SEQUENCE {
     smartmonNvmePciVendorSubsystemId                 Unsigned32,
     smartmonNvmeVersionValue                         Unsigned32,
     smartmonNvmePciVendorIdText                      DisplayString,
-    smartmonNvmePciVendorSubsystemIdText             DisplayString
+    smartmonNvmePciVendorSubsystemIdText             DisplayString,
+    smartmonNvmeLinkPowerState                       SmartmonNvmeLinkPowerState,
+    smartmonNvmeMaxLinkSpeed                         Gauge32,
+    smartmonNvmeMaxLinkWidth                         Gauge32,
+    smartmonNvmeCurrentLinkSpeed                     Gauge32,
+    smartmonNvmeCurrentLinkWidth                     Gauge32
 }
 
 smartmonNvmePciVendorId OBJECT-TYPE
@@ -234,6 +248,66 @@ smartmonNvmePciVendorSubsystemIdText OBJECT-TYPE
          hexadecimal string with 0x prefix, for example 0x144D.
          Derived from nvme_pci_vendor.subsystem_id."
     ::= { smartmonNvmeControllerEntry 15 }
+
+smartmonNvmeLinkPowerState OBJECT-TYPE
+    SYNTAX      SmartmonNvmeLinkPowerState
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The controller's live PCIe link power state, read from
+         /sys/class/nvme/nvmeN/device/power_state.  Only populated in
+         collect mode (the agent has no local sysfs access to a remote
+         device read from smartd --jsonstate files); otherwise
+         'unknown(0)'.  See SmartmonNvmeLinkPowerState."
+    ::= { smartmonNvmeControllerEntry 16 }
+
+smartmonNvmeMaxLinkSpeed OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "0.1 GT/s"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The PCIe slot's maximum electrical link speed, in tenths of a
+         GT/s (e.g. 320 for '32.0 GT/s PCIe' / PCIe Gen 5), read from
+         /sys/class/nvme/nvmeN/device/max_link_speed.  0 if unavailable."
+    ::= { smartmonNvmeControllerEntry 17 }
+
+smartmonNvmeMaxLinkWidth OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "lanes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The PCIe slot's maximum electrical link width in lanes, read
+         from /sys/class/nvme/nvmeN/device/max_link_width.  0 if
+         unavailable."
+    ::= { smartmonNvmeControllerEntry 18 }
+
+smartmonNvmeCurrentLinkSpeed OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "0.1 GT/s"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The PCIe link's currently negotiated speed, in tenths of a GT/s.
+         May be lower than smartmonNvmeMaxLinkSpeed when the kernel has
+         downclocked the link via ASPM or runtime power management, read
+         from /sys/class/nvme/nvmeN/device/current_link_speed.  0 if
+         unavailable."
+    ::= { smartmonNvmeControllerEntry 19 }
+
+smartmonNvmeCurrentLinkWidth OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "lanes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The PCIe link's currently negotiated width in lanes.  May be
+         lower than smartmonNvmeMaxLinkWidth when the kernel has
+         downclocked the link, read from
+         /sys/class/nvme/nvmeN/device/current_link_width.  0 if
+         unavailable."
+    ::= { smartmonNvmeControllerEntry 20 }
 
 smartmonNvmeNamespaceTableRowCount OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -1330,7 +1404,12 @@ smartmonNvmeControllerGroup OBJECT-GROUP
         smartmonNvmeVersion,
         smartmonNvmeVersionValue,
         smartmonNvmeNamespaceCount,
-        smartmonNvmeMaximumDataTransferPages
+        smartmonNvmeMaximumDataTransferPages,
+        smartmonNvmeLinkPowerState,
+        smartmonNvmeMaxLinkSpeed,
+        smartmonNvmeMaxLinkWidth,
+        smartmonNvmeCurrentLinkSpeed,
+        smartmonNvmeCurrentLinkWidth
     }
     STATUS current
     DESCRIPTION "NVMe controller objects."

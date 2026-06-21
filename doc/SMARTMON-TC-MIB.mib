@@ -10,7 +10,7 @@ IMPORTS
 smartmonRoot OBJECT IDENTIFIER ::= { enterprises 65891 1 1 }
 
 smartmonTcMIB MODULE-IDENTITY
-    LAST-UPDATED "202606150000Z"
+    LAST-UPDATED "202606210000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl output.
@@ -18,6 +18,11 @@ smartmonTcMIB MODULE-IDENTITY
          TODO: Replace the placeholder enterprise OID before publication."
     DESCRIPTION
         "Textual conventions shared across all SMARTMON-*-MIB modules."
+    REVISION "202606210000Z"
+    DESCRIPTION
+        "Added SmartmonNvmeLinkPowerState TC for the NVMe controller's
+         live PCIe link power state (read from sysfs, distinct from
+         SmartmonDevicePowerState's ATA power-mode tiers)."
     REVISION "202606150000Z"
     DESCRIPTION
         "Added SmartmonNvmeSelfTestOperation TC for the NVMe current
@@ -661,6 +666,43 @@ SmartmonDevicePowerState ::= TEXTUAL-CONVENTION
         standbyZ(6),
         sleeping(7),
         standby(8)
+    }
+
+SmartmonNvmeLinkPowerState ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "The NVMe controller's live PCIe link power state, as reported by
+         the kernel at /sys/class/nvme/nvmeN/device/power_state.  This is
+         the PCI D-state of the link (whether the kernel has runtime-
+         suspended the controller), and is unrelated to SmartmonDevicePowerState
+         (ATA power-mode tiers) or the NVMe protocol power states exposed in
+         smartmonNvmePowerStateTable (SMARTMON-NVME-MIB) -- those describe
+         the drive's own NVMe Power State Descriptors (PS0..PSn), not the
+         PCIe link.
+
+         The enumeration 'd0(1)' is full power: the link is active and the
+         controller is fully operational.
+
+         The enumerations 'd1(2)' and 'd2(3)' are intermediate PCIe power
+         states; rarely used by NVMe controllers in practice.
+
+         The enumeration 'd3hot(4)' indicates the kernel has runtime-
+         suspended the controller (e.g. via ASPM/runtime PM autosuspend)
+         while keeping the link powered enough to resume from software.
+
+         The enumeration 'd3cold(5)' indicates the link itself is
+         unpowered; resuming requires a full PCIe re-enumeration.
+
+         The enumeration 'unknown(0)' is reported when the sysfs attribute
+         could not be read (missing entry, permission, file mode where the
+         agent has no local sysfs access to the device)."
+    SYNTAX INTEGER {
+        unknown(0),
+        d0(1),
+        d1(2),
+        d2(3),
+        d3hot(4),
+        d3cold(5)
     }
 
 SmartmonAtaMinorVersion ::= TEXTUAL-CONVENTION

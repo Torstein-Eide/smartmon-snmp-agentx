@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.29"
+VERSION = "0.1.32"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -253,13 +253,17 @@ POWER_STATE_STANDBY_Z = 6   # actuator unloaded, spindle stopped; still answers 
 POWER_STATE_SLEEPING  = 7   # ATA SLEEP: unresponsive on the bus, needs reset to wake
 POWER_STATE_STANDBY   = 8   # generic "known asleep, tier unknown" — scsi (no power_mode.name available)
 
-# Direct 1:1 from smartctl's ATA power_mode.name to the enum above —
-# deliberately not bucketed (see POWER_STATE_* comments).
-_POWER_MODE_NAME_MAP = {
-    "ACTIVE_IDLE": POWER_STATE_ACTIVE, "ACTIVE": POWER_STATE_ACTIVE,
-    "IDLE_A": POWER_STATE_IDLE_A, "IDLE_B": POWER_STATE_IDLE_B,
-    "IDLE_C": POWER_STATE_IDLE_C,
-    "STANDBY_Y": POWER_STATE_STANDBY_Y, "STANDBY_Z": POWER_STATE_STANDBY_Z,
+# Direct 1:1 from smartctl's ATA power_mode.ata_value to the enum above.
+# Values are the ATA CHECK POWER MODE sector-count result byte, plus -1 for
+# command failure/SLEEP as reported by smartmontools.
+_POWER_MODE_ATA_VALUE_MAP = {
+    -1: POWER_STATE_SLEEPING,
+    0x00: POWER_STATE_STANDBY_Z,
+    0x01: POWER_STATE_STANDBY_Y,
+    0x40: POWER_STATE_ACTIVE, 0x41: POWER_STATE_ACTIVE,
+    0x80: POWER_STATE_ACTIVE, 0x81: POWER_STATE_IDLE_A,
+    0x82: POWER_STATE_IDLE_B, 0x83: POWER_STATE_IDLE_C,
+    0xff: POWER_STATE_ACTIVE,
 }
 
 _POWER_STATE_LOG_NAMES = {
@@ -274,6 +278,84 @@ _POWER_STATE_LOG_NAMES = {
 # a sleeping drive for ata/sat/scsi specs.  NVMe has no such concept and is
 # never probed.
 _STANDBY_CAPABLE_SUFFIXES = ("ata", "sat", "scsi")
+
+# NVMe has no ATA-style power-mode tiers; the only live power signal available
+# without an NVMe Get Features round-trip is the kernel's PCIe runtime power
+# state for the controller, exposed at
+# /sys/class/nvme/nvmeN/device/power_state.  This is a distinct enum from
+# SmartmonDevicePowerState (PCI D-states, not ATA tiers) -- see
+# SmartmonNvmeLinkPowerState in SMARTMON-TC-MIB.mib.
+NVME_LINK_POWER_STATE_UNKNOWN = 0
+NVME_LINK_POWER_STATE_D0      = 1   # full power
+NVME_LINK_POWER_STATE_D1      = 2
+NVME_LINK_POWER_STATE_D2      = 3
+NVME_LINK_POWER_STATE_D3HOT   = 4   # runtime-suspended, link powered
+NVME_LINK_POWER_STATE_D3COLD  = 5   # runtime-suspended, link unpowered
+
+_PCI_LINK_POWER_STATE_MAP = {
+    "D0": NVME_LINK_POWER_STATE_D0, "D1": NVME_LINK_POWER_STATE_D1,
+    "D2": NVME_LINK_POWER_STATE_D2, "D3hot": NVME_LINK_POWER_STATE_D3HOT,
+    "D3cold": NVME_LINK_POWER_STATE_D3COLD,
+}
+
+
+def _nvme_link_power_state(dev: str) -> int:
+    """Read the NVMe controller's PCIe runtime power state from sysfs.
+
+    Returns NVME_LINK_POWER_STATE_UNKNOWN for non-controller paths or on any
+    read failure (no sysfs entry, permission, race with hot-removal)."""
+    m = re.match(r"/dev/nvme(\d+)$", dev)
+    if not m:
+        return NVME_LINK_POWER_STATE_UNKNOWN
+    path = f"/sys/class/nvme/nvme{m.group(1)}/device/power_state"
+    try:
+        with open(path) as f:
+            value = f.read().strip()
+    except OSError:
+        return NVME_LINK_POWER_STATE_UNKNOWN
+    return _PCI_LINK_POWER_STATE_MAP.get(value, NVME_LINK_POWER_STATE_UNKNOWN)
+
+
+# sysfs files under /sys/class/nvme/nvmeN/device/ for PCIe link capability
+# (max_*, the slot's electrical limit) vs the live negotiated state
+# (current_*, which differs from max_* when the kernel has downclocked the
+# link via ASPM or runtime PM).
+_NVME_LINK_SYSFS_FILES = ("max_link_speed", "max_link_width",
+                          "current_link_speed", "current_link_width")
+
+
+_LINK_SPEED_RE = re.compile(r'([\d.]+)')
+
+
+def _parse_link_speed_decigts(speed: str) -> int:
+    """Parse a sysfs PCIe link speed string ('32.0 GT/s PCIe') into tenths
+    of GT/s (320) so it can be carried as an integer Gauge32."""
+    m = _LINK_SPEED_RE.match(speed.strip())
+    if not m:
+        return 0
+    try:
+        return round(float(m.group(1)) * 10)
+    except ValueError:
+        return 0
+
+
+def _nvme_link_info(dev: str) -> dict:
+    """Read the NVMe controller's PCIe link speed/width files from sysfs.
+
+    Returns {} for non-controller paths; missing individual files (older
+    kernels, hot-removal race) are simply omitted from the result."""
+    m = re.match(r"/dev/nvme(\d+)$", dev)
+    if not m:
+        return {}
+    base = f"/sys/class/nvme/nvme{m.group(1)}/device"
+    info = {}
+    for name in _NVME_LINK_SYSFS_FILES:
+        try:
+            with open(f"{base}/{name}") as f:
+                info[name] = f.read().strip()
+        except OSError:
+            pass
+    return info
 
 
 def _smartctl_cmd() -> List[str]:
@@ -570,10 +652,12 @@ def _merge_farm(raw: dict, spec: dict) -> None:
         LOGGER.verbose("FARM log merged for %s", spec["dev"])
 
 
-def _power_mode_name_to_state(name: str) -> int:
-    """Map smartctl's ATA power_mode.name (e.g. 'IDLE_B', 'STANDBY_Y') to our
-    per-tier enum directly, with no idle/standby bucketing."""
-    return _POWER_MODE_NAME_MAP.get(name, POWER_STATE_UNKNOWN)
+def _power_mode_ata_value_to_state(value: Any) -> int:
+    """Map smartctl's ATA power_mode.ata_value to our per-tier enum."""
+    try:
+        return _POWER_MODE_ATA_VALUE_MAP.get(int(value), POWER_STATE_UNKNOWN)
+    except (TypeError, ValueError):
+        return POWER_STATE_UNKNOWN
 
 
 def _log_power_state_change(spec: dict, power_state: int) -> None:
@@ -603,8 +687,8 @@ def _probe_power_state(spec: dict) -> Tuple[int, bool]:
         return POWER_STATE_SLEEPING, True
     asleep = bool(proc.returncode & 0x02)
     pm = data.get("power_mode")  # ATA only: {"ata_value": N, "name": "IDLE_B"}
-    if isinstance(pm, dict) and pm.get("name"):
-        state = _power_mode_name_to_state(pm["name"])
+    if isinstance(pm, dict) and "ata_value" in pm:
+        state = _power_mode_ata_value_to_state(pm["ata_value"])
     elif asleep:
         state = POWER_STATE_STANDBY      # scsi: no power_mode field, exit-status-2 only
     elif proc.returncode == 0:
@@ -623,20 +707,22 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
     When respect_standby is set and the drive answers a cheap power-mode
     probe as asleep, the wake-inducing `-x -j` pull is skipped and the last
     successfully collected payload is republished instead (with a freshly
-    probed power state stamped on it) so the device's OIDs don't disappear."""
+    probed power state stamped on it) so the device's OIDs don't disappear.
+    If there is no cached payload yet (first sighting of this drive), the
+    wake-inducing pull proceeds anyway so the device gets an initial reading."""
     power_state = POWER_STATE_UNKNOWN
     if _st.respect_standby and spec["suffix"] in _STANDBY_CAPABLE_SUFFIXES:
         power_state, asleep = _probe_power_state(spec)
         _log_power_state_change(spec, power_state)
         if asleep:
             cached = _st.last_raw.get(spec["key"])
-            if cached is None:
-                LOGGER.verbose("skipping sleeping disk %s (no cached data yet)", spec["dev"])
-                return None
-            LOGGER.verbose("disk %s is asleep — reusing last poll, no wake", spec["dev"])
-            raw = dict(cached)
-            raw["_power_state"] = power_state
-            return spec["key"], raw
+            if cached is not None:
+                LOGGER.verbose("disk %s is asleep — reusing last poll, no wake", spec["dev"])
+                raw = dict(cached)
+                raw["_power_state"] = power_state
+                return spec["key"], raw
+            LOGGER.verbose("disk %s is asleep with no cached data yet — "
+                            "waking it for an initial read", spec["dev"])
 
     _t0 = time.monotonic()
     proc = _run_smartctl(["-x", "-j"] + spec["dev_args"] + [spec["dev"]])
@@ -658,6 +744,9 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
     _merge_farm(raw, spec)
     raw["_udev_props"] = _collect_udev_properties(spec["dev"])
     raw["_power_state"] = power_state if power_state else POWER_STATE_ACTIVE
+    if spec["suffix"] == "nvme":
+        raw["_nvme_link_power_state"] = _nvme_link_power_state(spec["dev"])
+        raw["_nvme_link_info"] = _nvme_link_info(spec["dev"])
     LOGGER.verbose("collected %s (type=%s) in %.3fs", spec["dev"], spec["dtype"], elapsed)
     _st.last_raw[spec["key"]] = raw
     return spec["key"], raw
@@ -775,12 +864,18 @@ def _parse_device_from_raw(raw: dict, path: str) -> dict:
 
     Shared by the file reader (_parse_device_json) and collect mode, which feeds
     the live `smartctl -x -j` output here directly without touching disk."""
+    power_state = raw.get("_power_state", POWER_STATE_UNKNOWN)
+    if power_state == POWER_STATE_UNKNOWN:
+        pm = raw.get("power_mode")
+        if isinstance(pm, dict) and "ata_value" in pm:
+            power_state = _power_mode_ata_value_to_state(pm["ata_value"])
+
     result: Dict[str, Any] = {
         "path": path, "name": "", "device_path": "", "protocol": "",
         "device_type": 0, "poll_time": None, "smart_passed": None,
         "model_family": "", "model_name": "", "serial_number": "",
         "firmware_version": "", "wwn": "", "raw": raw, "read_error": None,
-        "power_state": raw.get("_power_state", POWER_STATE_UNKNOWN),
+        "power_state": power_state,
     }
 
     device = raw.get("device") or {}
@@ -1947,6 +2042,12 @@ def _add_nvme_controller(add, dev: dict, d_idx: int) -> int:
     add(T+(13, d_idx, ci), *_gauge(int(ver.get("value", 0) or 0)))
     add(T+(14, d_idx, ci), *_string(_pci_vendor_name(vid)))
     add(T+(15, d_idx, ci), *_string(_pci_vendor_name(sid)))
+    add(T+(16, d_idx, ci), *_integer(raw.get("_nvme_link_power_state", NVME_LINK_POWER_STATE_UNKNOWN)))
+    link = raw.get("_nvme_link_info") or {}
+    add(T+(17, d_idx, ci), *_gauge(_parse_link_speed_decigts(link.get("max_link_speed", ""))))
+    add(T+(18, d_idx, ci), *_gauge(int(link.get("max_link_width", 0) or 0)))
+    add(T+(19, d_idx, ci), *_gauge(_parse_link_speed_decigts(link.get("current_link_speed", ""))))
+    add(T+(20, d_idx, ci), *_gauge(int(link.get("current_link_width", 0) or 0)))
     return 1
 
 
@@ -3814,6 +3915,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
             1: "gauge", 2: "gauge", 3: "counter64", 4: "counter64",
             5: "gauge", 6: "string", 7: "gauge", 8: "gauge",
             12: "gauge", 13: "gauge", 14: "string", 15: "string",
+            16: "integer", 17: "gauge", 18: "gauge", 19: "gauge", 20: "gauge",
         },
     },
     "nvme_namespace": {
