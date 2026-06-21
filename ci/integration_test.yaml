@@ -137,19 +137,19 @@ sections:
     # Each test references a different device so no shared oid_template; use oid: directly.
     tests:
       - {label: "deviceCount scalar",       oid: ".2.1.1.0",            expected: "Gauge32: [0-9]+"}
-      - {label: "device table >= 3 rows",   type: rows, oid_regex: '\.2\.1\.3\.1\.2\.', min: 3}
-      - {label: "NVMe path",                oid: ".2.1.3.1.3.{nvme}",   expected: 'STRING: "/dev/nvme[0-9]+"'}
-      - {label: "NVMe type = 5",            oid: ".2.1.3.1.4.{nvme}",   expected: "INTEGER: 5"}
-      - {label: "NVMe pollResult = 1",      oid: ".2.1.3.1.6.{nvme}",   expected: "INTEGER: 1"}
-      - {label: "NVMe pollExitStatus = 0",  oid: ".2.1.3.1.7.{nvme}",   expected: "Gauge32: 0"}
-      - {label: "SATA path",                oid: ".2.1.3.1.3.{sata}",   expected: 'STRING: ".*"'}
-      - {label: "SATA type = 1",            oid: ".2.1.3.1.4.{sata}",   expected: "INTEGER: 1"}
-      - {label: "SATA pollResult = 1",      oid: ".2.1.3.1.6.{sata}",   expected: "INTEGER: 1"}
-      - {label: "SATA pollExitStatus = 0",  oid: ".2.1.3.1.7.{sata}",   expected: "Gauge32: 0"}
-      - {label: "SAS path",                 oid: ".2.1.3.1.3.{sas}",    expected: 'STRING: ".*"'}
-      - {label: "SAS type = 3",             oid: ".2.1.3.1.4.{sas}",    expected: "INTEGER: 3"}
-      - {label: "SAS pollResult = 1",        oid: ".2.1.3.1.6.{sas}",    expected: "INTEGER: 1"}
-      - {label: "SAS pollExitStatus = 0",   oid: ".2.1.3.1.7.{sas}",    expected: "Gauge32: 0"}
+      - {label: "device table >= 3 rows",   type: rows, oid_regex: '\.2\.1\.11\.1\.2\.', min: 3}
+      - {label: "NVMe path",                oid: ".2.1.11.1.3.{nvme}",   expected: 'STRING: "/dev/nvme[0-9]+"'}
+      - {label: "NVMe type = 5",            oid: ".2.1.11.1.4.{nvme}",   expected: "INTEGER: 5"}
+      - {label: "NVMe pollResult = 1",      oid: ".2.1.12.1.2.{nvme}",   expected: "INTEGER: 1"}
+      - {label: "NVMe pollExitStatus = 0",  oid: ".2.1.12.1.3.{nvme}",   expected: "Gauge32: 0"}
+      - {label: "SATA path",                oid: ".2.1.11.1.3.{sata}",   expected: 'STRING: ".*"'}
+      - {label: "SATA type = 1",            oid: ".2.1.11.1.4.{sata}",   expected: "INTEGER: 1"}
+      - {label: "SATA pollResult = 1",      oid: ".2.1.12.1.2.{sata}",   expected: "INTEGER: 1"}
+      - {label: "SATA pollExitStatus = 0",  oid: ".2.1.12.1.3.{sata}",   expected: "Gauge32: 0"}
+      - {label: "SAS path",                 oid: ".2.1.11.1.3.{sas}",    expected: 'STRING: ".*"'}
+      - {label: "SAS type = 3",             oid: ".2.1.11.1.4.{sas}",    expected: "INTEGER: 3"}
+      - {label: "SAS pollResult = 1",        oid: ".2.1.12.1.2.{sas}",    expected: "INTEGER: 1"}
+      - {label: "SAS pollExitStatus = 0",   oid: ".2.1.12.1.3.{sas}",    expected: "Gauge32: 0"}
       - {label: "pollFailureThreshold = 1", oid: ".2.1.7.0",             expected: "Gauge32: 1"}
 
   # ---------------------------------------------------------------------------
@@ -941,8 +941,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".3.2.1", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{nvme}", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
-      - {oid_suffix: ".2.1.3.1.12.{nvme}", value_pattern: 'STRING: "?S6B0NJ0N123456"?'}
+      - {oid_suffix: ".2.1.11.1.8.{nvme}", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
+      - {oid_suffix: ".2.1.11.1.9.{nvme}", value_pattern: 'STRING: "?S6B0NJ0N123456"?'}
 
   - name: "nvme SelfTestFailed"
     trigger_fixture: "smartd-json.Samsung_SSD_980_PRO_1TB-S6B0NJ0N123456.nvme.selftest-fail.json"
@@ -950,8 +950,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".3.2.2", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{nvme}", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
-      - {oid_suffix: ".2.1.3.1.12.{nvme}", value_pattern: 'STRING: "?S6B0NJ0N123456"?'}
+      - {oid_suffix: ".2.1.11.1.8.{nvme}", value_pattern: 'STRING: "?Samsung SSD 980 PRO 1TB"?'}
+      - {oid_suffix: ".2.1.11.1.9.{nvme}", value_pattern: 'STRING: "?S6B0NJ0N123456"?'}
 
   # ── SATA (smartmonSataMIB = ent_oid.4; notifications at .4.2.x) ──────
   - name: "sata HealthFailed"
@@ -960,8 +960,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".4.2.1", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
-      - {oid_suffix: ".2.1.3.1.12.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
+      - {oid_suffix: ".2.1.11.1.8.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
+      - {oid_suffix: ".2.1.11.1.9.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
 
   - name: "sata AttrFailing"
     trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.attr-fail.ata.json"
@@ -969,8 +969,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".4.2.2", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
-      - {oid_suffix: ".2.1.3.1.12.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
+      - {oid_suffix: ".2.1.11.1.8.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
+      - {oid_suffix: ".2.1.11.1.9.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
 
   - name: "sata SelfTestFailed"
     trigger_fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.selftest-fail.ata.json"
@@ -978,8 +978,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".4.2.3", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
-      - {oid_suffix: ".2.1.3.1.12.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
+      - {oid_suffix: ".2.1.11.1.8.{sata}", value_pattern: 'STRING: "?WDC WD140EFGX-68B0GN0"?'}
+      - {oid_suffix: ".2.1.11.1.9.{sata}", value_pattern: 'STRING: "?WD140SELFTESTS"?'}
 
   # ── SAS (smartmonSasMIB = ent_oid.5; notifications at .5.2.x) ────────
   - name: "sas HealthFailed"
@@ -989,8 +989,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".5.2.1", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
-      - {oid_suffix: ".2.1.3.1.12.{sas}", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
+      - {oid_suffix: ".2.1.11.1.8.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
+      - {oid_suffix: ".2.1.11.1.9.{sas}", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
 
   - name: "sas SelfTestFailed"
     skip: "Missing test data"
@@ -999,8 +999,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".5.2.2", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
-      - {oid_suffix: ".2.1.3.1.12.{sas}", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
+      - {oid_suffix: ".2.1.11.1.8.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
+      - {oid_suffix: ".2.1.11.1.9.{sas}", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
 
   - name: "sas UncorrectedErrorsIncreased"
     skip: "Missing test data"
@@ -1009,8 +1009,8 @@ notifications:
     wait_seconds: 0.2
     expected_traps:
       - {oid_suffix: ".5.2.3", value_pattern: ".*"}
-      - {oid_suffix: ".2.1.3.1.11.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
-      - {oid_suffix: ".2.1.3.1.12.{sas}", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
+      - {oid_suffix: ".2.1.11.1.8.{sas}", value_pattern: 'STRING: "?SEAGATE ST4000NM0023"?'}
+      - {oid_suffix: ".2.1.11.1.9.{sas}", value_pattern: 'STRING: "?Z1Z0ABCD"?'}
 
   # ── Sensor (smartmonSensorMIB = ent_oid.6; notifications at .6.2.x) ──
   # Sensor threshold fixtures add nvme_composite_temperature_threshold to

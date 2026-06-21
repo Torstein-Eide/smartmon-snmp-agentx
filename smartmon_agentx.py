@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.27"
+VERSION = "0.1.29"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -237,6 +237,43 @@ def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
 # not by a real device error — used to surface actionable sudoers guidance.
 _PERM_HINTS = ("a password is required", "sudo:", "permission denied",
                "open device", "must be root", "operation not permitted")
+
+# Live device power-state enum (smartmonDevicePowerState).  One value per ATA
+# power-mode tier rather than bucketing idle/standby together: IDLE_A/IDLE_B/
+# IDLE_C and STANDBY_Y/STANDBY_Z are physically distinct tiers that vendors
+# report under different names (see SMARTMON-TC-MIB.mib for the full tier
+# descriptions).
+POWER_STATE_UNKNOWN   = 0
+POWER_STATE_ACTIVE    = 1   # ACTIVE / ACTIVE_IDLE
+POWER_STATE_IDLE_A    = 2   # ready, partial electronics power-down, no response-time hit
+POWER_STATE_IDLE_B    = 3   # spindle at full RPM, heads unloaded
+POWER_STATE_IDLE_C    = 4   # spindle spun down to low RPM, heads unloaded
+POWER_STATE_STANDBY_Y = 5   # same physical tier as IDLE_C, reported under this name by some vendors
+POWER_STATE_STANDBY_Z = 6   # actuator unloaded, spindle stopped; still answers commands immediately
+POWER_STATE_SLEEPING  = 7   # ATA SLEEP: unresponsive on the bus, needs reset to wake
+POWER_STATE_STANDBY   = 8   # generic "known asleep, tier unknown" — scsi (no power_mode.name available)
+
+# Direct 1:1 from smartctl's ATA power_mode.name to the enum above —
+# deliberately not bucketed (see POWER_STATE_* comments).
+_POWER_MODE_NAME_MAP = {
+    "ACTIVE_IDLE": POWER_STATE_ACTIVE, "ACTIVE": POWER_STATE_ACTIVE,
+    "IDLE_A": POWER_STATE_IDLE_A, "IDLE_B": POWER_STATE_IDLE_B,
+    "IDLE_C": POWER_STATE_IDLE_C,
+    "STANDBY_Y": POWER_STATE_STANDBY_Y, "STANDBY_Z": POWER_STATE_STANDBY_Z,
+}
+
+_POWER_STATE_LOG_NAMES = {
+    POWER_STATE_UNKNOWN: "unknown", POWER_STATE_ACTIVE: "active",
+    POWER_STATE_IDLE_A: "idle_a", POWER_STATE_IDLE_B: "idle_b",
+    POWER_STATE_IDLE_C: "idle_c", POWER_STATE_STANDBY_Y: "standby_y",
+    POWER_STATE_STANDBY_Z: "standby_z", POWER_STATE_SLEEPING: "sleeping",
+    POWER_STATE_STANDBY: "standby",
+}
+
+# smartctl's `-n MODE` is documented as [ATA, SCSI] -- usable to avoid waking
+# a sleeping drive for ata/sat/scsi specs.  NVMe has no such concept and is
+# never probed.
+_STANDBY_CAPABLE_SUFFIXES = ("ata", "sat", "scsi")
 
 
 def _smartctl_cmd() -> List[str]:
@@ -533,11 +570,74 @@ def _merge_farm(raw: dict, spec: dict) -> None:
         LOGGER.verbose("FARM log merged for %s", spec["dev"])
 
 
+def _power_mode_name_to_state(name: str) -> int:
+    """Map smartctl's ATA power_mode.name (e.g. 'IDLE_B', 'STANDBY_Y') to our
+    per-tier enum directly, with no idle/standby bucketing."""
+    return _POWER_MODE_NAME_MAP.get(name, POWER_STATE_UNKNOWN)
+
+
+def _log_power_state_change(spec: dict, power_state: int) -> None:
+    """INFO-log a device's power-state transition (e.g. active -> standby_y);
+    a no-op if unchanged since the last cycle this drive was probed."""
+    prev = _st.last_power_state.get(spec["key"])
+    if prev == power_state:
+        return
+    _st.last_power_state[spec["key"]] = power_state
+    if prev is None:
+        return   # first sighting: nothing to compare against yet
+    LOGGER.info("%s power state changed: %s -> %s", spec["dev"],
+                _POWER_STATE_LOG_NAMES.get(prev, prev),
+                _POWER_STATE_LOG_NAMES.get(power_state, power_state))
+
+
+def _probe_power_state(spec: dict) -> Tuple[int, bool]:
+    """Cheap `smartctl -n standby -i -j` probe: returns (power_state_enum,
+    is_asleep) without waking a sleeping drive.  Only meaningful for specs in
+    _STANDBY_CAPABLE_SUFFIXES; callers must not call this for nvme."""
+    proc = _run_smartctl(["-n", "standby", "-i", "-j"] + spec["dev_args"] + [spec["dev"]])
+    try:
+        data = json.loads(proc.stdout or "")
+    except json.JSONDecodeError:
+        # No parseable JSON at all (timeout/hung bus) — true ATA SLEEP mode
+        # leaves the device unresponsive, so treat a hard failure as asleep.
+        return POWER_STATE_SLEEPING, True
+    asleep = bool(proc.returncode & 0x02)
+    pm = data.get("power_mode")  # ATA only: {"ata_value": N, "name": "IDLE_B"}
+    if isinstance(pm, dict) and pm.get("name"):
+        state = _power_mode_name_to_state(pm["name"])
+    elif asleep:
+        state = POWER_STATE_STANDBY      # scsi: no power_mode field, exit-status-2 only
+    elif proc.returncode == 0:
+        state = POWER_STATE_ACTIVE
+    else:
+        state = POWER_STATE_UNKNOWN
+    return state, asleep
+
+
 def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
     """Pull one drive: run `smartctl -x -j`, merge FARM, return (key, raw).
 
     Accepts a non-zero exit when the output is still valid JSON (SMART status
-    bits set).  Returns None on real failure; flags perm issues for guidance."""
+    bits set).  Returns None on real failure; flags perm issues for guidance.
+
+    When respect_standby is set and the drive answers a cheap power-mode
+    probe as asleep, the wake-inducing `-x -j` pull is skipped and the last
+    successfully collected payload is republished instead (with a freshly
+    probed power state stamped on it) so the device's OIDs don't disappear."""
+    power_state = POWER_STATE_UNKNOWN
+    if _st.respect_standby and spec["suffix"] in _STANDBY_CAPABLE_SUFFIXES:
+        power_state, asleep = _probe_power_state(spec)
+        _log_power_state_change(spec, power_state)
+        if asleep:
+            cached = _st.last_raw.get(spec["key"])
+            if cached is None:
+                LOGGER.verbose("skipping sleeping disk %s (no cached data yet)", spec["dev"])
+                return None
+            LOGGER.verbose("disk %s is asleep — reusing last poll, no wake", spec["dev"])
+            raw = dict(cached)
+            raw["_power_state"] = power_state
+            return spec["key"], raw
+
     _t0 = time.monotonic()
     proc = _run_smartctl(["-x", "-j"] + spec["dev_args"] + [spec["dev"]])
     elapsed = time.monotonic() - _t0
@@ -557,7 +657,9 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
         return None
     _merge_farm(raw, spec)
     raw["_udev_props"] = _collect_udev_properties(spec["dev"])
+    raw["_power_state"] = power_state if power_state else POWER_STATE_ACTIVE
     LOGGER.verbose("collected %s (type=%s) in %.3fs", spec["dev"], spec["dtype"], elapsed)
+    _st.last_raw[spec["key"]] = raw
     return spec["key"], raw
 
 
@@ -678,6 +780,7 @@ def _parse_device_from_raw(raw: dict, path: str) -> dict:
         "device_type": 0, "poll_time": None, "smart_passed": None,
         "model_family": "", "model_name": "", "serial_number": "",
         "firmware_version": "", "wwn": "", "raw": raw, "read_error": None,
+        "power_state": raw.get("_power_state", POWER_STATE_UNKNOWN),
     }
 
     device = raw.get("device") or {}
@@ -973,6 +1076,13 @@ class _State:
         # udev monitor (or a transient empty scan) requests a rescan.
         self.collect_specs: Optional[list] = None
         self.udev_proc             = None   # running `udevadm monitor` subprocess
+        # Skip the wake-inducing `-x -j` poll for a drive a cheap power-mode
+        # probe finds asleep, republishing its last successful payload
+        # instead.  last_raw: spec["key"] -> raw smartctl JSON from the last
+        # successful (non-skipped) poll.
+        self.respect_standby       = True
+        self.last_raw: dict        = {}
+        self.last_power_state: dict = {}   # spec["key"] -> last logged power-state enum
         # File mode: main-device path -> sibling *.farm.ata.json path whose
         # seagate_farm_log merges into that device (see _discover_devices).
         self.farm_sidecars: dict   = {}
@@ -1292,7 +1402,8 @@ def state_db_close() -> None:
 
 # Table prefix tuples for fingerprinting (full OID prefix of each table entry)
 _TABLE_PREFIXES = {
-    "device":               _full((2, 1, 3, 1)),
+    "device_metadata":      _full((2, 1, 11, 1)),
+    "device_status":        _full((2, 1, 12, 1)),
     "device_udev":          _full((2, 1, 10, 1)),
     "nvme_controller":      _full((3, 1, 3, 1)),
     "nvme_namespace":       _full((3, 1, 6, 1)),
@@ -1539,7 +1650,8 @@ def _build(devices: list, ts: datetime,
             "dev_type":    dev["device_type"],
         }
 
-        _add_common_device(add, dev, d_idx)
+        _add_device_metadata(add, dev, d_idx)
+        _add_device_status(add, dev, d_idx)
         n_device_udev += _add_device_udev_props(add, dev, d_idx)
 
         proto = dev["protocol"]
@@ -1627,7 +1739,7 @@ def _build(devices: list, ts: datetime,
 
     # ---- Fingerprint tables; advance LastChange only when content changes ----
     _LC_MAP = {
-        "device":               (2, 1, 2, 0),
+        "device_metadata":      (2, 1, 2, 0),
         "device_udev":          (2, 1, 9, 0),
         "nvme_controller":      (3, 1, 2, 0),
         "nvme_namespace":       (3, 1, 5, 0),
@@ -1703,28 +1815,36 @@ def _build(devices: list, ts: datetime,
 
 
 # --------------------------------------------------------------------------
-# Common device table  (.2.1.3.1)
+# Device metadata table  (.2.1.11.1) -- static identity columns
 # --------------------------------------------------------------------------
 
-def _add_common_device(add, dev: dict, d_idx: int) -> None:
-    T = (2, 1, 3, 1)
-    poll_time = dev.get("poll_time")
-    smart_ok  = dev.get("smart_passed")
-    poll_result = 1 if dev.get("read_error") is None else 6   # ok / parseError
-
+def _add_device_metadata(add, dev: dict, d_idx: int) -> None:
+    T = (2, 1, 11, 1)
     add(T+(2,  d_idx), *_string(dev["name"]))
     add(T+(3,  d_idx), *_string(dev["device_path"]))
     add(T+(4,  d_idx), *_integer(dev["device_type"]))
-    add(T+(5,  d_idx), *(_datetimeval(poll_time) if poll_time else _string("")))
-    add(T+(6,  d_idx), *_integer(poll_result))
-    add(T+(7,  d_idx), *_gauge(0))                             # lastPollExitStatus
-    add(T+(8,  d_idx), *_integer(0))                           # physicalIndex
-    add(T+(9,  d_idx), *_string(_device_uris(dev.get("device_path", ""))))
-    add(T+(10, d_idx), *_string(dev["model_family"]))
-    add(T+(11, d_idx), *_string(dev["model_name"]))
-    add(T+(12, d_idx), *_string(dev["serial_number"]))
-    add(T+(13, d_idx), *_string(dev["firmware_version"]))
-    add(T+(14, d_idx), *_string(dev["wwn"]))
+    add(T+(5,  d_idx), *_integer(0))                           # physicalIndex
+    add(T+(6,  d_idx), *_string(_device_uris(dev.get("device_path", ""))))
+    add(T+(7,  d_idx), *_string(dev["model_family"]))
+    add(T+(8,  d_idx), *_string(dev["model_name"]))
+    add(T+(9,  d_idx), *_string(dev["serial_number"]))
+    add(T+(10, d_idx), *_string(dev["firmware_version"]))
+    add(T+(11, d_idx), *_string(dev["wwn"]))
+
+
+# --------------------------------------------------------------------------
+# Device status table  (.2.1.12.1) -- dynamic per-poll columns
+# --------------------------------------------------------------------------
+
+def _add_device_status(add, dev: dict, d_idx: int) -> None:
+    T = (2, 1, 12, 1)
+    poll_time = dev.get("poll_time")
+    poll_result = 1 if dev.get("read_error") is None else 6   # ok / parseError
+
+    add(T+(1, d_idx), *(_datetimeval(poll_time) if poll_time else _string("")))
+    add(T+(2, d_idx), *_integer(poll_result))
+    add(T+(3, d_idx), *_gauge(0))                              # lastPollExitStatus
+    add(T+(4, d_idx), *_integer(dev["power_state"]))
 
 
 # --------------------------------------------------------------------------
@@ -3119,30 +3239,30 @@ def _drain_and_send_traps() -> int:
 
 def _vb_device_identity(d_idx: int, name: str, path: str) -> list:
     return [
-        (_full((2, 1, 3, 1, 2)) + (d_idx,), "str", name),
-        (_full((2, 1, 3, 1, 3)) + (d_idx,), "str", path),
+        (_full((2, 1, 11, 1, 2)) + (d_idx,), "str", name),
+        (_full((2, 1, 11, 1, 3)) + (d_idx,), "str", path),
     ]
 
 
 def _vb_disk_identity(d_idx: int, dev: dict) -> list:
     """model_name + serial_number + device_path (NVMe/SATA/SAS traps)."""
     return [
-        (_full((2, 1, 3, 1, 11)) + (d_idx,), "str", dev["model_name"]),
-        (_full((2, 1, 3, 1, 12)) + (d_idx,), "str", dev["serial_number"]),
-        (_full((2, 1, 3, 1, 3))  + (d_idx,), "str", dev["device_path"]),
+        (_full((2, 1, 11, 1, 8)) + (d_idx,), "str", dev["model_name"]),
+        (_full((2, 1, 11, 1, 9)) + (d_idx,), "str", dev["serial_number"]),
+        (_full((2, 1, 11, 1, 3)) + (d_idx,), "str", dev["device_path"]),
     ]
 
 
 def _vb_poll_time(d_idx: int, dev: dict) -> list:
     pt = dev.get("poll_time")
-    return [(_full((2, 1, 3, 1, 5)) + (d_idx,), "dt", pt)] if pt else []
+    return [(_full((2, 1, 12, 1, 1)) + (d_idx,), "dt", pt)] if pt else []
 
 
 # ---- notification builders (enqueue a descriptor) ----
 
 def _notify_device_discovered(d_idx: int, dev: dict) -> None:
     vb = _vb_device_identity(d_idx, dev["name"], dev["device_path"])
-    vb.append((_full((2, 1, 3, 1, 4)) + (d_idx,), "int", dev["device_type"]))
+    vb.append((_full((2, 1, 11, 1, 4)) + (d_idx,), "int", dev["device_type"]))
     vb += _vb_poll_time(d_idx, dev)
     _notify_q.put((_full((2, 3, 1)), vb))
     LOGGER.info("notify: device_discovered d_idx=%d path=%s", d_idx, dev["device_path"])
@@ -3151,7 +3271,7 @@ def _notify_device_discovered(d_idx: int, dev: dict) -> None:
 def _notify_device_removed(info: dict) -> None:
     d_idx = info["d_idx"]
     vb = _vb_device_identity(d_idx, info["name"], info["device_path"])
-    vb.append((_full((2, 1, 3, 1, 4)) + (d_idx,), "int", info["dev_type"]))
+    vb.append((_full((2, 1, 11, 1, 4)) + (d_idx,), "int", info["dev_type"]))
     _notify_q.put((_full((2, 3, 2)), vb))
     LOGGER.info("notify: device_removed d_idx=%d path=%s", d_idx, info["device_path"])
 
@@ -3159,7 +3279,7 @@ def _notify_device_removed(info: dict) -> None:
 def _notify_device_poll_failed(info: dict) -> None:
     d_idx = info["d_idx"]
     vb = _vb_device_identity(d_idx, info["name"], info["device_path"])
-    vb.append((_full((2, 1, 3, 1, 6)) + (d_idx,), "int", _POLL_RESULT["failed"]))
+    vb.append((_full((2, 1, 12, 1, 2)) + (d_idx,), "int", _POLL_RESULT["failed"]))
     vb.append((_full((2, 1, 7, 0)), "uint", _st.poll_failure_threshold))
     _notify_q.put((_full((2, 3, 3)), vb))
     LOGGER.notice("notify: device_poll_failed d_idx=%d path=%s", d_idx, info["device_path"])
@@ -3657,15 +3777,23 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
             63: "integer", 64: "integer", 65: "integer", 66: "integer",
         },
     },
-    "device": {
-        "oid_suffix": (2, 1, 3),
-        "entry_prefix": _full((2, 1, 3, 1)),
+    "device_metadata": {
+        "oid_suffix": (2, 1, 11),
+        "entry_prefix": _full((2, 1, 11, 1)),
         "indexes": 1,
         "custom_handler": True,   # SMARTMON-COMMON-MIB device table -> NULL semantics
         "columns": {
-            2: "string", 3: "string", 4: "integer", 5: "datetimeval",
-            6: "integer", 7: "gauge",  8: "integer", 9: "string",
-            10: "string", 11: "string", 12: "string", 13: "string", 14: "string",
+            2: "string", 3: "string", 4: "integer", 5: "integer", 6: "string",
+            7: "string", 8: "string", 9: "string", 10: "string", 11: "string",
+        },
+    },
+    "device_status": {
+        "oid_suffix": (2, 1, 12),
+        "entry_prefix": _full((2, 1, 12, 1)),
+        "indexes": 1,
+        "custom_handler": True,
+        "columns": {
+            1: "datetimeval", 2: "integer", 3: "gauge", 4: "integer",
         },
     },
     "device_udev": {
@@ -4626,6 +4754,8 @@ def _configure_smartmon(args: "argparse.Namespace", cfg: dict) -> None:
     _st.config_devices = list(devices) if devices else None
     _st.collect       = bool(args.collect) or \
         str(cfg.get("collect", "")).lower() in ("1", "true", "yes")
+    _st.respect_standby = args.respect_standby if args.respect_standby is not None \
+        else str(cfg.get("respect_standby", "true")).lower() in ("1", "true", "yes")
 
     # Notification config (mirror of the C++ AgentxConfig keys).
     def _cfg_int(key, default):
@@ -4794,6 +4924,11 @@ def main() -> None:
     parser.add_argument("--collect", action="store_true", default=None,
                         help="pull SMART data directly via smartctl instead of "
                              "reading state_dir JSON files")
+    parser.add_argument("--no-respect-standby", dest="respect_standby",
+                        action="store_false", default=None,
+                        help="poll ATA/SAS drives even while in standby/sleep "
+                             "instead of skipping the wake-inducing pull "
+                             "(config key: respect_standby; default: true)")
     parser.add_argument("--state-db", metavar="PATH", default=None,
                         help="SQLite file persisting change timestamps and "
                              "notification baselines across restarts (default: "

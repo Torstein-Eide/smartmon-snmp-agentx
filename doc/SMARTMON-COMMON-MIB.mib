@@ -10,7 +10,7 @@ IMPORTS
         FROM ENTITY-MIB
     MODULE-COMPLIANCE, OBJECT-GROUP, NOTIFICATION-GROUP
         FROM SNMPv2-CONF
-    SmartmonDeviceType, SmartmonPollResult,
+    SmartmonDeviceType, SmartmonPollResult, SmartmonDevicePowerState,
     smartmonRoot
         FROM SMARTMON-TC-MIB;
 
@@ -25,20 +25,33 @@ smartmonCommonMIB MODULE-IDENTITY
         "The SMARTMON-COMMON-MIB defines the central device inventory
          shared by all SMARTMON protocol MIBs (NVMe, SATA, SAS).
 
-         Every monitored device appears as one row in smartmonDeviceTable,
+         Every monitored device appears as one row in smartmonDeviceMetadataTable
+         (and the corresponding smartmonDeviceStatusTable row),
          identified by a local smartmonDeviceIndex.  All protocol-specific
          tables use smartmonDeviceIndex as their first index component,
          so a manager can join any protocol table to this table on that
          index to obtain device identity and poll-status context.
 
          The scalar smartmonDeviceTableRowCount reflects the current number
-         of rows in smartmonDeviceTable, and smartmonDeviceTableLastChange
+         of rows in smartmonDeviceMetadataTable, and smartmonDeviceTableLastChange
          records when the table last changed.  A smartmonDeviceDiscovered
          notification is emitted whenever a new row is added, allowing
          managers to detect hot-plug or auto-discovered devices without
          polling the table continuously.
 
          This MIB requires SMARTMON-TC-MIB."
+    REVISION "202606210000Z"
+    DESCRIPTION
+        "Split smartmonDeviceTable into smartmonDeviceMetadataTable
+         (static identity columns: Name, Path, Type, PhysicalIndex, Uris,
+         ModelFamily, ModelName, SerialNumber, FirmwareVersion, Wwn) and
+         smartmonDeviceStatusTable (per-poll columns: LastPollTime,
+         LastPollResult, LastPollExitStatus, PowerState), sharing the same
+         smartmonDeviceIndex row set.  Also added smartmonDevicePowerState
+         (was added to the old smartmonDeviceTable in the previous
+         revision; now lives in smartmonDeviceStatusTable).  This is a
+         breaking renumbering: smartmonDeviceTable, smartmonDeviceEntry,
+         and SmartmonDeviceEntry no longer exist."
     REVISION "202606160000Z"
     DESCRIPTION
         "Add smartmonDeviceUdevTable, a generic name/value table of udevadm
@@ -85,7 +98,7 @@ smartmonDeviceTableRowCount OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Total number of devices currently present in smartmonDeviceTable.
+        "Total number of devices currently present in smartmonDeviceMetadataTable.
          This value increases when a new device is discovered and decreases
          when a device is removed from monitoring.  Managers MAY poll this
          object to detect table changes without walking the full table."
@@ -97,7 +110,7 @@ smartmonDeviceTableLastChange OBJECT-TYPE
     STATUS      current
     DESCRIPTION
         "Timestamp of the most recent row addition or removal in
-         smartmonDeviceTable.  Managers may poll this object to detect
+         smartmonDeviceMetadataTable.  Managers may poll this object to detect
          device inventory changes without walking the full table."
     ::= { smartmonCommonObjects 2 }
 
@@ -106,7 +119,7 @@ smartmonDeviceCountNvme OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Number of devices in smartmonDeviceTable whose
+        "Number of devices in smartmonDeviceMetadataTable whose
          smartmonDeviceType is nvme(5)."
     ::= { smartmonCommonObjects 4 }
 
@@ -115,7 +128,7 @@ smartmonDeviceCountAta OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Number of devices in smartmonDeviceTable whose
+        "Number of devices in smartmonDeviceMetadataTable whose
          smartmonDeviceType is ata(1) or sat(2)."
     ::= { smartmonCommonObjects 5 }
 
@@ -124,24 +137,35 @@ smartmonDeviceCountSas OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Number of devices in smartmonDeviceTable whose
+        "Number of devices in smartmonDeviceMetadataTable whose
          smartmonDeviceType is scsi(3) or sas(4)."
     ::= { smartmonCommonObjects 6 }
 
 -- --------------------------------------------------------------------------
--- Device table
+-- Device tables
+--
+-- Split into two tables sharing the same row set (one row per monitored
+-- device, keyed by smartmonDeviceIndex): metadata columns that are static
+-- identity (name, path, model, serial, ...) live in
+-- smartmonDeviceMetadataTable, while columns that change on every poll
+-- cycle (poll time/result/exit-status, live power state) live in
+-- smartmonDeviceStatusTable.  Splitting them keeps
+-- smartmonDeviceTableLastChange meaningful (it tracks row add/remove plus
+-- genuine identity changes) instead of firing on every successful poll.
 -- --------------------------------------------------------------------------
 
-smartmonDeviceTable OBJECT-TYPE
-    SYNTAX      SEQUENCE OF SmartmonDeviceEntry
+smartmonDeviceMetadataTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF SmartmonDeviceMetadataEntry
     MAX-ACCESS  not-accessible
     STATUS      current
     DESCRIPTION
         "Central inventory of all storage devices currently monitored by
-         the smartctl agent.  One row per device.
+         the smartctl agent.  One row per device, holding identity columns
+         that rarely change.  See smartmonDeviceStatusTable for the
+         per-poll columns of the same device set.
 
          The index smartmonDeviceIndex is a locally assigned table index.
-         It is only required to remain unique within smartmonDeviceTable
+         It is only required to remain unique within smartmonDeviceMetadataTable
          while the agent is running.  Implementations MAY reuse index
          values after agent restart, rediscovery, or configuration changes.
          Managers MUST NOT use smartmonDeviceIndex as persistent device
@@ -162,7 +186,7 @@ smartmonDeviceTable OBJECT-TYPE
           Protocol-specific MIBs (SMARTMON-NVME-MIB, SMARTMON-SATA-MIB,
           SMARTMON-SAS-MIB) extend this table by using smartmonDeviceIndex
           as the first component of their own table indices."
-    ::= { smartmonCommonObjects 3 }
+    ::= { smartmonCommonObjects 11 }
 
 smartmonPollFailureThreshold OBJECT-TYPE
     SYNTAX      Unsigned32 (1..4294967295)
@@ -196,39 +220,30 @@ smartmonDeviceUdevTableLastChange OBJECT-TYPE
          permanently empty."
     ::= { smartmonCommonObjects 9 }
 
-smartmonDeviceEntry OBJECT-TYPE
-    SYNTAX      SmartmonDeviceEntry
+smartmonDeviceMetadataEntry OBJECT-TYPE
+    SYNTAX      SmartmonDeviceMetadataEntry
     MAX-ACCESS  not-accessible
     STATUS      current
     DESCRIPTION
         "One row in the device inventory.  A row is created when the agent
          first discovers or is configured with a device, and removed when
-         the device is no longer monitored.
-
-         smartmonDeviceLastPollResult and smartmonDeviceLastPollExitStatus
-         together describe the outcome of the most recent smartctl
-         invocation.  A result of ok(1) with exit status 0 indicates a
-         fully successful poll.  Non-zero exit status values follow the
-         smartctl exit-status bit-mask convention (bit 0 = command-line
-         parse error, bit 1 = device open failure, etc.)."
+         the device is no longer monitored.  The matching row in
+         smartmonDeviceStatusTable shares the same smartmonDeviceIndex."
     INDEX { smartmonDeviceIndex }
-    ::= { smartmonDeviceTable 1 }
+    ::= { smartmonDeviceMetadataTable 1 }
 
-SmartmonDeviceEntry ::= SEQUENCE {
+SmartmonDeviceMetadataEntry ::= SEQUENCE {
     smartmonDeviceIndex              Unsigned32,
-    smartmonDeviceName               DisplayString,
-    smartmonDevicePath               DisplayString,
-    smartmonDeviceType               SmartmonDeviceType,
-    smartmonDeviceLastPollTime       DateAndTime,
-    smartmonDeviceLastPollResult     SmartmonPollResult,
-    smartmonDeviceLastPollExitStatus Unsigned32,
-    smartmonDevicePhysicalIndex      PhysicalIndexOrZero,
-    smartmonDeviceUris               OCTET STRING,
-    smartmonDeviceModelFamily        DisplayString,
-    smartmonDeviceModelName          DisplayString,
-    smartmonDeviceSerialNumber       DisplayString,
-    smartmonDeviceFirmwareVersion    DisplayString,
-    smartmonDeviceWwn                DisplayString
+    smartmonDeviceName                DisplayString,
+    smartmonDevicePath                DisplayString,
+    smartmonDeviceType                SmartmonDeviceType,
+    smartmonDevicePhysicalIndex       PhysicalIndexOrZero,
+    smartmonDeviceUris                OCTET STRING,
+    smartmonDeviceModelFamily         DisplayString,
+    smartmonDeviceModelName           DisplayString,
+    smartmonDeviceSerialNumber        DisplayString,
+    smartmonDeviceFirmwareVersion     DisplayString,
+    smartmonDeviceWwn                 DisplayString
 }
 
 smartmonDeviceIndex OBJECT-TYPE
@@ -248,7 +263,7 @@ smartmonDeviceIndex OBJECT-TYPE
 
          For persistent device identity use smartmonDeviceSerialNumber and
          smartmonDeviceModelName, or smartmonDeviceWwn when available."
-    ::= { smartmonDeviceEntry 1 }
+    ::= { smartmonDeviceMetadataEntry 1 }
 
     
 smartmonDeviceName OBJECT-TYPE
@@ -260,7 +275,7 @@ smartmonDeviceName OBJECT-TYPE
          log messages, for example nvme0 or sda.  Typically derived
          from the last component of smartmonDevicePath, but may be
          overridden by agent configuration."
-    ::= { smartmonDeviceEntry 2 }
+    ::= { smartmonDeviceMetadataEntry 2 }
 
 smartmonDevicePath OBJECT-TYPE
     SYNTAX      DisplayString
@@ -271,7 +286,7 @@ smartmonDevicePath OBJECT-TYPE
          for example /dev/sda or /dev/nvme0.  For RAID pass-through
          targets this may include a controller suffix such as
          /dev/sda -d megaraid,2."
-    ::= { smartmonDeviceEntry 3 }
+    ::= { smartmonDeviceMetadataEntry 3 }
 
 smartmonDeviceType OBJECT-TYPE
     SYNTAX      SmartmonDeviceType
@@ -282,7 +297,123 @@ smartmonDeviceType OBJECT-TYPE
          determined or overridden by smartctl.  The value drives which
          protocol-specific MIB table (NVMe, SATA, SAS) contains data
          for this device index."
-    ::= { smartmonDeviceEntry 4 }
+    ::= { smartmonDeviceMetadataEntry 4 }
+
+smartmonDevicePhysicalIndex OBJECT-TYPE
+    SYNTAX      PhysicalIndexOrZero
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The entPhysicalIndex value of the ENTITY-MIB physical entity
+         associated with this monitored smartctl target.
+
+         A value of zero indicates that the agent could not associate the
+         smartctl target with an ENTITY-MIB physical entity.
+
+         When non-zero, this object is intended for cross-MIB correlation
+         between SMART monitoring data and ENTITY-MIB inventory data."
+    ::= { smartmonDeviceMetadataEntry 5 }
+
+smartmonDeviceUris OBJECT-TYPE
+    SYNTAX      OCTET STRING
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Uniform Resource Identifiers associated with this device.
+         Multiple URIs may be present and are separated by white space
+         characters.  Leading and trailing white space characters are
+         ignored.
+
+         If no URI identification information is known about the device,
+         the object is not instantiated.  A zero-length octet string may
+         also be returned in this case."
+    ::= { smartmonDeviceMetadataEntry 6 }
+
+smartmonDeviceModelFamily OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Drive model family as identified in the smartctl database
+         (model_family).  Present for ATA/SATA devices; empty for NVMe
+         and SAS/SCSI devices."
+    ::= { smartmonDeviceMetadataEntry 7 }
+
+smartmonDeviceModelName OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Drive model name as reported by the device (model_name for
+         ATA/NVMe; scsi_model_name for SAS/SCSI)."
+    ::= { smartmonDeviceMetadataEntry 8 }
+
+smartmonDeviceSerialNumber OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Drive serial number as reported by the device (serial_number)."
+    ::= { smartmonDeviceMetadataEntry 9 }
+
+smartmonDeviceFirmwareVersion OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Firmware version string as reported by the device (firmware_version)."
+    ::= { smartmonDeviceMetadataEntry 10 }
+
+smartmonDeviceWwn OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "World Wide Name as a 64-bit hex string with 0x prefix
+         (e.g. 0x5000cca2a4c5b3cb), matching the Linux
+         /dev/disk/by-id/wwn-0x... symlink format.  Present for ATA/SATA and
+         SAS/SCSI devices.  For NVMe devices this is empty unless the agent
+         is running in collect mode, in which case it may be populated from
+         the ID_WWN property reported by udevadm for the device node."
+    ::= { smartmonDeviceMetadataEntry 11 }
+
+-- --------------------------------------------------------------------------
+-- Device status table: dynamic per-poll columns, same row set as
+-- smartmonDeviceMetadataTable (shares smartmonDeviceIndex).
+-- --------------------------------------------------------------------------
+
+smartmonDeviceStatusTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF SmartmonDeviceStatusEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Per-poll status for every device in smartmonDeviceMetadataTable.
+         One row per device, updated every poll cycle; see
+         smartmonDeviceMetadataTable for the device's static identity
+         columns."
+    ::= { smartmonCommonObjects 12 }
+
+smartmonDeviceStatusEntry OBJECT-TYPE
+    SYNTAX      SmartmonDeviceStatusEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "One row of per-poll status, keyed by the same smartmonDeviceIndex
+         as the matching smartmonDeviceMetadataTable row.
+
+         smartmonDeviceLastPollResult and smartmonDeviceLastPollExitStatus
+         together describe the outcome of the most recent smartctl
+         invocation.  A result of ok(1) with exit status 0 indicates a
+         fully successful poll.  Non-zero exit status values follow the
+         smartctl exit-status bit-mask convention (bit 0 = command-line
+         parse error, bit 1 = device open failure, etc.)."
+    INDEX { smartmonDeviceIndex }
+    ::= { smartmonDeviceStatusTable 1 }
+
+SmartmonDeviceStatusEntry ::= SEQUENCE {
+    smartmonDeviceLastPollTime       DateAndTime,
+    smartmonDeviceLastPollResult     SmartmonPollResult,
+    smartmonDeviceLastPollExitStatus Unsigned32,
+    smartmonDevicePowerState         SmartmonDevicePowerState
+}
 
 smartmonDeviceLastPollTime OBJECT-TYPE
     SYNTAX      DateAndTime
@@ -293,7 +424,7 @@ smartmonDeviceLastPollTime OBJECT-TYPE
          for this device, successful or not.  The value is updated even
          when the poll fails, so managers can detect stale data by
          comparing this against the expected polling interval."
-    ::= { smartmonDeviceEntry 5 }
+    ::= { smartmonDeviceStatusEntry 1 }
 
 smartmonDeviceLastPollResult OBJECT-TYPE
     SYNTAX      SmartmonPollResult
@@ -304,7 +435,7 @@ smartmonDeviceLastPollResult OBJECT-TYPE
          normalized enumeration.  See SmartmonPollResult in
          SMARTMON-TC-MIB for the full value set.  For detailed
          diagnosis, consult smartmonDeviceLastPollExitStatus."
-    ::= { smartmonDeviceEntry 6 }
+    ::= { smartmonDeviceStatusEntry 2 }
 
 smartmonDeviceLastPollExitStatus OBJECT-TYPE
     SYNTAX      Unsigned32
@@ -322,83 +453,21 @@ smartmonDeviceLastPollExitStatus OBJECT-TYPE
            bit 6  -- error log contains records
            bit 7  -- self-test log contains errors
          A value of 0 indicates a fully successful poll."
-    ::= { smartmonDeviceEntry 7 }
+    ::= { smartmonDeviceStatusEntry 3 }
 
-smartmonDevicePhysicalIndex OBJECT-TYPE
-    SYNTAX      PhysicalIndexOrZero
+smartmonDevicePowerState OBJECT-TYPE
+    SYNTAX      SmartmonDevicePowerState
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "The entPhysicalIndex value of the ENTITY-MIB physical entity
-         associated with this monitored smartctl target.
-
-         A value of zero indicates that the agent could not associate the
-         smartctl target with an ENTITY-MIB physical entity.
-
-         When non-zero, this object is intended for cross-MIB correlation
-         between SMART monitoring data and ENTITY-MIB inventory data."
-    ::= { smartmonDeviceEntry 8 }
-
-smartmonDeviceUris OBJECT-TYPE
-    SYNTAX      OCTET STRING
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Uniform Resource Identifiers associated with this device.
-         Multiple URIs may be present and are separated by white space
-         characters.  Leading and trailing white space characters are
-         ignored.
-
-         If no URI identification information is known about the device,
-         the object is not instantiated.  A zero-length octet string may
-         also be returned in this case."
-    ::= { smartmonDeviceEntry 9 }
-
-smartmonDeviceModelFamily OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Drive model family as identified in the smartctl database
-         (model_family).  Present for ATA/SATA devices; empty for NVMe
-         and SAS/SCSI devices."
-    ::= { smartmonDeviceEntry 10 }
-
-smartmonDeviceModelName OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "Drive model name as reported by the device (model_name for
-         ATA/NVMe; scsi_model_name for SAS/SCSI)."
-    ::= { smartmonDeviceEntry 11 }
-
-smartmonDeviceSerialNumber OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Drive serial number as reported by the device (serial_number)."
-    ::= { smartmonDeviceEntry 12 }
-
-smartmonDeviceFirmwareVersion OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Firmware version string as reported by the device (firmware_version)."
-    ::= { smartmonDeviceEntry 13 }
-
-smartmonDeviceWwn OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION
-        "World Wide Name as a 64-bit hex string with 0x prefix
-         (e.g. 0x5000cca2a4c5b3cb), matching the Linux
-         /dev/disk/by-id/wwn-0x... symlink format.  Present for ATA/SATA and
-         SAS/SCSI devices.  For NVMe devices this is empty unless the agent
-         is running in collect mode, in which case it may be populated from
-         the ID_WWN property reported by udevadm for the device node."
-    ::= { smartmonDeviceEntry 14 }
+        "The device's live power-saving state, as of the agent's last
+         poll/probe.  Only probed for ATA/SATA/SCSI/SAS drives in collect
+         mode (collect: true / --collect) with respect_standby enabled (the
+         default).  In file mode, for NVMe devices, or when standby gating
+         is disabled, this reports 'unknown(0)' or 'active(1)' rather than a
+         genuine per-tier reading.  See SmartmonDevicePowerState for the
+         per-tier semantics."
+    ::= { smartmonDeviceStatusEntry 4 }
 
 -- --------------------------------------------------------------------------
 -- udevadm property table
@@ -484,7 +553,7 @@ smartmonDeviceDiscovered NOTIFICATION-TYPE
     }
     STATUS      current
     DESCRIPTION
-        "Generated when a new device row is added to smartmonDeviceTable,
+        "Generated when a new device row is added to smartmonDeviceMetadataTable,
          for example when a device is hot-plugged or when the agent is
          reconfigured to monitor an additional target.
          smartmonDeviceTableRowCount reflects the updated total after the addition."
@@ -500,7 +569,7 @@ smartmonDeviceRemoved NOTIFICATION-TYPE
     }
     STATUS      current
     DESCRIPTION
-        "Generated when a device row is removed from smartmonDeviceTable,
+        "Generated when a device row is removed from smartmonDeviceMetadataTable,
          for example when a device is unplugged or removed from the
          agent's monitored set.
          smartmonDeviceTableRowCount reflects the updated total after the removal."
@@ -581,12 +650,13 @@ smartmonDeviceGroup OBJECT-GROUP
         smartmonDeviceModelName,
         smartmonDeviceSerialNumber,
         smartmonDeviceFirmwareVersion,
-        smartmonDeviceWwn
+        smartmonDeviceWwn,
+        smartmonDevicePowerState
     }
     STATUS current
     DESCRIPTION
         "Per-device inventory and poll-status objects from
-         smartmonDeviceTable."
+         smartmonDeviceMetadataTable and smartmonDeviceStatusTable."
     ::= { smartmonCommonGroups 2 }
 
 smartmonDeviceUdevGroup OBJECT-GROUP

@@ -606,6 +606,63 @@ SmartmonAtaDeviceState ::= TEXTUAL-CONVENTION
         smartOfflineOrSelftest(4)
     }
 
+SmartmonDevicePowerState ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "The live power-saving state of a device, as of the agent's
+         last poll/probe -- distinct from SmartmonAtaDeviceState, which
+         records a *historical* power state captured in an ATA error
+         log entry.
+
+         For ATA/SATA drives this reflects the drive's reported
+         power-mode tier directly, one value per ATA tier (not
+         bucketed):
+
+         The enumeration 'active(1)' is ACTIVE/ACTIVE_IDLE: normal
+         operation.
+
+         The enumeration 'idleA(2)' is IDLE_A: ready, not doing I/O;
+         some electronics powered down but response time unaffected.
+
+         The enumeration 'idleB(3)' is IDLE_B: spindle still at full
+         RPM, heads unloaded.
+
+         The enumeration 'idleC(4)' is IDLE_C: spindle spun down to
+         low RPM, heads unloaded. Physically the same tier as
+         'standbyY(5)' below -- vendors report it under either name.
+
+         The enumeration 'standbyY(5)' is STANDBY_Y: spindle spun
+         down to low RPM, heads unloaded (see 'idleC(4)').
+
+         The enumeration 'standbyZ(6)' is STANDBY_Z: actuator
+         unloaded AND spindle motor stopped; the drive still answers
+         commands immediately (no ATA bus unresponsiveness).
+
+         The enumeration 'sleeping(7)' is ATA SLEEP mode: the drive
+         does not respond on the bus at all and requires a
+         hardware/software reset to wake; inferred when a power-mode
+         probe fails outright rather than returning a value.
+
+         The enumeration 'standby(8)' is generic: 'known to be in a
+         low-power mode, exact tier unknown' -- used for SCSI/SAS,
+         where only the binary skip-vs-answered signal from
+         smartctl's '-n' exit status is available (no per-tier
+         name).
+
+         For NVMe and any device this agent does not probe for power
+         state, the value is 'unknown(0)'."
+    SYNTAX INTEGER {
+        unknown(0),
+        active(1),
+        idleA(2),
+        idleB(3),
+        idleC(4),
+        standbyY(5),
+        standbyZ(6),
+        sleeping(7),
+        standby(8)
+    }
+
 SmartmonAtaMinorVersion ::= TEXTUAL-CONVENTION
     STATUS      current
     DESCRIPTION
