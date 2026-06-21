@@ -76,6 +76,12 @@ discovery:
     oid_grep_re: '\.5\.1\.6\.1\.2\.[0-9]+\.1'
     value_pattern: "Gauge32: 3"
 
+  satassd:
+    label: "Samsung SSD MZ7LH960HAJR"
+    walk_label: "sata"
+    oid_grep_re: '\.4\.1\.9\.1\.9\.[0-9]+\.9'
+    value_pattern: "Counter64: 16460"
+
   farmata:
     # ...6.1.3.1.4.1889140974.4 = STRING: seagate_farm_log.page_4_environment_statistics.current_5v_in_mv
     label: "Seagate ST16000NM000J ZR7061LA (FARM)"
@@ -171,8 +177,8 @@ sections:
       - {label: "col18 errorInformationLogEntries = 0",           col: 18, expected: "Counter64: 0"}
       - {label: "col19 warningTemperatureTimeMinutes = 0",        col: 19, expected: "Counter64: 0"}
       - {label: "col20 criticalTemperatureTimeMinutes absent (not in fixture)", col: 20, absent: true}
-      - {label: "col22 currentSelfTestOperationValue = 0",        col: 22, expected: "Gauge32: 0"}
-      - {label: "col23 currentSelfTestOperationString",           col: 23, expected: 'STRING: "No self-test in progress"'}
+      - {label: "col22 currentSelfTestOperationValue = 0 (noOperationInProgress)", col: 22, expected: "INTEGER: 0"}
+      - {label: "col23 currentSelfTestOperationProgress = 0%",    col: 23, expected: "Gauge32: 0"}
 
   - name: "NVMe Self-test"
     walk: "nvme"
@@ -283,12 +289,9 @@ sections:
       - {label: "col1 firmwareUpdateRaw = 0",           col: 1, expected: "Gauge32: 0"}
       - {label: "col2 firmwareSlotCount = 0",           col: 2, expected: "Gauge32: 0"}
       - {label: "col3 firmwareResetRequired = false",   col: 3, expected: "INTEGER: 2"}
-      - {label: "col4 optionalAdminCommandRaw = 0",     col: 4, expected: "Gauge32: 0"}
-      - {label: "col5 optionalNvmCommandRaw = 0",       col: 5, expected: "Gauge32: 0"}
-      - {label: "col6 logPageAttributesRaw = 0",        col: 6, expected: "Gauge32: 0"}
-      - {label: "col7 optionalAdminCommandText = empty",col: 7, expected: '""'}
-      - {label: "col8 optionalNvmCommandText = empty",  col: 8, expected: '""'}
-      - {label: "col9 logPageAttributesText = empty",   col: 9, expected: '""'}
+      - {label: "col4 optionalAdminCommandRaw (BITS) = 00 00", col: 4, expected: '(?:BITS|Hex-STRING): 00 00 *'}
+      - {label: "col5 optionalNvmCommandRaw (BITS) = 00 00",   col: 5, expected: '(?:BITS|Hex-STRING): 00 00 *'}
+      - {label: "col6 logPageAttributesRaw (BITS) = 00",       col: 6, expected: '(?:BITS|Hex-STRING): 00 *'}
 
   # ---------------------------------------------------------------------------
   # SATA — WDC WD140EFGX SELFTESTS
@@ -362,6 +365,20 @@ sections:
       - {label: "attr[9] col8  threshold = 0",              col: 8,  inst: 9, expected: "Gauge32: 0"}
       - {label: "attr[9] col9  rawValue = 4321",            col: 9,  inst: 9, expected: "Counter64: 4321"}
       - {label: "attr[9] col10 rawStr = 4321",              col: 10, inst: 9, expected: 'STRING: "4321"'}
+
+  - name: "SATA Attributes — Device Statistics fallback (81GDJW2V)"
+    walk: "sata"
+    device: sata2
+    oid_template: ".4.1.9.1.{col}.{D}.{inst}"
+    tests:
+      - {label: "attr[240] name = Head Flying Hours",         col: 2,  inst: 240, expected: 'STRING: "Head Flying Hours"'}
+      - {label: "attr[240] rawValue = 43100",                 col: 9,  inst: 240, expected: "Counter64: 43100"}
+      - {label: "attr[240] status = notRelevant (-1)",        col: 11, inst: 240, expected: "INTEGER: -1"}
+      - {label: "attr[241] name = Lifetime Writes from Host", col: 2,  inst: 241, expected: 'STRING: "Lifetime Writes from Host"'}
+      - {label: "attr[241] rawValue = 12345678",              col: 9,  inst: 241, expected: "Counter64: 12345678"}
+      - {label: "attr[241] status = notRelevant (-1)",        col: 11, inst: 241, expected: "INTEGER: -1"}
+      - {label: "attr[242] name = Lifetime Reads from Host",  col: 2,  inst: 242, expected: 'STRING: "Lifetime Reads from Host"'}
+      - {label: "attr[242] rawValue = 56789012",               col: 9,  inst: 242, expected: "Counter64: 56789012"}
 
   - name: "SATA Self-test"
     walk: "sata"
@@ -518,7 +535,7 @@ sections:
     walk: "sensor"
     # Scalars sit outside the table, so use explicit oid: rather than a template.
     tests:
-      - {label: "rowCount = 23",        oid: ".6.1.1.0", expected: "Gauge32: 23"}
+      - {label: "rowCount = 31",        oid: ".6.1.1.0", expected: "Gauge32: 31"}
       - {label: "lastChange timestamp", oid: ".6.1.2.0", expected: 'Hex-STRING: ([0-9A-F]{2} ){11}'}
 
   - name: "Sensor MIB NVMe"
@@ -566,20 +583,50 @@ sections:
       - {label: "s[3] col3 name = 12V Supply",          col: 3, inst: 3, expected: 'STRING: "12V Supply"'}
       - {label: "s[3] col5 scale = 8 (milli)",          col: 5, inst: 3, expected: "INTEGER: 8"}
       - {label: "s[3] col7 value = 12189 mV",           col: 7, inst: 3, expected: "INTEGER: 12189"}
-      - {label: "s[3] col8 operStatus = 1 (ok)",        col: 8, inst: 3, expected: "INTEGER: 1"}
-      - {label: "s[3] col9 units = mV",                 col: 9, inst: 3, expected: 'STRING: "mV"'}
-      - {label: "s[4] col2 type = 6 (voltsDC)",         col: 2, inst: 4, expected: "INTEGER: 6"}
-      - {label: "s[4] col3 name = 5V Supply",           col: 3, inst: 4, expected: 'STRING: "5V Supply"'}
-      - {label: "s[4] col7 value = 4986 mV",            col: 7, inst: 4, expected: "INTEGER: 4986"}
-      - {label: "s[5] col2 type = 10 (percent)",        col: 2, inst: 5, expected: "INTEGER: 10"}
-      - {label: "s[5] col3 name = Humidity",            col: 3, inst: 5, expected: 'STRING: "Humidity"'}
-      - {label: "s[5] col5 scale = 9 (units)",          col: 5, inst: 5, expected: "INTEGER: 9"}
-      - {label: "s[5] col7 value = 0%",                 col: 7, inst: 5, expected: "INTEGER: 0"}
+      - {label: "s[3] col8 operStatus = 1 (ok)",        col: 8,  inst: 3, expected: "INTEGER: 1"}
+      - {label: "s[3] col9 units = mV",                 col: 9,  inst: 3, expected: 'STRING: "mV"'}
+      - {label: "s[3] col12 hi_crit = 13200 mV",        col: 12, inst: 3, expected: "INTEGER: 13200"}
+      - {label: "s[3] col13 hi_warn = 12960 mV",        col: 13, inst: 3, expected: "INTEGER: 12960"}
+      - {label: "s[3] col14 lo_warn = 11040 mV",        col: 14, inst: 3, expected: "INTEGER: 11040"}
+      - {label: "s[3] col15 lo_crit = 10800 mV",        col: 15, inst: 3, expected: "INTEGER: 10800"}
+      - {label: "s[4] col2 type = 6 (voltsDC)",         col: 2,  inst: 4, expected: "INTEGER: 6"}
+      - {label: "s[4] col3 name = 5V Supply",           col: 3,  inst: 4, expected: 'STRING: "5V Supply"'}
+      - {label: "s[4] col7 value = 4986 mV",            col: 7,  inst: 4, expected: "INTEGER: 4986"}
+      - {label: "s[4] col12 hi_crit = 5250 mV",         col: 12, inst: 4, expected: "INTEGER: 5250"}
+      - {label: "s[4] col13 hi_warn = 5200 mV",         col: 13, inst: 4, expected: "INTEGER: 5200"}
+      - {label: "s[4] col14 lo_warn = 4800 mV",         col: 14, inst: 4, expected: "INTEGER: 4800"}
+      - {label: "s[4] col15 lo_crit = 4750 mV",         col: 15, inst: 4, expected: "INTEGER: 4750"}
+      - {label: "s[5] Humidity omitted (0 on first poll, never nonzero)", col: 3, inst: 5, absent: true}
       - {label: "s[6] col2 type = 4 (watts)",           col: 2, inst: 6, expected: "INTEGER: 4"}
       - {label: "s[6] col3 name = Motor Power",         col: 3, inst: 6, expected: 'STRING: "Motor Power"'}
       - {label: "s[6] col5 scale = 8 (milli)",          col: 5, inst: 6, expected: "INTEGER: 8"}
       - {label: "s[6] col7 value = 3327 mW",            col: 7, inst: 6, expected: "INTEGER: 3327"}
       - {label: "s[6] col9 units = mW",                 col: 9, inst: 6, expected: 'STRING: "mW"'}
+
+  # ---------------------------------------------------------------------------
+  # Sensor MIB — SATA wear guessed from SMART attributes (Samsung SSD)
+  # Fixture: smartd-json.SAMSUNG_MZ7LH960HAJR_00005-S45NNC0TB46287.ata.json
+  # id=5 Reallocated_Sector_Ct value=100 thresh=10 -> Available Spare 100%, lowWarning 20, lowCritical 10
+  # id=177 Wear_Leveling_Count value=99            -> Endurance Used 1% (100 - 99)
+  # Sensor indices 3-6 are reserved for Seagate FARM, so spare=2, endurance=7.
+  # OID: .6.1.3.1.{col}.{D}.{inst}
+  # ---------------------------------------------------------------------------
+
+  - name: "Sensor MIB SATA wear (guessed from SMART attributes)"
+    walk: "sensor"
+    device: satassd
+    oid_template: ".6.1.3.1.{col}.{D}.{inst}"
+    tests:
+      - {label: "s[2] col2  type = 10 (percent)",          col: 2,  inst: 2, expected: "INTEGER: 10"}
+      - {label: "s[2] col3  name = Available Spare",       col: 3,  inst: 2, expected: 'STRING: "Available Spare"'}
+      - {label: "s[2] col7  value = 100%",                 col: 7,  inst: 2, expected: "INTEGER: 100"}
+      - {label: "s[2] col9  units = percent",               col: 9,  inst: 2, expected: 'STRING: "percent"'}
+      - {label: "s[2] col14 lowWarning = 20%",              col: 14, inst: 2, expected: "INTEGER: 20"}
+      - {label: "s[2] col15 lowCritical = 10%",             col: 15, inst: 2, expected: "INTEGER: 10"}
+      - {label: "s[7] col2  type = 10 (percent)",          col: 2,  inst: 7, expected: "INTEGER: 10"}
+      - {label: "s[7] col3  name = Endurance Used",        col: 3,  inst: 7, expected: 'STRING: "Endurance Used"'}
+      - {label: "s[7] col7  value = 1%",                   col: 7,  inst: 7, expected: "INTEGER: 1"}
+      - {label: "s[7] col9  units = percent",               col: 9,  inst: 7, expected: 'STRING: "percent"'}
 
   # ---------------------------------------------------------------------------
   # SATA FARM DevStats (ZR7061LA)

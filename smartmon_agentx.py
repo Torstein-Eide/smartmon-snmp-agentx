@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.5"
+VERSION = "0.1.27"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -186,10 +186,15 @@ def _discover_devices(state_dir: str, config_devices=None) -> List[str]:
     sidecars: Dict[str, str] = {}
     orphan_farm: List[str] = []
     for ff in farm_files:
-        main_candidate = ff[:-len(_FARM_SIDECAR_SUFFIX)] + ".ata.json"
-        if main_candidate in main_set:
-            sidecars[main_candidate] = ff
-        else:
+        base = ff[:-len(_FARM_SIDECAR_SUFFIX)]
+        matched = False
+        for ext in (".ata.json", ".sat.json"):
+            main_candidate = base + ext
+            if main_candidate in main_set:
+                sidecars[main_candidate] = ff
+                matched = True
+                break
+        if not matched:
             orphan_farm.append(ff)
     _st.farm_sidecars = sidecars
 
@@ -263,6 +268,47 @@ def _looks_like_perm_failure(proc: "subprocess.CompletedProcess") -> bool:
     return any(h in err for h in _PERM_HINTS)
 
 
+def _run_udevadm(args: List[str], timeout: int = 10) -> "subprocess.CompletedProcess":
+    """Run udevadm; same never-raises convention as _run_smartctl().
+
+    Unlike smartctl, `udevadm info` needs no elevated privilege, so this runs
+    unwrapped (no sudo)."""
+    path = shutil.which("udevadm") or "udevadm"
+    cmd = [path] + args
+    try:
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "udevadm timed out")
+    except OSError as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def _udev_query_dev(dev: str) -> str:
+    """NVMe controller nodes (/dev/nvmeN) are character devices with no
+    block-layer udev properties (ID_WWN, ID_FS_*, etc. are only set on the
+    namespace block device) -- query the first namespace instead, mirroring
+    _byid_name's controller -> namespace mapping."""
+    m = re.match(r"/dev/nvme(\d+)$", dev)
+    return f"/dev/nvme{m.group(1)}n1" if m else dev
+
+
+def _collect_udev_properties(dev: str) -> List[Tuple[str, str]]:
+    """Run `udevadm info --query=property` for dev; return its KEY=value
+    lines verbatim as (key, value) tuples, in udevadm's own output order.
+
+    Returns [] on any failure (missing binary, non-zero exit, no device)."""
+    proc = _run_udevadm(["info", "--query=property", "--name=" + _udev_query_dev(dev)])
+    if proc.returncode != 0:
+        return []
+    props: List[Tuple[str, str]] = []
+    for line in (proc.stdout or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            props.append((key, value))
+    return props
+
+
 def _warn_sudoers_once() -> None:
     """Log, at most once per run, how to grant the agent passwordless smartctl."""
     if _st.sudoers_warned:
@@ -289,6 +335,93 @@ def _drive_suffix(dtype: str, dev: str) -> str:
         return "ata"
     # auto / unknown: derive from the device node name
     return "nvme" if "/nvme" in dev else "ata"
+
+
+def _device_uris(dev_path: str) -> str:
+    """Return a space-separated list of file:// URIs for all known paths of dev_path.
+
+    Includes the primary device node, the sysfs device path (when resolvable via
+    /sys/class/nvme/ or /sys/class/block/), and all non-partition symlinks in
+    /dev/disk/by-id/ and /dev/disk/by-path/ that resolve to the same device.
+    NVMe controller nodes (/dev/nvmeN) are matched against both the controller
+    and its first namespace (/dev/nvmeNn1) since by-id symlinks target the
+    namespace."""
+    if not dev_path:
+        return ""
+    paths = [dev_path]
+
+    # Sysfs class symlinks: /sys/class/nvme/<name> (NVMe controller) or
+    # /sys/class/block/<name> (SATA/SAS block device).  Both the class symlink
+    # and its resolved target are included.  For ATA we also scan
+    # /sys/class/ata_device/ and add any entry on the same libata port.  The
+    # block device hangs off
+    # .../ataN/hostX/targetY/Z/block/<name>, while the ata_device entry hangs
+    # off .../ataN/linkN/devN.M/ata_device/<name> -- they only share the ataN
+    # ancestor, not a common grandparent, so match on that port number.
+    def _ata_port(path: str) -> Optional[str]:
+        m = re.search(r'/ata(\d+)/', path)
+        return m.group(1) if m else None
+
+    name = os.path.basename(dev_path)
+    for cls in ("nvme", "block"):
+        link = f"/sys/class/{cls}/{name}"
+        if not os.path.islink(link):
+            continue
+        try:
+            real_link = os.path.realpath(link)
+        except OSError:
+            break
+        paths.append(link)            # /sys/class/nvme/nvme0 or /sys/class/block/sdc
+        paths.append(real_link)       # /sys/devices/.../nvme/nvme0 or .../block/sdc
+        if cls == "block":
+            port = _ata_port(real_link)
+            ata_dir = "/sys/class/ata_device"
+            if port and os.path.isdir(ata_dir):
+                for ata_name in sorted(os.listdir(ata_dir)):
+                    ata_link = os.path.join(ata_dir, ata_name)
+                    if not os.path.islink(ata_link):
+                        continue
+                    try:
+                        ata_real = os.path.realpath(ata_link)
+                    except OSError:
+                        continue
+                    if _ata_port(ata_real) == port:
+                        paths.append(ata_link)
+        break
+
+    try:
+        real = os.path.realpath(dev_path)
+    except OSError:
+        real = dev_path
+    real_alt = ""
+    m = re.match(r"/dev/nvme(\d+)$", real)
+    if m:
+        real_alt = f"/dev/nvme{m.group(1)}n1"
+
+    valid = {p for p in (real, real_alt) if p}
+
+    def _symlinks(directory: str) -> List[str]:
+        if not os.path.isdir(directory):
+            return []
+        found = []
+        for base in sorted(os.listdir(directory)):
+            if "-part" in base:
+                continue
+            link = os.path.join(directory, base)
+            if not os.path.islink(link):
+                continue
+            try:
+                target = os.path.realpath(link)
+            except OSError:
+                continue
+            if target not in valid:
+                continue
+            found.append(link)
+        return found
+
+    paths.extend(_symlinks("/dev/disk/by-id"))
+    paths.extend(_symlinks("/dev/disk/by-path"))
+    return " ".join(f"file://{p}" for p in paths)
 
 
 def _byid_name(dev: str) -> str:
@@ -369,6 +502,16 @@ def _discover_drives() -> List[dict]:
     return specs
 
 
+def _farm_env_populated(farm: dict) -> bool:
+    """Return True if page_4_environment_statistics has at least one non-zero
+    current-snapshot value (current_motor_power, current_12v_in_mv,
+    current_5v_in_mv).  When -x returns the page but leaves these fields as 0,
+    -l farm must still be fetched to get the real values."""
+    env = (farm.get("page_4_environment_statistics") or {})
+    return any(env.get(k) for k in
+               ("current_motor_power", "current_12v_in_mv", "current_5v_in_mv"))
+
+
 def _merge_farm(raw: dict, spec: dict) -> None:
     """For ATA/SAT drives, fetch GP Log 0xa6 when -x signals FARM support but
     omits the page data, and splice it into raw (mirrors bin/smartmon-collect)."""
@@ -377,7 +520,7 @@ def _merge_farm(raw: dict, spec: dict) -> None:
     farm = raw.get("seagate_farm_log")
     if not isinstance(farm, dict) or not farm.get("supported"):
         return
-    if "page_4_environment_statistics" in farm:
+    if _farm_env_populated(farm):
         return  # already fully present in the -x output
     proc = _run_smartctl(["-l", "farm", "-j"] + spec["dev_args"] + [spec["dev"]])
     try:
@@ -413,6 +556,7 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
                        spec["dev"], exc)
         return None
     _merge_farm(raw, spec)
+    raw["_udev_props"] = _collect_udev_properties(spec["dev"])
     LOGGER.verbose("collected %s (type=%s) in %.3fs", spec["dev"], spec["dtype"], elapsed)
     return spec["key"], raw
 
@@ -471,6 +615,21 @@ def _parse_device_info_string(s: str) -> dict:
     if m:
         result["wwn"] = m.group(1)
     return result
+
+
+def _format_udev_wwn(id_wwn: str) -> str:
+    """Format udevadm's ID_WWN (e.g. 'eui.5cd2e4177e7d0100', 'naa.5000...')
+    to match smartmonDeviceWwn's '0x'-prefixed 64-bit hex format.
+
+    Returns "" if the prefix is unrecognized or the remainder isn't hex."""
+    for prefix in ("eui.", "naa.", "t10."):
+        if id_wwn.startswith(prefix):
+            hex_str = id_wwn[len(prefix):]
+            try:
+                return f"0x{int(hex_str, 16):016x}"
+            except ValueError:
+                return ""
+    return ""
 
 
 def _parse_device_json(path: str) -> dict:
@@ -586,11 +745,21 @@ def _parse_device_from_raw(raw: dict, path: str) -> dict:
         except ValueError:
             wwn = wwn_raw
 
+    # smartctl never reports a wwn for NVMe (it uses EUI-64/NGUID, not NAA);
+    # collect mode can fill this from udevadm's ID_WWN property instead.
+    udev_props: List[Tuple[str, str]] = raw.get("_udev_props") or []
+    if not wwn and result["device_type"] == _DEVICE_TYPE["nvme"]:
+        for key, value in udev_props:
+            if key == "ID_WWN":
+                wwn = _format_udev_wwn(value)
+                break
+
     result["model_family"]     = model_family
     result["model_name"]       = model_name
     result["serial_number"]    = serial_number
     result["firmware_version"] = firmware_version
     result["wwn"]              = wwn
+    result["udev_props"]       = udev_props
     LOGGER.verbose("parsed device %s (proto=%s model=%r)",
                    result["name"] or path, proto_str, model_name)
     return result
@@ -851,6 +1020,12 @@ class _State:
         self.sas_uncorrected: dict = {}   # (d_idx, direction) -> uncorrected count
         self.sensor_alarm_state: dict = {}      # (d_idx, sensor_idx) -> alarm state
         self.sensor_alarm_last_sent: dict = {}  # (d_idx, sensor_idx) -> monotonic ts
+        # FARM environment sensors (12V/5V/humidity/motor power) read 0 for
+        # fields the controller doesn't populate.  (d_idx, sensor_idx) -> True
+        # once that sensor has reported a nonzero value at least once; gates
+        # _extract_sensors' "still zero at first sight -> unsupported, omit row"
+        # vs "was working, dropped to zero -> nonoperational" distinction.
+        self.farm_sensor_seen_nonzero: dict = {}
 
 
 _st = _State()
@@ -1118,6 +1293,7 @@ def state_db_close() -> None:
 # Table prefix tuples for fingerprinting (full OID prefix of each table entry)
 _TABLE_PREFIXES = {
     "device":               _full((2, 1, 3, 1)),
+    "device_udev":          _full((2, 1, 10, 1)),
     "nvme_controller":      _full((3, 1, 3, 1)),
     "nvme_namespace":       _full((3, 1, 6, 1)),
     "nvme_power_state":     _full((3, 1, 9, 1)),
@@ -1298,6 +1474,7 @@ def _build(devices: list, ts: datetime,
     add((2, 1, 5, 0), *_gauge(n_ata))         # smartmonDeviceCountAta
     add((2, 1, 6, 0), *_gauge(n_sas))         # smartmonDeviceCountSas
     add((2, 1, 7, 0), *_gauge(_st.poll_failure_threshold))  # smartmonPollFailureThreshold
+    add((2, 1, 8, 0), *_gauge(0))              # smartmonDeviceUdevTableRowCount (placeholder)
 
     # ---- Protocol-subtree scalars (placeholders filled after device loop) ----
     add((3, 1, 1, 0),  *_gauge(0))            # nvmeControllerTableRowCount
@@ -1343,6 +1520,7 @@ def _build(devices: list, ts: datetime,
     n_nvme_st            = 0
     n_nvme_el            = 0
     n_nvme_cap           = 0
+    n_device_udev        = 0
     first_ata            = True
     # per-device SATA row counts: {d_idx: {table_id: count}}
     sata_dev_counts: Dict[int, Dict[int, int]] = {}
@@ -1362,6 +1540,7 @@ def _build(devices: list, ts: datetime,
         }
 
         _add_common_device(add, dev, d_idx)
+        n_device_udev += _add_device_udev_props(add, dev, d_idx)
 
         proto = dev["protocol"]
         if proto == "nvme":
@@ -1395,6 +1574,8 @@ def _build(devices: list, ts: datetime,
             for i in range(len(el)):
                 sata_dev_subidx.add((d_idx, 5, i + 1))    # errorcmd: subindex = error entry index
             for pg in (dev["raw"].get("ata_device_statistics") or {}).get("pages") or []:
+                if str(pg.get("name") or "") == "Temperature Statistics":
+                    continue
                 sata_dev_subidx.add((d_idx, 11, int(pg.get("number", 0) or 0)))  # devstat: subindex = page num
             first_ata = False
         elif proto in ("scsi", "sas"):
@@ -1405,6 +1586,7 @@ def _build(devices: list, ts: datetime,
 
     # Patch count scalars computed during the device loop
     _PATCH = {
+        _full((2, 1, 8, 0)),
         _full((3, 1, 1, 0)),  _full((3, 1, 4, 0)),  _full((3, 1, 7, 0)),
         _full((3, 1, 10, 0)), _full((3, 1, 16, 0)), _full((3, 1, 19, 0)),
         _full((3, 1, 22, 0)),
@@ -1415,6 +1597,7 @@ def _build(devices: list, ts: datetime,
         _full((6, 1, 1, 0)),
     }
     entries[:] = [e for e in entries if e[0] not in _PATCH]
+    add((2, 1, 8, 0),  *_gauge(n_device_udev))
     add((3, 1, 1, 0),  *_gauge(n_nvme_ctrl))
     add((3, 1, 4, 0),  *_gauge(n_nvme_ns))
     add((3, 1, 7, 0),  *_gauge(n_nvme_ps))
@@ -1445,6 +1628,7 @@ def _build(devices: list, ts: datetime,
     # ---- Fingerprint tables; advance LastChange only when content changes ----
     _LC_MAP = {
         "device":               (2, 1, 2, 0),
+        "device_udev":          (2, 1, 9, 0),
         "nvme_controller":      (3, 1, 2, 0),
         "nvme_namespace":       (3, 1, 5, 0),
         "nvme_power_state":     (3, 1, 8, 0),
@@ -1535,12 +1719,25 @@ def _add_common_device(add, dev: dict, d_idx: int) -> None:
     add(T+(6,  d_idx), *_integer(poll_result))
     add(T+(7,  d_idx), *_gauge(0))                             # lastPollExitStatus
     add(T+(8,  d_idx), *_integer(0))                           # physicalIndex
-    add(T+(9,  d_idx), *_string(dev.get("device_path", "")))   # uris
+    add(T+(9,  d_idx), *_string(_device_uris(dev.get("device_path", ""))))
     add(T+(10, d_idx), *_string(dev["model_family"]))
     add(T+(11, d_idx), *_string(dev["model_name"]))
     add(T+(12, d_idx), *_string(dev["serial_number"]))
     add(T+(13, d_idx), *_string(dev["firmware_version"]))
     add(T+(14, d_idx), *_string(dev["wwn"]))
+
+
+# --------------------------------------------------------------------------
+# Device udevadm property table  (.2.1.10.1)  INDEX { deviceIndex, rowIndex }
+# --------------------------------------------------------------------------
+
+def _add_device_udev_props(add, dev: dict, d_idx: int) -> int:
+    T = (2, 1, 10, 1)
+    props = dev.get("udev_props") or []
+    for row_idx, (name, value) in enumerate(props, start=1):
+        add(T+(2, d_idx, row_idx), *_string(name))
+        add(T+(3, d_idx, row_idx), *_string(value))
+    return len(props)
 
 
 # --------------------------------------------------------------------------
@@ -1568,7 +1765,7 @@ def _parse_nvme_health(raw: dict) -> dict:
         "media_errors":            h.get("media_errors"),
         "num_err_log_entries":     h.get("num_err_log_entries"),
         "warning_temp_time":       h.get("warning_temp_time"),
-        "critical_comp_time":      h.get("critical_comp_time_minutes"),
+        "critical_comp_time":      h.get("critical_comp_time"),
     }
 
 
@@ -1599,15 +1796,10 @@ def _add_nvme_health(add, dev: dict, d_idx: int) -> None:
     add(T+(18, d_idx, hi), *_counter64(h["num_err_log_entries"]))
     add(T+(19, d_idx, hi), *_counter64(h["warning_temp_time"]))
     add(T+(20, d_idx, hi), *_counter64(h["critical_comp_time"]))
-    # smartctl emits the running operation as nvme_self_test_log.
-    # current_self_test_operation {value, string}; "No self-test in progress"
-    # (value 0) is a real, reportable state, so keep the descriptive string.
     st_log = dev["raw"].get("nvme_self_test_log") or {}
     cur_op = st_log.get("current_self_test_operation") or {}
-    st_val = int(cur_op.get("value", 0))
-    st_str = str(cur_op.get("string") or "")
-    add(T+(22, d_idx, hi), *_gauge(st_val))
-    add(T+(23, d_idx, hi), *_string(st_str))
+    add(T+(22, d_idx, hi), *_integer(int(cur_op.get("value", 0))))
+    add(T+(23, d_idx, hi), *_gauge(int(st_log.get("current_self_test_completion_percent", 0))))
 
 
 # --------------------------------------------------------------------------
@@ -1624,7 +1816,8 @@ def _add_nvme_controller(add, dev: dict, d_idx: int) -> int:
     ver = raw.get("nvme_version") or {}
     add(T+(1,  d_idx, ci), *_gauge(vid))
     add(T+(2,  d_idx, ci), *_gauge(int(raw.get("nvme_ieee_oui_identifier", 0) or 0)))
-    add(T+(3,  d_idx, ci), *_counter64(int(raw.get("nvme_total_capacity", 0) or 0)))
+    _tnvmcap = raw.get("nvme_total_capacity") or (raw.get("user_capacity") or {}).get("bytes") or 0
+    add(T+(3,  d_idx, ci), *_counter64(int(_tnvmcap)))
     add(T+(4,  d_idx, ci), *_counter64(int(raw.get("nvme_unallocated_capacity", 0) or 0)))
     add(T+(5,  d_idx, ci), *_gauge(int(raw.get("nvme_controller_id", 0) or 0)))
     add(T+(6,  d_idx, ci), *_string(str(ver.get("string", "") or "")))
@@ -1791,46 +1984,6 @@ def _add_nvme_errlogs(add, dev: dict, d_idx: int) -> int:
 # NVMe capability table  (.3.1.24.1)
 # --------------------------------------------------------------------------
 
-def _nvme_cap_text(section: dict, bits: list) -> str:
-    """Join labels for all true boolean flags in a smartctl capability section."""
-    return ", ".join(label for key, label in bits if section.get(key))
-
-
-_ADM_BITS = [
-    ("security_send_receive",        "Security Send/Receive"),
-    ("format_nvm",                   "Format NVM"),
-    ("firmware_download",            "Firmware Download"),
-    ("namespace_management",         "Namespace Management"),
-    ("self_test",                    "Self-test"),
-    ("directives",                   "Directives"),
-    ("mi_send_receive",              "MI Send/Receive"),
-    ("virtualization_management",    "Virtualization Management"),
-    ("doorbell_buffer_config",       "Doorbell Buffer Config"),
-    ("get_lba_status",               "Get LBA Status"),
-    ("command_and_feature_lockdown", "Command and Feature Lockdown"),
-]
-_NVM_BITS = [
-    ("compare",                     "Compare"),
-    ("write_uncorrectable",         "Write Uncorrectable"),
-    ("dataset_management",          "Dataset Management"),
-    ("write_zeroes",                "Write Zeroes"),
-    ("save_select_feature_nonzero", "Save/Select Feature Nonzero"),
-    ("reservations",                "Reservations"),
-    ("timestamp",                   "Timestamp"),
-    ("verify",                      "Verify"),
-    ("copy",                        "Copy"),
-]
-_LPA_BITS = [
-    ("smart_health_per_namespace", "SMART/Health per Namespace"),
-    ("commands_effects_log",       "Commands Effects Log"),
-    ("extended_get_log_page_cmd",  "Extended Get Log Page"),
-    ("telemetry_log",              "Telemetry Log"),
-    ("persistent_event_log",       "Persistent Event Log"),
-    ("supported_log_pages_log",    "Supported Log Pages Log"),
-    ("telemetry_data_area_4",      "Telemetry Data Area 4"),
-]
-
-
 def _add_nvme_capability(add, dev: dict, d_idx: int) -> int:
     T   = (3, 1, 24, 1)
     raw = dev["raw"]
@@ -1845,12 +1998,9 @@ def _add_nvme_capability(add, dev: dict, d_idx: int) -> int:
     # doesn't decode this, so when the capability object is absent report false
     # (no reset required) rather than defaulting to true.
     add(T+(3, d_idx, ci), *_integer(1 if (fw and not fw.get("activation_without_reset")) else 2))
-    add(T+(4, d_idx, ci), *_gauge(int(adm.get("value", 0) or 0)))
-    add(T+(5, d_idx, ci), *_gauge(int(nvm.get("value", 0) or 0)))
-    add(T+(6, d_idx, ci), *_gauge(int(lpa.get("value", 0) or 0)))
-    add(T+(7, d_idx, ci), *_string(_nvme_cap_text(adm, _ADM_BITS)))
-    add(T+(8, d_idx, ci), *_string(_nvme_cap_text(nvm, _NVM_BITS)))
-    add(T+(9, d_idx, ci), *_string(_nvme_cap_text(lpa, _LPA_BITS)))
+    add(T+(4, d_idx, ci), *_bits(int(adm.get("value", 0) or 0), nbits=11))
+    add(T+(5, d_idx, ci), *_bits(int(nvm.get("value", 0) or 0), nbits=9))
+    add(T+(6, d_idx, ci), *_bits(int(lpa.get("value", 0) or 0), nbits=7))
     return 1
 
 
@@ -2120,9 +2270,20 @@ def _parse_raw_value(raw_a: dict) -> int:
     return int(m.group(1)) if m else int(raw_a.get("value", 0) or 0)
 
 
+# Fallback when ata_smart_attributes lacks one of these ids: ATA Device
+# Statistics reports the same lifetime counters under these entry names
+# (same units in both sources — logical sectors for 241/242, hours for 240).
+_SATA_ATTR_DEVSTAT_FALLBACK = {
+    240: ("Head_Flying_Hours",   "Head Flying Hours"),
+    241: ("Total_LBAs_Written",  "Logical Sectors Written"),
+    242: ("Total_LBAs_Read",     "Logical Sectors Read"),
+}
+
+
 def _parse_sata_attrs(raw: dict) -> List[dict]:
     attrs_raw = (raw.get("ata_smart_attributes") or {}).get("table") or []
     result = []
+    seen_ids = set()
     for a in attrs_raw:
         flags   = a.get("flags") or {}
         raw_a   = a.get("raw") or {}
@@ -2136,8 +2297,10 @@ def _parse_sata_attrs(raw: dict) -> List[dict]:
             status = _ATTR_STATUS_FAILED
         else:
             status = _ATTR_STATUS_OK
+        aid = int(a.get("id", 0))
+        seen_ids.add(aid)
         result.append({
-            "id":          int(a.get("id", 0)),
+            "id":          aid,
             "name":        str(a.get("name", "")),
             "flags_value": int(flags.get("value", 0) or 0),
             "attr_type":   1 if flags.get("prefailure") else 2,
@@ -2149,6 +2312,79 @@ def _parse_sata_attrs(raw: dict) -> List[dict]:
             "raw_string":  str(raw_a.get("string", "") or ""),
             "status":      status,
         })
+
+    missing = {aid: names for aid, names in _SATA_ATTR_DEVSTAT_FALLBACK.items()
+               if aid not in seen_ids}
+    if missing:
+        wanted_names = {stat_name for _, stat_name in missing.values()}
+        devstat_values = {}
+        for page in (raw.get("ata_device_statistics") or {}).get("pages") or []:
+            for entry in page.get("table") or []:
+                name = entry.get("name")
+                if name in wanted_names and name not in devstat_values:
+                    devstat_values[name] = int(entry.get("value", 0) or 0)
+        for aid, (attr_name, stat_name) in missing.items():
+            if stat_name not in devstat_values:
+                continue
+            raw_value = devstat_values[stat_name]
+            result.append({
+                "id":          aid,
+                "name":        attr_name,
+                "flags_value": 0,
+                "attr_type":   2,
+                "attr_updated": 1,
+                "value":       0,
+                "worst":       0,
+                "thresh":      0,
+                "raw_value":   raw_value,
+                "raw_string":  str(raw_value),
+                "status":      -1,
+            })
+    return result
+
+
+# Mirrors smartctl's ataprint.cpp ata_get_attr_*() heuristic for guessing
+# available-spare/endurance-used from SMART attribute *normalized* values
+# (same attribute-id ranges and name regexes smartctl uses for its own JSON
+# "spare_available"/"endurance_used" fields).
+_SATA_SPARE_REGEX = re.compile(
+    r"Reallocated_Sector_C.*|Retired_Block_C.*|"
+    r"(Remain.*_)?Spare_Blocks(_(Avail|Remain).*)?"
+)
+_SATA_ENDURANCE_REGEX = re.compile(r"SSD_Life_Left.*|Wear_Leveling.*")
+
+
+def _guess_sata_wear(raw: dict) -> dict:
+    """Guess available-spare/endurance-used percentages for a SATA device,
+    matching smartctl's heuristic byte-for-byte: scan SMART attributes in
+    table order and let the *last* attribute matching each regex win (smartctl
+    just keeps overwriting as it walks the table), then let SSD Device
+    Statistics page 7 offset 0x008 (Percentage Used Endurance Indicator)
+    override endurance_used if present, same as smartctl's own override
+    order."""
+    result = {
+        "spare_pct": None, "spare_thr": None, "spare_attr": None,
+        "endurance_pct": None, "endurance_attr": None, "endurance_source": None,
+    }
+    for a in _parse_sata_attrs(raw):
+        aid, name, normval, thresh = a["id"], a["name"], a["value"], a["thresh"]
+        if (aid in (5, 17) or aid >= 100) and _SATA_SPARE_REGEX.fullmatch(name):
+            result["spare_pct"]  = min(normval, 100)
+            result["spare_attr"] = name
+            if 0 < thresh < 50:
+                result["spare_thr"] = thresh
+        if aid >= 100 and _SATA_ENDURANCE_REGEX.fullmatch(name):
+            result["endurance_pct"]    = 100 - normval if normval <= 100 else 0
+            result["endurance_attr"]   = name
+            result["endurance_source"] = "attribute"
+    for page in (raw.get("ata_device_statistics") or {}).get("pages") or []:
+        if int(page.get("number", 0) or 0) != 7:
+            continue
+        for entry in page.get("table") or []:
+            if int(entry.get("offset", 0) or 0) == 0x008:
+                result["endurance_pct"]    = int(entry.get("value", 0) or 0)
+                result["endurance_attr"]   = None
+                result["endurance_source"] = "device_statistics"
     return result
 
 
@@ -2392,14 +2628,21 @@ def _add_sata_selective(add, dev: dict, d_idx: int,
 # SATA log directory table  (.4.1.34.1) and version scalars (.4.1.35-37)
 # --------------------------------------------------------------------------
 
+_FARM_LOG_ADDR = 0xa6   # GP Log address for Seagate FARM
+
 def _add_sata_logdir(add, dev: dict, d_idx: int,
                      first_dev: bool = False) -> int:
     T       = (4, 1, 34, 1)
     logdir  = dev["raw"].get("ata_log_directory") or {}
     entries = logdir.get("table") or []
+    farm    = dev["raw"].get("seagate_farm_log") or {}
+    name_overrides: dict = {}
+    if farm.get("supported"):
+        name_overrides[_FARM_LOG_ADDR] = "Seagate FARM Log"
     for e in entries:
         addr = int(e.get("address", 0) or 0)
-        add(T+(2, d_idx, addr), *_string(str(e.get("name") or "")))
+        name = name_overrides.get(addr) or str(e.get("name") or "")
+        add(T+(2, d_idx, addr), *_string(name))
         add(T+(3, d_idx, addr), *_truthvalue(bool(e.get("read", False))))
         add(T+(4, d_idx, addr), *_truthvalue(bool(e.get("write", False))))
         add(T+(5, d_idx, addr), *_gauge(int(e.get("gp_sectors", 0) or 0)))
@@ -2476,6 +2719,8 @@ def _add_sata_devstat(add, dev: dict, d_idx: int) -> int:
     for page in pages:
         page_num  = int(page.get("number", 0) or 0)
         page_name = str(page.get("name") or "")
+        if page_name == "Temperature Statistics":
+            continue
         for entry in (page.get("table") or []):
             offset = int(entry.get("offset", 0) or 0)
             flags  = entry.get("flags") or {}
@@ -2507,7 +2752,7 @@ def _add_sata_pending_defects(add, dev: dict, d_idx: int) -> int:
 # Sensor table  (.6.1.3.1)
 # --------------------------------------------------------------------------
 
-def _extract_sensors(dev: dict) -> List[dict]:
+def _extract_sensors(dev: dict, d_idx: int) -> List[dict]:
     raw   = dev["raw"]
     proto = dev["protocol"]
     poll_time = dev.get("poll_time") or datetime.now(timezone.utc)
@@ -2536,8 +2781,8 @@ def _extract_sensors(dev: dict) -> List[dict]:
         ct = raw.get("nvme_composite_temperature_threshold") or {}
         t_warn = ct.get("warning")
         t_crit = ct.get("critical")
-        t_warn = int(t_warn) if t_warn is not None else None
-        t_crit = int(t_crit) if t_crit is not None else None
+        t_warn = int(t_warn) if t_warn is not None else 80
+        t_crit = int(t_crit) if t_crit is not None else 85
         h_temp = h.get("temperature")
         if h_temp is not None:
             sensor(1, 3, "Composite",
@@ -2568,30 +2813,68 @@ def _extract_sensors(dev: dict) -> List[dict]:
                9, 0, int(t_current), 1, "C",
                hi_crit=t_crit, hi_warn=t_crit - 5)
 
+    if proto in ("ata", "sat"):
+        # smartctl has no dedicated spare/endurance fields for ATA (those are
+        # NVMe-only JSON keys) — guess them from SMART attributes the same way
+        # smartctl's own JSON output does (see _guess_sata_wear). Indices 3-6
+        # and 8-9 are reserved for Seagate FARM sensors below, so use 2 and 7.
+        wear = _guess_sata_wear(raw)
+        if wear["spare_pct"] is not None:
+            sensor(2, 10, "Available Spare",
+                   f"ata_smart_attributes.table[{wear['spare_attr']}].value (guessed)",
+                   9, 0, wear["spare_pct"], 1, "percent",
+                   lo_warn=(wear["spare_thr"] * 2 if wear["spare_thr"] else None),
+                   lo_crit=wear["spare_thr"])
+        if wear["endurance_pct"] is not None:
+            if wear["endurance_source"] == "device_statistics":
+                src = "ata_device_statistics.pages[7].table[0x008].value"
+            else:
+                src = f"ata_smart_attributes.table[{wear['endurance_attr']}].value (guessed)"
+            sensor(7, 10, "Endurance Used", src,
+                   9, 0, wear["endurance_pct"], 1, "percent")
+
     # Seagate FARM: 4 sensors from page_4_environment_statistics
     farm = raw.get("seagate_farm_log") or {}
     if farm.get("supported"):
-        farm_ts = datetime.fromtimestamp(
-            int((farm.get("local_time") or {}).get("time_t", 0) or 0),
-            tz=timezone.utc,
-        ) or poll_time
+        _farm_time_t = int((farm.get("local_time") or {}).get("time_t", 0) or 0)
+        farm_ts = (datetime.fromtimestamp(_farm_time_t, tz=timezone.utc)
+                   if _farm_time_t else poll_time)
         env = farm.get("page_4_environment_statistics") or {}
+        # Thresholds: critical at ±10% (12V) / ±5% (5V) of nominal;
+        # warning at ±8% (12V) / ±4% (5V).  Other sensors have no limits.
         _FARM_SENSORS = [
-            (3, "current_12v_in_mv",   "12V Supply",  6, 8, "mV"),
-            (4, "current_5v_in_mv",    "5V Supply",   6, 8, "mV"),
-            (5, "humidity",            "Humidity",   10, 9, "percent"),
-            (6, "current_motor_power", "Motor Power", 4, 8, "mW"),
+            # idx  field                  name                stype scl  units   hi_c   hi_w   lo_w   lo_c
+            (3, "current_12v_in_mv",   "12V Supply",       6, 8, "mV", 13200, 12960, 11040, 10800),
+            (4, "current_5v_in_mv",    "5V Supply",        6, 8, "mV",  5250,  5200,  4800,  4750),
+            (5, "humidity",            "Humidity",        10, 9, "percent", None, None, None, None),
+            (6, "current_motor_power", "Motor Power",      4, 8, "mW",  None,  None,  None,  None),
+            (8, "average_12v_power",  "12V Average Power", 4, 8, "mW",  None,  None,  None,  None),
+            (9, "average_5v_power",   "5V Average Power",  4, 8, "mW",  None,  None,  None,  None),
         ]
-        for s_idx, field, name, stype, scale, units in _FARM_SENSORS:
+        for s_idx, field, name, stype, scale, units, hi_c, hi_w, lo_w, lo_c in _FARM_SENSORS:
             val = env.get(field)
             if val is None:
                 continue
+            ival = int(val)
+            seen_key = (d_idx, s_idx)
+            if ival == 0:
+                if not _st.farm_sensor_seen_nonzero.get(seen_key):
+                    # Never reported nonzero yet: FARM page 4 reads 0 for fields
+                    # the controller doesn't populate, so a steady 0 from the
+                    # first poll onward means "not supported" -- omit the row
+                    # rather than publish a misleading 0.
+                    continue
+                status = _SENSOR_STATUS["nonoperational"]
+                ival = -32768
+            else:
+                _st.farm_sensor_seen_nonzero[seen_key] = True
+                status = _SENSOR_STATUS["ok"]
             sensors.append({
                 "idx": s_idx, "type": stype, "name": name,
                 "source": f"seagate_farm_log.page_4_environment_statistics.{field}",
-                "scale": scale, "precision": 0, "value": int(val),
-                "status": 1, "units_display": units,
-                "hi_crit": None, "hi_warn": None, "lo_warn": None, "lo_crit": None,
+                "scale": scale, "precision": 0, "value": ival,
+                "status": status, "units_display": units,
+                "hi_crit": hi_c, "hi_warn": hi_w, "lo_warn": lo_w, "lo_crit": lo_c,
                 "timestamp": farm_ts,
             })
 
@@ -2600,7 +2883,7 @@ def _extract_sensors(dev: dict) -> List[dict]:
 
 def _add_sensors(add, dev: dict, d_idx: int) -> int:
     T       = (6, 1, 3, 1)
-    sensors = _extract_sensors(dev)
+    sensors = _extract_sensors(dev, d_idx)
     for s in sensors:
         si = s["idx"]
         add(T+(2,  d_idx, si), *_integer(s["type"]))
@@ -3050,7 +3333,7 @@ def _compute_sensor_alarm(s: dict, old_state: int, hyst: int) -> int:
 def _detect_sensor_notifications(d_idx: int, dev: dict, is_new: bool) -> None:
     """Sensor alarm state machine — transitions, hysteresis, periodic resend."""
     now = time.monotonic()
-    for s in _extract_sensors(dev):
+    for s in _extract_sensors(dev, d_idx):
         key = (d_idx, s["idx"])
         old_state = _st.sensor_alarm_state.get(key, _SENS_NORMAL)
 
@@ -3385,6 +3668,15 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
             10: "string", 11: "string", 12: "string", 13: "string", 14: "string",
         },
     },
+    "device_udev": {
+        "oid_suffix": (2, 1, 10),
+        "entry_prefix": _full((2, 1, 10, 1)),
+        "custom_handler": True,
+        "indexes": 2,
+        "columns": {
+            2: "string", 3: "string",
+        },
+    },
     "nvme_controller": {
         "oid_suffix": (3, 1, 3),
         "entry_prefix": _full((3, 1, 3, 1)),
@@ -3471,8 +3763,7 @@ TABLE_DEFINITIONS: Dict[str, dict] = {
         "indexes": 2,
         "columns": {
             1: "gauge", 2: "gauge", 3: "integer",
-            4: "gauge", 5: "gauge", 6: "gauge",
-            7: "string", 8: "string", 9: "string",
+            4: "bits", 5: "bits", 6: "bits",
         },
     },
     "sata_health": {

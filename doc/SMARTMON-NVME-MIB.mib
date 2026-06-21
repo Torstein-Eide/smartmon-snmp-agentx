@@ -12,7 +12,10 @@ IMPORTS
         FROM SNMPv2-CONF
     SmartmonHealthStatus, SmartmonNvmeSelfTestType,
     SmartmonPercentage, SmartmonNvmeSelfTestResult,
-    SmartmonLogicalBlockAddress, smartmonRoot
+    SmartmonLogicalBlockAddress, SmartmonNvmeSelfTestOperation,
+    SmartmonNvmeOptionalAdminCommands, SmartmonNvmeOptionalNvmCommands,
+    SmartmonNvmeLogPageAttributes,
+    smartmonRoot
         FROM SMARTMON-TC-MIB
     smartmonDeviceIndex, smartmonDevicePath,
     smartmonDeviceLastPollTime,
@@ -20,7 +23,7 @@ IMPORTS
         FROM SMARTMON-COMMON-MIB;
 
 smartmonNvmeMIB MODULE-IDENTITY
-    LAST-UPDATED "202605270000Z"
+    LAST-UPDATED "202606150000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl NVMe output.
@@ -43,6 +46,13 @@ smartmonNvmeMIB MODULE-IDENTITY
          available.
 
          This MIB requires SMARTMON-TC-MIB and SMARTMON-COMMON-MIB."
+    REVISION "202606150000Z"
+    DESCRIPTION
+        "Replace smartmonNvmeCurrentSelfTestOperationString with
+         smartmonNvmeCurrentSelfTestOperationProgress (SmartmonPercentage,
+         nvme_self_test_log.current_self_test_completion_percent).
+         Change smartmonNvmeCurrentSelfTestOperationValue SYNTAX from
+         Unsigned32 to SmartmonNvmeSelfTestOperation."
     REVISION "202605270000Z"
     DESCRIPTION
         "Remove smartmonNvmeModelNumber, smartmonNvmeSerialNumber,
@@ -622,8 +632,8 @@ SmartmonNvmeHealthEntry ::= SEQUENCE {
     smartmonNvmeErrorInformationLogEntries      CounterBasedGauge64,
     smartmonNvmeWarningTemperatureTimeMinutes   CounterBasedGauge64,
     smartmonNvmeCriticalTemperatureTimeMinutes  CounterBasedGauge64,
-    smartmonNvmeCurrentSelfTestOperationValue   Unsigned32,
-    smartmonNvmeCurrentSelfTestOperationString  DisplayString
+    smartmonNvmeCurrentSelfTestOperationValue    SmartmonNvmeSelfTestOperation,
+    smartmonNvmeCurrentSelfTestOperationProgress SmartmonPercentage
 }
 
 smartmonNvmeHealthOverallStatus OBJECT-TYPE
@@ -794,24 +804,25 @@ smartmonNvmeHealthIndex OBJECT-TYPE
     ::= { smartmonNvmeHealthEntry 21 }
 
 smartmonNvmeCurrentSelfTestOperationValue OBJECT-TYPE
-    SYNTAX      Unsigned32
+    SYNTAX      SmartmonNvmeSelfTestOperation
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Numeric value of the current self-test operation status
+        "Current self-test operation status
          (nvme_self_test_log.current_self_test_operation.value).
-         Zero indicates no self-test is in progress."
+         noOperationInProgress(0) indicates no self-test is in progress."
     ::= { smartmonNvmeHealthEntry 22 }
 
-smartmonNvmeCurrentSelfTestOperationString OBJECT-TYPE
-    SYNTAX      DisplayString
+smartmonNvmeCurrentSelfTestOperationProgress OBJECT-TYPE
+    SYNTAX      SmartmonPercentage
+    UNITS       "percent"
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-        "Human-readable current self-test operation status
-         (nvme_self_test_log.current_self_test_operation.string),
-         for example No self-test in progress or Short device self-test
-         in progress."
+        "Completion percentage of the currently running self-test
+         (nvme_self_test_log.current_self_test_completion_percent).
+         Only meaningful when smartmonNvmeCurrentSelfTestOperationValue
+         indicates a test is in progress."
     ::= { smartmonNvmeHealthEntry 23 }
 
 smartmonNvmeSelfTestTableRowCount OBJECT-TYPE
@@ -1180,12 +1191,9 @@ SmartmonNvmeCapabilityEntry ::= SEQUENCE {
     smartmonNvmeFirmwareUpdateRaw        Unsigned32,
     smartmonNvmeFirmwareSlotCount        Unsigned32,
     smartmonNvmeFirmwareResetRequired    TruthValue,
-    smartmonNvmeOptionalAdminCommandRaw  Unsigned32,
-    smartmonNvmeOptionalNvmCommandRaw    Unsigned32,
-    smartmonNvmeLogPageAttributesRaw     Unsigned32,
-    smartmonNvmeOptionalAdminCommandText DisplayString,
-    smartmonNvmeOptionalNvmCommandText   DisplayString,
-    smartmonNvmeLogPageAttributesText    DisplayString
+    smartmonNvmeOptionalAdminCommandRaw  SmartmonNvmeOptionalAdminCommands,
+    smartmonNvmeOptionalNvmCommandRaw    SmartmonNvmeOptionalNvmCommands,
+    smartmonNvmeLogPageAttributesRaw     SmartmonNvmeLogPageAttributes
 }
 
 smartmonNvmeFirmwareUpdateRaw OBJECT-TYPE
@@ -1210,46 +1218,25 @@ smartmonNvmeFirmwareResetRequired OBJECT-TYPE
     ::= { smartmonNvmeCapabilityEntry 3 }
 
 smartmonNvmeOptionalAdminCommandRaw OBJECT-TYPE
-    SYNTAX      Unsigned32
+    SYNTAX      SmartmonNvmeOptionalAdminCommands
     MAX-ACCESS  read-only
     STATUS      current
-    DESCRIPTION "Raw Optional Admin Commands bit mask."
+    DESCRIPTION "Optional Admin Commands (OACS) bitmap from smartctl."
     ::= { smartmonNvmeCapabilityEntry 4 }
 
 smartmonNvmeOptionalNvmCommandRaw OBJECT-TYPE
-    SYNTAX      Unsigned32
+    SYNTAX      SmartmonNvmeOptionalNvmCommands
     MAX-ACCESS  read-only
     STATUS      current
-    DESCRIPTION "Raw Optional NVM Commands bit mask."
+    DESCRIPTION "Optional NVM Commands (ONCS) bitmap from smartctl."
     ::= { smartmonNvmeCapabilityEntry 5 }
 
 smartmonNvmeLogPageAttributesRaw OBJECT-TYPE
-    SYNTAX      Unsigned32
+    SYNTAX      SmartmonNvmeLogPageAttributes
     MAX-ACCESS  read-only
     STATUS      current
-    DESCRIPTION "Raw Log Page Attributes bit mask."
+    DESCRIPTION "Log Page Attributes (LPA) bitmap from smartctl."
     ::= { smartmonNvmeCapabilityEntry 6 }
-
-smartmonNvmeOptionalAdminCommandText OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Decoded Optional Admin Commands text from smartctl."
-    ::= { smartmonNvmeCapabilityEntry 7 }
-
-smartmonNvmeOptionalNvmCommandText OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Decoded Optional NVM Commands text from smartctl."
-    ::= { smartmonNvmeCapabilityEntry 8 }
-
-smartmonNvmeLogPageAttributesText OBJECT-TYPE
-    SYNTAX      DisplayString
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Decoded Log Page Attributes text from smartctl."
-    ::= { smartmonNvmeCapabilityEntry 9 }
 
 smartmonNvmeCapabilityIndex OBJECT-TYPE
     SYNTAX      Unsigned32 (1..4294967295)
@@ -1415,7 +1402,7 @@ smartmonNvmeHealthGroup OBJECT-GROUP
         smartmonNvmeWarningTemperatureTimeMinutes,
         smartmonNvmeCriticalTemperatureTimeMinutes,
         smartmonNvmeCurrentSelfTestOperationValue,
-        smartmonNvmeCurrentSelfTestOperationString
+        smartmonNvmeCurrentSelfTestOperationProgress
     }
     STATUS current
     DESCRIPTION "NVMe SMART/Health objects."
@@ -1467,10 +1454,7 @@ smartmonNvmeCapabilityGroup OBJECT-GROUP
         smartmonNvmeFirmwareResetRequired,
         smartmonNvmeOptionalAdminCommandRaw,
         smartmonNvmeOptionalNvmCommandRaw,
-        smartmonNvmeLogPageAttributesRaw,
-        smartmonNvmeOptionalAdminCommandText,
-        smartmonNvmeOptionalNvmCommandText,
-        smartmonNvmeLogPageAttributesText
+        smartmonNvmeLogPageAttributesRaw
     }
     STATUS current
     DESCRIPTION "NVMe capability objects."

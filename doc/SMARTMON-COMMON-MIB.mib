@@ -15,7 +15,7 @@ IMPORTS
         FROM SMARTMON-TC-MIB;
 
 smartmonCommonMIB MODULE-IDENTITY
-    LAST-UPDATED "202605270000Z"
+    LAST-UPDATED "202606160000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl output.
@@ -39,6 +39,13 @@ smartmonCommonMIB MODULE-IDENTITY
          polling the table continuously.
 
          This MIB requires SMARTMON-TC-MIB."
+    REVISION "202606160000Z"
+    DESCRIPTION
+        "Add smartmonDeviceUdevTable, a generic name/value table of udevadm
+         properties per device, and smartmonDeviceUdevTableLastChange.
+         Populated only in collect mode (udevadm needs a live device node).
+         smartmonDeviceWwn may now be populated for NVMe devices, sourced
+         from udevadm's ID_WWN property when collect mode is active."
     REVISION "202605270000Z"
     DESCRIPTION
         "Add smartmonDeviceModelFamily, smartmonDeviceModelName,
@@ -167,6 +174,27 @@ smartmonPollFailureThreshold OBJECT-TYPE
          display this value alongside poll-failure notifications to explain
          the configured hysteresis."
     ::= { smartmonCommonObjects 7 }
+
+smartmonDeviceUdevTableRowCount OBJECT-TYPE
+    SYNTAX      Unsigned32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Total number of rows currently in smartmonDeviceUdevTable, summed
+         across all devices.  Always 0 when the agent is not running in
+         collect mode, since the table is then permanently empty."
+    ::= { smartmonCommonObjects 8 }
+
+smartmonDeviceUdevTableLastChange OBJECT-TYPE
+    SYNTAX      DateAndTime
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Timestamp of the most recent change to the contents of
+         smartmonDeviceUdevTable.  Always epoch (the agent start time) when
+         the agent is not running in collect mode, since the table is then
+         permanently empty."
+    ::= { smartmonCommonObjects 9 }
 
 smartmonDeviceEntry OBJECT-TYPE
     SYNTAX      SmartmonDeviceEntry
@@ -366,9 +394,81 @@ smartmonDeviceWwn OBJECT-TYPE
     DESCRIPTION
         "World Wide Name as a 64-bit hex string with 0x prefix
          (e.g. 0x5000cca2a4c5b3cb), matching the Linux
-         /dev/disk/by-id/wwn-0x... symlink format.  Present for
-         ATA/SATA and SAS/SCSI devices; empty for NVMe."
+         /dev/disk/by-id/wwn-0x... symlink format.  Present for ATA/SATA and
+         SAS/SCSI devices.  For NVMe devices this is empty unless the agent
+         is running in collect mode, in which case it may be populated from
+         the ID_WWN property reported by udevadm for the device node."
     ::= { smartmonDeviceEntry 14 }
+
+-- --------------------------------------------------------------------------
+-- udevadm property table
+-- --------------------------------------------------------------------------
+
+smartmonDeviceUdevTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF SmartmonDeviceUdevEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Generic name/value table of udevadm properties for each monitored
+         device, as reported by 'udevadm info --query=property' for the
+         device node.  Each row is one property; the same property name may
+         legitimately repeat across different devices but not within one
+         device's rows.
+
+         This table is populated only when the agent is running in collect
+         mode (collect: true / --collect), since udevadm requires a live
+         device node.  In file mode this table is always empty.
+
+         Property names and the set of properties present are
+         implementation- and kernel/udev-version-dependent; managers SHOULD
+         treat smartmonDeviceUdevName as an opaque string rather than
+         assuming a fixed schema."
+    ::= { smartmonCommonObjects 10 }
+
+smartmonDeviceUdevEntry OBJECT-TYPE
+    SYNTAX      SmartmonDeviceUdevEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "One udevadm property for one device."
+    INDEX { smartmonDeviceIndex, smartmonDeviceUdevRowIndex }
+    ::= { smartmonDeviceUdevTable 1 }
+
+SmartmonDeviceUdevEntry ::= SEQUENCE {
+    smartmonDeviceUdevRowIndex Unsigned32,
+    smartmonDeviceUdevName     DisplayString,
+    smartmonDeviceUdevValue    DisplayString
+}
+
+smartmonDeviceUdevRowIndex OBJECT-TYPE
+    SYNTAX      Unsigned32 (1..4294967295)
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION
+        "Row ordinal over the udevadm properties collected for this device.
+         Carries no meaning beyond row order; not stable across polls if the
+         set of properties udevadm reports for the device changes."
+    ::= { smartmonDeviceUdevEntry 1 }
+
+smartmonDeviceUdevName OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The udevadm property key, e.g. ID_WWN, ID_FS_TYPE, DEVLINKS,
+         UDISKS_MD_MEMBER_LEVEL."
+    ::= { smartmonDeviceUdevEntry 2 }
+
+smartmonDeviceUdevValue OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The udevadm property value, verbatim as reported by
+         'udevadm info --query=property'.  Properties that are themselves
+         space-separated lists (e.g. DEVLINKS) are not split; the full
+         string is reported as a single value."
+    ::= { smartmonDeviceUdevEntry 3 }
 
 -- --------------------------------------------------------------------------
 -- Notifications
@@ -444,6 +544,12 @@ smartmonCommonCompliance MODULE-COMPLIANCE
         DESCRIPTION
             "Required for implementations that emit device lifecycle
              or poll-failure notifications."
+        GROUP smartmonDeviceUdevGroup
+        DESCRIPTION
+            "Required for implementations that populate
+             smartmonDeviceUdevTable.  Not applicable to implementations
+             that only ever run in file mode, since the table is then
+             permanently empty."
     ::= { smartmonCommonCompliances 1 }
 
 smartmonDeviceScalarGroup OBJECT-GROUP
@@ -482,6 +588,19 @@ smartmonDeviceGroup OBJECT-GROUP
         "Per-device inventory and poll-status objects from
          smartmonDeviceTable."
     ::= { smartmonCommonGroups 2 }
+
+smartmonDeviceUdevGroup OBJECT-GROUP
+    OBJECTS {
+        smartmonDeviceUdevTableRowCount,
+        smartmonDeviceUdevTableLastChange,
+        smartmonDeviceUdevName,
+        smartmonDeviceUdevValue
+    }
+    STATUS current
+    DESCRIPTION
+        "Generic udevadm name/value objects from smartmonDeviceUdevTable,
+         populated only in collect mode."
+    ::= { smartmonCommonGroups 4 }
 
 smartmonCommonNotificationGroup NOTIFICATION-GROUP
     NOTIFICATIONS {

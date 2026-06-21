@@ -14,6 +14,13 @@ connects to a running `snmpd` master agent over a Unix domain socket, registers
 the SMARTMON-* OID subtrees, and responds to SNMP GET/GETNEXT/GETBULK requests.
 It also sends SNMP v2 traps when drive health changes or self-tests fail.
 
+**AgentX GETBULK note:** current Net-SNMP masters do not normally forward a
+manager's SNMP GETBULK request to AgentX subagents as native AgentX GETBULK.
+Instead, `snmpd` expands the bulk request internally and asks the subagent for a
+series of scoped GETNEXT results, then assembles the GETBULK response returned to
+the manager. This agent is optimized for that behavior: tables are served from a
+cached OID snapshot, so bulk walks do not trigger per-varbind SMART collection.
+
 It requires the **`python3-netsnmpagent`** module.  SQLite persistence uses the
 Python standard library — no extra package needed.
 

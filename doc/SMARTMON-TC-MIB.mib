@@ -10,7 +10,7 @@ IMPORTS
 smartmonRoot OBJECT IDENTIFIER ::= { enterprises 65891 1 1 }
 
 smartmonTcMIB MODULE-IDENTITY
-    LAST-UPDATED "202605210000Z"
+    LAST-UPDATED "202606150000Z"
     ORGANIZATION "Unassigned"
     CONTACT-INFO
         "This is a draft MIB for smartmontools smartctl output.
@@ -18,6 +18,10 @@ smartmonTcMIB MODULE-IDENTITY
          TODO: Replace the placeholder enterprise OID before publication."
     DESCRIPTION
         "Textual conventions shared across all SMARTMON-*-MIB modules."
+    REVISION "202606150000Z"
+    DESCRIPTION
+        "Added SmartmonNvmeSelfTestOperation TC for the NVMe current
+         self-test operation field."
     REVISION "202605210000Z"
     DESCRIPTION
         "Added SmartmonAtaApmLevel. Added SmartmonLogicalBlockAddress.
@@ -1112,6 +1116,32 @@ SmartmonSensorStatus ::= TEXTUAL-CONVENTION
         nonoperational(3)
     }
 
+SmartmonNvmeSelfTestOperation ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "Current self-test operation for an NVMe controller, derived from
+         the Current Device Self-test Operation field of the Device
+         Self-test log (nvme_self_test_log.current_self_test_operation.value).
+         Source: NVMe Base Specification, Device Self-test log page.
+
+         The enumeration 'noOperationInProgress(0)' indicates that no
+         self-test operation is in progress.
+
+         The enumeration 'shortDeviceSelfTest(1)' indicates that a Short
+         Device Self-test operation is in progress.
+
+         The enumeration 'extendedDeviceSelfTest(2)' indicates that an
+         Extended Device Self-test operation is in progress.
+
+         The enumeration 'vendorSpecific(14)' indicates a vendor-specific
+         operation."
+    SYNTAX INTEGER {
+        noOperationInProgress(0),
+        shortDeviceSelfTest(1),
+        extendedDeviceSelfTest(2),
+        vendorSpecific(14)
+    }
+
 SmartmonLogicalBlockAddress ::= TEXTUAL-CONVENTION
     DISPLAY-HINT "d"
     STATUS      current
@@ -1122,5 +1152,92 @@ SmartmonLogicalBlockAddress ::= TEXTUAL-CONVENTION
          semantics do not apply.  A value of 0xFFFFFFFFFFFFFFFF may
          indicate an unknown or invalid LBA depending on context."
     SYNTAX Counter64
+
+SmartmonNvmeOptionalAdminCommands ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "NVMe Optional Admin Command Support (OACS) bitmap, decoded from
+         the Identify Controller data structure
+         (nvme_optional_admin_commands in smartctl --json output).
+         Source: NVMe Base Specification, Identify Controller, OACS field.
+
+         securitySendReceive(0)        -- Security Send/Receive supported
+         formatNvm(1)                  -- Format NVM supported
+         firmwareDownload(2)           -- Firmware Commit/Download supported
+         namespaceManagement(3)        -- Namespace Management supported
+         selfTest(4)                   -- Device Self-test supported
+         directives(5)                 -- Directives supported
+         miSendReceive(6)              -- MI Send/Receive supported
+         virtualizationManagement(7)   -- Virtualization Management supported
+         doorbellBufferConfig(8)       -- Doorbell Buffer Config supported
+         getLbaStatus(9)               -- Get LBA Status supported
+         commandAndFeatureLockdown(10) -- Command and Feature Lockdown supported"
+    SYNTAX BITS {
+        securitySendReceive(0),
+        formatNvm(1),
+        firmwareDownload(2),
+        namespaceManagement(3),
+        selfTest(4),
+        directives(5),
+        miSendReceive(6),
+        virtualizationManagement(7),
+        doorbellBufferConfig(8),
+        getLbaStatus(9),
+        commandAndFeatureLockdown(10)
+    }
+
+SmartmonNvmeOptionalNvmCommands ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "NVMe Optional NVM Command Support (ONCS) bitmap, decoded from
+         the Identify Controller data structure
+         (nvme_optional_nvm_commands in smartctl --json output).
+         Source: NVMe Base Specification, Identify Controller, ONCS field.
+
+         compare(0)                   -- Compare command supported
+         writeUncorrectable(1)        -- Write Uncorrectable command supported
+         datasetManagement(2)         -- Dataset Management command supported
+         writeZeroes(3)               -- Write Zeroes command supported
+         saveSelectFeatureNonzero(4)  -- Save/Select Feature with non-zero value supported
+         reservations(5)              -- Reservations supported
+         timestamp(6)                 -- Timestamp feature supported
+         verify(7)                    -- Verify command supported
+         copy(8)                      -- Copy command supported"
+    SYNTAX BITS {
+        compare(0),
+        writeUncorrectable(1),
+        datasetManagement(2),
+        writeZeroes(3),
+        saveSelectFeatureNonzero(4),
+        reservations(5),
+        timestamp(6),
+        verify(7),
+        copy(8)
+    }
+
+SmartmonNvmeLogPageAttributes ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "NVMe Log Page Attributes (LPA) bitmap, decoded from the Identify
+         Controller data structure (nvme_log_page_attributes in
+         smartctl --json output).
+         Source: NVMe Base Specification, Identify Controller, LPA field.
+
+         smartHealthPerNamespace(0) -- SMART/Health Information log per namespace
+         commandsEffectsLog(1)      -- Commands Supported and Effects log supported
+         extendedGetLogPageCmd(2)   -- Extended data for Get Log Page supported
+         telemetryLog(3)            -- Telemetry Host/Controller-Initiated log supported
+         persistentEventLog(4)      -- Persistent Event log supported
+         supportedLogPagesLog(5)    -- Supported Log Pages log supported
+         telemetryDataArea4(6)      -- Telemetry Data Area 4 supported"
+    SYNTAX BITS {
+        smartHealthPerNamespace(0),
+        commandsEffectsLog(1),
+        extendedGetLogPageCmd(2),
+        telemetryLog(3),
+        persistentEventLog(4),
+        supportedLogPagesLog(5),
+        telemetryDataArea4(6)
+    }
 
 END
