@@ -176,7 +176,7 @@ sections:
       - {label: "col17 mediaDataIntegrityErrors = 0",             col: 17, expected: "Counter64: 0"}
       - {label: "col18 errorInformationLogEntries = 0",           col: 18, expected: "Counter64: 0"}
       - {label: "col19 warningTemperatureTimeMinutes = 0",        col: 19, expected: "Counter64: 0"}
-      - {label: "col20 criticalTemperatureTimeMinutes absent (not in fixture)", col: 20, absent: true}
+      - {label: "col20 criticalTemperatureTimeMinutes = 0",       col: 20, expected: "Counter64: 0"}
       - {label: "col22 currentSelfTestOperationValue = 0 (noOperationInProgress)", col: 22, expected: "INTEGER: 0"}
       - {label: "col23 currentSelfTestOperationProgress = 0%",    col: 23, expected: "Gauge32: 0"}
 
@@ -373,13 +373,13 @@ sections:
     device: sata2
     oid_template: ".4.1.9.1.{col}.{D}.{inst}"
     tests:
-      - {label: "attr[240] name = Head Flying Hours",         col: 2,  inst: 240, expected: 'STRING: "Head Flying Hours"'}
+      - {label: "attr[240] name = Head_Flying_Hours",         col: 2,  inst: 240, expected: 'STRING: "Head_Flying_Hours"'}
       - {label: "attr[240] rawValue = 43100",                 col: 9,  inst: 240, expected: "Counter64: 43100"}
       - {label: "attr[240] status = notRelevant (-1)",        col: 11, inst: 240, expected: "INTEGER: -1"}
-      - {label: "attr[241] name = Lifetime Writes from Host", col: 2,  inst: 241, expected: 'STRING: "Lifetime Writes from Host"'}
+      - {label: "attr[241] name = Total_LBAs_Written",        col: 2,  inst: 241, expected: 'STRING: "Total_LBAs_Written"'}
       - {label: "attr[241] rawValue = 12345678",              col: 9,  inst: 241, expected: "Counter64: 12345678"}
       - {label: "attr[241] status = notRelevant (-1)",        col: 11, inst: 241, expected: "INTEGER: -1"}
-      - {label: "attr[242] name = Lifetime Reads from Host",  col: 2,  inst: 242, expected: 'STRING: "Lifetime Reads from Host"'}
+      - {label: "attr[242] name = Total_LBAs_Read",           col: 2,  inst: 242, expected: 'STRING: "Total_LBAs_Read"'}
       - {label: "attr[242] rawValue = 56789012",               col: 9,  inst: 242, expected: "Counter64: 56789012"}
 
   - name: "SATA Attributes — Format (Samsung SSD, tempminmax)"
