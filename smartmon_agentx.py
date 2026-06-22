@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.32"
+VERSION = "0.1.33"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -743,7 +743,14 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
         return None
     _merge_farm(raw, spec)
     raw["_udev_props"] = _collect_udev_properties(spec["dev"])
-    raw["_power_state"] = power_state if power_state else POWER_STATE_ACTIVE
+    # power_state may be stale here: it was probed *before* this wake-inducing
+    # pull (e.g. the asleep tier from the initial-read fallthrough above), so
+    # prefer the power_mode this same -x -j call just read over that probe.
+    pm = raw.get("power_mode")
+    if isinstance(pm, dict) and "ata_value" in pm:
+        raw["_power_state"] = _power_mode_ata_value_to_state(pm["ata_value"])
+    else:
+        raw["_power_state"] = power_state if power_state else POWER_STATE_ACTIVE
     if spec["suffix"] == "nvme":
         raw["_nvme_link_power_state"] = _nvme_link_power_state(spec["dev"])
         raw["_nvme_link_info"] = _nvme_link_info(spec["dev"])
