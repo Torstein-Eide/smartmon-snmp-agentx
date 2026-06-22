@@ -357,6 +357,7 @@ sections:
       - {label: "attr[1] col8  threshold = 51",             col: 8,  inst: 1, expected: "Gauge32: 51"}
       - {label: "attr[1] col9  rawValue = 0",               col: 9,  inst: 1, expected: "Counter64: 0"}
       - {label: "attr[1] col10 rawStr = 0",                 col: 10, inst: 1, expected: 'STRING: "0"'}
+      - {label: "attr[1] col12 format = raw48 (3, DEFAULT baseline)", col: 12, inst: 1, expected: "INTEGER: 3"}
       - {label: "attr[9] col2  name = Power_On_Hours",      col: 2,  inst: 9, expected: 'STRING: "Power_On_Hours"'}
       - {label: "attr[9] col4  prefailure = 2 (false)",     col: 4,  inst: 9, expected: "INTEGER: 2"}
       - {label: "attr[9] col5  updatedOnline = 1 (true)",   col: 5,  inst: 9, expected: "INTEGER: 1"}
@@ -365,6 +366,7 @@ sections:
       - {label: "attr[9] col8  threshold = 0",              col: 8,  inst: 9, expected: "Gauge32: 0"}
       - {label: "attr[9] col9  rawValue = 4321",            col: 9,  inst: 9, expected: "Counter64: 4321"}
       - {label: "attr[9] col10 rawStr = 4321",              col: 10, inst: 9, expected: 'STRING: "4321"'}
+      - {label: "attr[9] col12 format = raw24raw8 (11, DEFAULT baseline)", col: 12, inst: 9, expected: "INTEGER: 11"}
 
   - name: "SATA Attributes — Device Statistics fallback (81GDJW2V)"
     walk: "sata"
@@ -379,6 +381,15 @@ sections:
       - {label: "attr[241] status = notRelevant (-1)",        col: 11, inst: 241, expected: "INTEGER: -1"}
       - {label: "attr[242] name = Lifetime Reads from Host",  col: 2,  inst: 242, expected: 'STRING: "Lifetime Reads from Host"'}
       - {label: "attr[242] rawValue = 56789012",               col: 9,  inst: 242, expected: "Counter64: 56789012"}
+
+  - name: "SATA Attributes — Format (Samsung SSD, tempminmax)"
+    walk: "sata"
+    device: satassd
+    oid_template: ".4.1.9.1.{col}.{D}.{inst}"
+    tests:
+      # id=194 Temperature_Celsius raw.string = "40 (Min/Max .../...)" -> tempminmax(18)
+      - {label: "attr[194] col2  name = Temperature_Celsius",            col: 2,  inst: 194, expected: 'STRING: "Temperature_Celsius"'}
+      - {label: "attr[194] col12 format = tempminmax (18, DEFAULT baseline)", col: 12, inst: 194, expected: "INTEGER: 18"}
 
   - name: "SATA Self-test"
     walk: "sata"

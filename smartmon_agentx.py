@@ -12,6 +12,7 @@ import argparse
 import bisect
 import ctypes
 import ctypes.util
+import functools
 import getpass
 import glob
 import json
@@ -31,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.1.33"
+VERSION = "0.2.0"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -2489,6 +2490,232 @@ def _add_sata_health(add, dev: dict, d_idx: int) -> None:
 
 
 # --------------------------------------------------------------------------
+# ATA SMART attribute raw-value format resolution (drivedb.h presets)
+# --------------------------------------------------------------------------
+#
+# smartctl resolves how to format each attribute's raw value (raw8, raw48,
+# tempminmax, ...) from smartmontools' drivedb.h, but never exposes that
+# format string anywhere (not in JSON, not via -P show, which only ever
+# prints the resolved attribute *name*). drivedb.h's DEFAULT entry holds a
+# generic id->format baseline; specific entries override it per drive model.
+# smartctl's own JSON already tells us which entry it matched, via
+# "model_family" (= dbentry->modelfamily) — so we parse drivedb.h once,
+# group its entries by that exact family string, and never need to
+# replicate smartctl's own model-regex matching.
+
+# /var/lib/smartmontools/drivedb/drivedb.h is the updated copy fetched by
+# `update-smart-drivedb`; prefer it over the package-installed baseline.
+_DRIVEDB_PATHS = (
+    "/var/lib/smartmontools/drivedb/drivedb.h",
+    "/usr/share/smartmontools/drivedb.h",
+)
+
+_PRESET_V_RE = re.compile(r'-v\s+(\d+)\s*,\s*([^,:\s]+)(?::[0-9rvwz]+)?(?:,(\S+))?')
+_QUOTED_STRING_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
+
+# smartctl format keyword -> SmartmonAtaSmartAttrFormat enum value
+# (doc/SMARTMON-TC-MIB.mib). Keywords not listed here (the named aliases like
+# "emergencyretractcyclect"/"loadunload"/etc.) map to other(20).
+_ATTR_FORMAT_ENUM = {
+    "raw8": 1, "raw16": 2, "raw48": 3, "hex48": 4, "raw56": 5, "hex56": 6,
+    "raw64": 7, "hex64": 8, "raw16(raw16)": 9, "raw16(avg16)": 10,
+    "raw24(raw8)": 11, "raw24/raw24": 12, "raw24/raw32": 13, "sec2hour": 14,
+    "min2hour": 15, "halfmin2hour": 16, "msec24hour32": 17, "tempminmax": 18,
+    "temp10x": 19,
+}
+
+
+def _attr_format_enum(fmt: str) -> int:
+    if not fmt:
+        return 0   # unknown
+    return _ATTR_FORMAT_ENUM.get(fmt, 20)   # other(20) for named aliases
+
+
+def _unescape_c_string(s: str) -> str:
+    return (s.replace('\\"', '"').replace('\\n', '\n')
+             .replace('\\t', '\t').replace('\\\\', '\\'))
+
+
+def _extract_concat_c_string(segment: str) -> str:
+    """Join adjacent C string literals in a field (C concatenates them)."""
+    return "".join(_unescape_c_string(m.group(1))
+                   for m in _QUOTED_STRING_RE.finditer(segment))
+
+
+def _strip_c_comments(text: str) -> str:
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                out.append(text[i + 1]); i += 2; continue
+            if c == '"':
+                in_str = False
+            i += 1; continue
+        if c == '"':
+            in_str = True; out.append(c); i += 1; continue
+        if c == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            i = j if j != -1 else n
+            continue
+        if c == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            i = (j + 2) if j != -1 else n
+            continue
+        out.append(c); i += 1
+    return "".join(out)
+
+
+def _split_top_level(s: str, sep: str) -> List[str]:
+    """Split on `sep` at brace/paren depth 0, ignoring separators inside
+    quoted strings (used for both array-of-entries and entry-of-fields)."""
+    parts: List[str] = []
+    cur: List[str] = []
+    depth = 0
+    in_str = False
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if in_str:
+            cur.append(c)
+            if c == '\\' and i + 1 < n:
+                cur.append(s[i + 1]); i += 2; continue
+            if c == '"':
+                in_str = False
+            i += 1; continue
+        if c == '"':
+            in_str = True; cur.append(c); i += 1; continue
+        if c in '{(':
+            depth += 1; cur.append(c); i += 1; continue
+        if c in '})':
+            depth -= 1; cur.append(c); i += 1; continue
+        if c == sep and depth == 0:
+            parts.append("".join(cur)); cur = []; i += 1; continue
+        cur.append(c); i += 1
+    parts.append("".join(cur))
+    return parts
+
+
+def _parse_presets_v(presets: str) -> Dict[int, str]:
+    """Parse a drivedb.h `presets` string into {attribute_id: format}."""
+    result: Dict[int, str] = {}
+    for m in _PRESET_V_RE.finditer(presets or ""):
+        result[int(m.group(1))] = m.group(2)
+    return result
+
+
+def _load_drivedb(paths: Iterable[str] = _DRIVEDB_PATHS
+                   ) -> Tuple[Dict[int, str], Dict[str, List[Tuple[str, Dict[int, str]]]]]:
+    """Parse smartmontools' drivedb.h into (DEFAULT-entry id->format
+    baseline, {modelfamily: [(firmware_regexp, id->format), ...]}).
+    drivedb.h has no array declaration of its own -- it's a bare
+    #include-able fragment of comma-separated `{ ... }` struct initializers
+    (the `const drive_settings builtin_knowndrives[] = { ... }` wrapper
+    shown in its header comment is itself inside a comment, illustrating
+    where the including .cpp file would wrap it). So once comments are
+    stripped, the whole remaining text *is* the entry list.
+    Soft-fails to ({}, {}) if the file can't be found or parsed -- callers
+    fall back to format=unknown for every attribute."""
+    text = None
+    for p in paths:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            break
+        except OSError:
+            continue
+    if text is None:
+        return {}, {}
+
+    try:
+        body = _strip_c_comments(text)
+        default_presets: Dict[int, str] = {}
+        by_family: Dict[str, List[Tuple[str, Dict[int, str]]]] = {}
+
+        for chunk in _split_top_level(body, ','):
+            chunk = chunk.strip()
+            if not (chunk.startswith('{') and chunk.endswith('}')):
+                continue
+            fields = _split_top_level(chunk[1:-1], ',')
+            if len(fields) < 5:
+                continue
+            family = _extract_concat_c_string(fields[0])
+            firmware_re = _extract_concat_c_string(fields[2])
+            presets_str = _extract_concat_c_string(fields[4])
+            if not family or family.startswith("VERSION:") or family.startswith("USB:"):
+                continue
+            presets = _parse_presets_v(presets_str)
+            if family == "DEFAULT":
+                default_presets = presets
+            else:
+                by_family.setdefault(family, []).append((firmware_re, presets))
+        return default_presets, by_family
+    except Exception:
+        LOGGER.warning("failed to parse drivedb.h; ATA attribute formats will be unknown",
+                        exc_info=True)
+        return {}, {}
+
+
+_drivedb_cache: Optional[Tuple[Dict[int, str], Dict[str, List[Tuple[str, Dict[int, str]]]]]] = None
+_attr_format_cache: Dict[Tuple[str, str], Dict[int, str]] = {}
+
+
+def _get_drivedb() -> Tuple[Dict[int, str], Dict[str, List[Tuple[str, Dict[int, str]]]]]:
+    global _drivedb_cache
+    if _drivedb_cache is None:
+        _drivedb_cache = _load_drivedb()
+    return _drivedb_cache
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_regex_safe(pattern: str):
+    # drivedb.h regexes are POSIX ERE; Python's re is close enough for the
+    # firmware-disambiguation case but not guaranteed identical -- treat any
+    # compile failure as a non-match rather than raising.
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
+def _resolve_attr_formats(model_family: str, firmware_version: str) -> Dict[int, str]:
+    """Resolve {attribute_id: format} for one drive, merging drivedb.h's
+    DEFAULT baseline with the vendor-specific entry (if any) matching
+    `model_family` -- the same family string smartctl itself already
+    resolved and put in the device's JSON. Cached per (model_family,
+    firmware_version)."""
+    key = (model_family or "", firmware_version or "")
+    cached = _attr_format_cache.get(key)
+    if cached is not None:
+        return cached
+
+    default_presets, by_family = _get_drivedb()
+    candidates = by_family.get(model_family or "")
+    override: Dict[int, str] = {}
+    if candidates:
+        if len(candidates) == 1:
+            override = candidates[0][1]
+        else:
+            fw = firmware_version or ""
+            matched = []
+            for fw_re, presets in candidates:
+                rx = _compile_regex_safe(fw_re) if fw_re else None
+                if rx and rx.fullmatch(fw):
+                    matched.append(presets)
+            # Ambiguous or no firmware match: fall back to drivedb.h's own
+            # first-match-wins order (list preserves file order).
+            override = matched[0] if len(matched) == 1 else candidates[0][1]
+
+    merged = dict(default_presets)
+    merged.update(override)
+    _attr_format_cache[key] = merged
+    return merged
+
+
+# --------------------------------------------------------------------------
 # SATA attribute table  (.4.1.9.1)
 # --------------------------------------------------------------------------
 
@@ -2496,6 +2723,21 @@ def _parse_raw_value(raw_a: dict) -> int:
     raw_str = str(raw_a.get("string") or "").strip()
     m = re.match(r'^(\d+)', raw_str)
     return int(m.group(1)) if m else int(raw_a.get("value", 0) or 0)
+
+
+# Some drives/vendors report odd name variants for well-known attribute ids
+# (e.g. "Power_On_Hours_and_Msec"); normalize those to the common name.
+_SATA_ATTR_NAME_OVERRIDE = {
+    9: (re.compile(r"^Power.?On.?Hours", re.IGNORECASE), "Power_On_Hours"),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _normalize_sata_attr_name(aid: int, name: str) -> str:
+    override = _SATA_ATTR_NAME_OVERRIDE.get(aid)
+    if override and override[0].match(name):
+        return override[1]
+    return name
 
 
 # Fallback when ata_smart_attributes lacks one of these ids: ATA Device
@@ -2508,7 +2750,8 @@ _SATA_ATTR_DEVSTAT_FALLBACK = {
 }
 
 
-def _parse_sata_attrs(raw: dict) -> List[dict]:
+def _parse_sata_attrs(raw: dict, attr_formats: Optional[Dict[int, str]] = None) -> List[dict]:
+    attr_formats = attr_formats or {}
     attrs_raw = (raw.get("ata_smart_attributes") or {}).get("table") or []
     result = []
     seen_ids = set()
@@ -2529,7 +2772,7 @@ def _parse_sata_attrs(raw: dict) -> List[dict]:
         seen_ids.add(aid)
         result.append({
             "id":          aid,
-            "name":        str(a.get("name", "")),
+            "name":        _normalize_sata_attr_name(aid, str(a.get("name", ""))),
             "flags_value": int(flags.get("value", 0) or 0),
             "attr_type":   1 if flags.get("prefailure") else 2,
             "attr_updated": 1 if flags.get("updated_online") else 2,
@@ -2539,6 +2782,7 @@ def _parse_sata_attrs(raw: dict) -> List[dict]:
             "raw_value":   _parse_raw_value(raw_a),
             "raw_string":  str(raw_a.get("string", "") or ""),
             "status":      status,
+            "format":      _attr_format_enum(attr_formats.get(aid, "")),
         })
 
     missing = {aid: names for aid, names in _SATA_ATTR_DEVSTAT_FALLBACK.items()
@@ -2564,6 +2808,7 @@ def _parse_sata_attrs(raw: dict) -> List[dict]:
                 "value":       0,
                 "worst":       0,
                 "thresh":      0,
+                "format":      _attr_format_enum(attr_formats.get(aid, "")),
                 "raw_value":   raw_value,
                 "raw_string":  str(raw_value),
                 "status":      -1,
@@ -2618,7 +2863,8 @@ def _guess_sata_wear(raw: dict) -> dict:
 
 def _add_sata_attrs(add, dev: dict, d_idx: int) -> int:
     T    = (4, 1, 9, 1)
-    rows = _parse_sata_attrs(dev["raw"])
+    attr_formats = _resolve_attr_formats(dev.get("model_family", ""), dev.get("firmware_version", ""))
+    rows = _parse_sata_attrs(dev["raw"], attr_formats)
     LOGGER.verbose("parsed sata attrs d_idx=%d (%d rows)", d_idx, len(rows))
     for a in rows:
         ai = a["id"]
@@ -2632,6 +2878,7 @@ def _add_sata_attrs(add, dev: dict, d_idx: int) -> int:
         add(T+(9,  d_idx, ai), *_counter64(a["raw_value"]))
         add(T+(10, d_idx, ai), *_string(a["raw_string"]))
         add(T+(11, d_idx, ai), *_integer(a["status"]))
+        add(T+(12, d_idx, ai), *_integer(a["format"]))
     return len(rows)
 
 

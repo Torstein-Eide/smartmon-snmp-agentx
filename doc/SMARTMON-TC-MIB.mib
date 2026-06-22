@@ -489,6 +489,145 @@ SmartmonAtaSmartAttrStatus ::= TEXTUAL-CONVENTION
         failedInPast(3)
     }
 
+SmartmonAtaSmartAttrFormat ::= TEXTUAL-CONVENTION
+    STATUS      current
+    DESCRIPTION
+        "Encoding of an ATA SMART attribute's raw value, resolved from
+         smartmontools' drivedb.h (the per-attribute '-v ID,FORMAT'
+         preset that applied when smartctl formatted
+         smartmonSataAttrRawString for this attribute, falling back to
+         drivedb.h's generic DEFAULT table when no vendor-specific
+         preset exists for this attribute id).
+         Source: atacmds.cpp, ata_format_attr_raw_value().
+
+         Each enumeration below documents the textual shape
+         smartmonSataAttrRawString takes for that format, with a real
+         example produced by smartctl's own formatting code, so a
+         client can parse smartmonSataAttrRawString without consulting
+         smartctl source.
+
+         The enumeration 'unknown(0)' is applicable when the format
+         could not be resolved (e.g. drivedb.h is unavailable on the
+         agent host).
+
+         The enumeration 'raw8(1)' indicates 6 independent 8-bit
+         counters, one per raw byte, space-separated, most significant
+         byte first: 'b5 b4 b3 b2 b1 b0'.
+         Example: '0 0 0 0 0 23'.
+
+         The enumeration 'raw16(2)' indicates 3 independent 16-bit
+         counters, space-separated, most significant word first:
+         'w2 w1 w0'.
+         Example: '0 0 12345'.
+
+         The enumeration 'raw48(3)' indicates a single plain decimal
+         integer (use smartmonSataAttrRawValue directly).
+         Example: '16972'.
+
+         The enumeration 'hex48(4)' indicates a single value formatted
+         as a 12-hex-digit '0x...' string (use smartmonSataAttrRawValue
+         directly; the hex text is cosmetic).
+         Example: '0x00fa2b9c1234'.
+
+         The enumeration 'raw56(5)' is as raw48(3) but assembled from a
+         56-bit field (use smartmonSataAttrRawValue directly).
+         Example: '16972'.
+
+         The enumeration 'hex56(6)' is as hex48(4) but a 14-hex-digit
+         56-bit field (use smartmonSataAttrRawValue directly).
+         Example: '0x00fa2b9c1234'.
+
+         The enumeration 'raw64(7)' is as raw48(3) but a full 64-bit
+         field (use smartmonSataAttrRawValue directly).
+         Example: '16972'.
+
+         The enumeration 'hex64(8)' is as hex48(4) but a 16-hex-digit
+         64-bit field (use smartmonSataAttrRawValue directly).
+         Example: '0x00fa2b9c1234'.
+
+         The enumeration 'raw16raw16(9)' indicates a primary 16-bit
+         value followed by an optional pair of 16-bit values in
+         parentheses when nonzero: 'w0' or 'w0 (w2 w1)'.
+         Example: '0 (12 5)'.
+
+         The enumeration 'raw16avg16(10)' indicates a primary 16-bit
+         value followed by an optional 16-bit average in parentheses
+         when nonzero: 'w0' or 'w0 (Average w1)'.
+         Example: '96 (Average 100)'.
+
+         The enumeration 'raw24raw8(11)' indicates a primary 24-bit
+         value followed by up to 3 optional 8-bit values in parentheses
+         when nonzero: 'low24' or 'low24 (b5 b4 b3)'.
+         Example: '16972 (1 0 0)'.
+
+         The enumeration 'raw24div24(12)' indicates two 24-bit values
+         separated by a slash: 'hi24/lo24'.
+         Example: '0/117361392'.
+
+         The enumeration 'raw24div32(13)' indicates a 24-bit value and
+         a 32-bit value separated by a slash: 'hi24/lo32'.
+         Example: '0/4294967295'.
+
+         The enumeration 'sec2hour(14)' indicates a raw seconds count
+         rendered as hours+minutes+seconds: 'Hh+MMm+SSs'.
+         Example: '16460h+33m+09s'.
+
+         The enumeration 'min2hour(15)' indicates a raw minutes count
+         rendered as hours+minutes, with an optional extra counter in
+         parentheses when nonzero: 'Hh+MMm' or 'Hh+MMm (w2)'.
+         Example: '16460h+33m'.
+
+         The enumeration 'halfmin2hour(16)' indicates a raw 30-second
+         tick count rendered as hours+minutes: 'Hh+MMm'.
+         Example: '16460h+33m'.
+
+         The enumeration 'msec24hour32(17)' indicates a 32-bit hours
+         count plus a 24-bit milliseconds count rendered as
+         hours+minutes+seconds.milliseconds: 'Hh+MMm+SS.mmms'.
+         Example: '16460h+33m+09.900s'.
+
+         The enumeration 'tempminmax(18)' indicates a current
+         temperature in degrees Celsius, with an optional Min/Max range
+         in parentheses when smartctl can detect a plausible one:
+         'T' or 'T (Min/Max lo/hi)'.
+         Example: '40 (Min/Max 22/53)'.
+
+         The enumeration 'temp10x(19)' indicates a temperature in
+         degrees Celsius encoded as ten times its value, rendered as a
+         fixed-point decimal (use smartmonSataAttrRawValue / 10
+         directly): 'X.Y'.
+         Example: '40.5'.
+
+         The enumeration 'other(20)' covers the remaining named format
+         aliases drivedb.h defines for specific attribute ids (e.g.
+         emergencyretractcyclect, loadunload, writeerrorcount,
+         detectedtacount) which render as a single plain value (use
+         smartmonSataAttrRawValue directly).
+         Example: '42'."
+    SYNTAX INTEGER {
+        unknown(0),
+        raw8(1),
+        raw16(2),
+        raw48(3),
+        hex48(4),
+        raw56(5),
+        hex56(6),
+        raw64(7),
+        hex64(8),
+        raw16raw16(9),
+        raw16avg16(10),
+        raw24raw8(11),
+        raw24div24(12),
+        raw24div32(13),
+        sec2hour(14),
+        min2hour(15),
+        halfmin2hour(16),
+        msec24hour32(17),
+        tempminmax(18),
+        temp10x(19),
+        other(20)
+    }
+
 SmartmonAtaFormFactor ::= TEXTUAL-CONVENTION
     STATUS      current
     DESCRIPTION

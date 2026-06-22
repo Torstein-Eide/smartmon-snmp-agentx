@@ -13,6 +13,7 @@ IMPORTS
     SmartmonHealthStatus, SmartmonAtaSelfTestType,
     SmartmonAtaSelfTestResult, SmartmonAtaSmartAttrType,
     SmartmonAtaSmartAttrUpdated, SmartmonAtaSmartAttrStatus,
+    SmartmonAtaSmartAttrFormat,
     SmartmonAtaVersion, SmartmonAtaMinorVersion, SmartmonAtaFormFactor,
     SmartmonSataVersion, SmartmonAtaDeviceState, SmartmonAtaApmLevel,
     SmartmonAtaLogAddress, SmartmonAtaDevStatPage, SmartmonAtaOfflineStatus,
@@ -1123,7 +1124,9 @@ smartmonSataAttrTable OBJECT-TYPE
     STATUS      current
     DESCRIPTION
         "ATA SMART attribute table.  One row per (device, attribute ID).
-         The attribute ID is the ATA vendor attribute number (1..255)."
+         The attribute ID is the ATA vendor attribute number (1..255).
+         smartmonSataAttrFormat indicates how to parse
+         smartmonSataAttrRawString for that row."
     ::= { smartmonSataObjects 9 }
 
 smartmonSataAttrEntry OBJECT-TYPE
@@ -1145,7 +1148,8 @@ SmartmonSataAttrEntry ::= SEQUENCE {
     smartmonSataAttrThreshold   Unsigned32,
     smartmonSataAttrRawValue    CounterBasedGauge64,
     smartmonSataAttrRawString   DisplayString,
-    smartmonSataAttrStatus      SmartmonAtaSmartAttrStatus
+    smartmonSataAttrStatus      SmartmonAtaSmartAttrStatus,
+    smartmonSataAttrFormat      SmartmonAtaSmartAttrFormat
 }
 
 smartmonSataAttrId OBJECT-TYPE
@@ -1266,6 +1270,20 @@ smartmonSataAttrStatus OBJECT-TYPE
         "Enumerated failure status derived from value, worst, and
          threshold."
     ::= { smartmonSataAttrEntry 11 }
+
+smartmonSataAttrFormat OBJECT-TYPE
+    SYNTAX      SmartmonAtaSmartAttrFormat
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Encoding of smartmonSataAttrRawValue/smartmonSataAttrRawString for
+         this attribute, resolved from smartmontools' drivedb.h (vendor
+         preset if one applies to this drive model and attribute id,
+         otherwise drivedb.h's generic DEFAULT table).  See
+         SmartmonAtaSmartAttrFormat for the textual shape
+         smartmonSataAttrRawString takes for each format value, with
+         worked examples."
+    ::= { smartmonSataAttrEntry 12 }
 
 -- --------------------------------------------------------------------------
 -- SATA ATA error log table  (.10 RowCount, .11 LastChange, .12 Table)
@@ -2455,7 +2473,8 @@ smartmonSataAttrGroup OBJECT-GROUP
         smartmonSataAttrThreshold,
         smartmonSataAttrRawValue,
         smartmonSataAttrRawString,
-        smartmonSataAttrStatus
+        smartmonSataAttrStatus,
+        smartmonSataAttrFormat
     }
     STATUS current
     DESCRIPTION "ATA SMART attribute objects."
