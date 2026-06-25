@@ -10,7 +10,9 @@
 #     smartmon-agentx-py-test
 #
 # The image:
-#   1. Adds net-snmp + python3-netsnmpagent on top of the docker-build base
+#   1. Adds net-snmp + python3-netsnmpagent + smartmontools (for drivedb.h, the
+#      base docker-build image is a build toolchain and ships neither) on top
+#      of the docker-build base
 #   2. Copies MIB files into /usr/share/snmp/mibs/ for human-readable snmpwalk
 #   3. Smoke-tests that the script responds to --help
 #   4. On docker run: executes ci/run_integration_test.py with ci/integration_test.yaml
@@ -27,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         snmpd \
         snmptrapd \
         snmp \
+        smartmontools \
         python3 \
         python3-netsnmpagent \
         python3-yaml \
