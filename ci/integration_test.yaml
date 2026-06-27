@@ -909,6 +909,37 @@ stability_checks:
         new_value: 3001
         expected_change_oid: ".4.1.2.3.1.4.{sata2}.11.255"
 
+  # ── Common MIB: device metadata changes ────────────────────────────────
+  # Both mutations affect smartmonDeviceMetadataTable, so only
+  # smartmonDeviceTableLastChange (.2.1.2.0) must advance;
+  # smartmonDeviceUdevTableLastChange (.2.1.8.0) must stay stable.
+
+  - name: "Common LastChange: device path rename"
+    fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
+    wait_seconds: 0.1
+    walk: "common"
+    last_change_oids:
+      - ".2.1.2.0"    # smartmonDeviceTableLastChange
+      - ".2.1.8.0"    # smartmonDeviceUdevTableLastChange (must stay stable)
+    mutations:
+      - label: "device.name /dev/sdh → /dev/sdk → DeviceMetadataTable"
+        json_path: "device.name"
+        new_value: "/dev/sdk"
+        expected_change_oid: ".2.1.2.0"
+
+  - name: "Common LastChange: firmware version change"
+    fixture: "smartd-json.WDC_WD140EFGX_68B0GN0-SELFTESTS.ata.json"
+    wait_seconds: 0.1
+    walk: "common"
+    last_change_oids:
+      - ".2.1.2.0"    # smartmonDeviceTableLastChange
+      - ".2.1.8.0"    # smartmonDeviceUdevTableLastChange (must stay stable)
+    mutations:
+      - label: "firmware_version MGNTN10 → MGNTN11 → DeviceMetadataTable"
+        json_path: "firmware_version"
+        new_value: "MGNTN11"
+        expected_change_oid: ".2.1.2.0"
+
 # ---------------------------------------------------------------------------
 # Notification tests (SNMP trap delivery)
 # ---------------------------------------------------------------------------
