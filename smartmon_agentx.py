@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -3030,6 +3030,14 @@ def _add_sata_errorcmd(add, dev: dict, d_idx: int) -> int:
 _SATA_ST_TYPE = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 9: 9}   # map raw type value
 
 
+def _sata_selftest_result(raw_res: int) -> int:
+    """Map a self-test log status byte to SmartmonAtaSelfTestResult.  The
+    result is encoded in the high nibble (status.value >> 4); the low nibble
+    is the percent-remaining/10 for in-progress entries (status.value 0xf0-0xf9)."""
+    nibble = (raw_res >> 4) & 0xF
+    return (nibble + 1) if 0 <= nibble <= 8 else (15 if nibble == 15 else 0)
+
+
 def _sata_selftest_table(raw: dict) -> list:
     """smartctl -x reports the extended self-test log; fall back to standard
     (matches the C++ daemon).  Returns the chosen table (possibly empty)."""
@@ -3049,7 +3057,7 @@ def _add_sata_selftest(add, dev: dict, d_idx: int) -> int:
         status = e.get("status") or {}
         st_val  = int((e.get("type") or {}).get("value", 0) or 0)
         raw_res = int(status.get("value", 0) or 0)
-        result  = (raw_res + 1) if 0 <= raw_res <= 8 else (15 if raw_res == 15 else 0)
+        result  = _sata_selftest_result(raw_res)
         add(T+(2, d_idx, si), *_integer(_SATA_ST_TYPE.get(st_val, 0)))
         add(T+(3, d_idx, si), *_integer(result))
         add(T+(4, d_idx, si), *_truthvalue(bool(status.get("passed", False))))
@@ -3793,7 +3801,7 @@ def _sata_failed_selftests(raw: dict) -> List[dict]:
             continue
         st_val  = int((e.get("type") or {}).get("value", 0) or 0)
         raw_res = int(status.get("value", 0) or 0)
-        result  = (raw_res + 1) if 0 <= raw_res <= 8 else (15 if raw_res == 15 else 0)
+        result  = _sata_selftest_result(raw_res)
         out.append({
             "entry":  i + 1,
             "type":   _SATA_ST_TYPE.get(st_val, 0),

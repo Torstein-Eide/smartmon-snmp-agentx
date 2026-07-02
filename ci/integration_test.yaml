@@ -409,7 +409,7 @@ sections:
       - {label: "entry[2] col6 powerOnHoursAtTest = 4100", col: 6, inst: 2, expected: "Counter64: 4100"}
       - {label: "entry[2] col7 lbaFirstError = 0",         col: 7, inst: 2, expected: "Counter64: 0"}
       - {label: "entry[3] col2 testNumber = 1 (Short)",    col: 2, inst: 3, expected: "INTEGER: 1"}
-      - {label: "entry[3] col3 result = 0 (failed)",       col: 3, inst: 3, expected: "INTEGER: 0"}
+      - {label: "entry[3] col3 result = 8 (completedReadFailure)", col: 3, inst: 3, expected: "INTEGER: 8"}
       - {label: "entry[3] col4 passed = 2 (false)",        col: 4, inst: 3, expected: "INTEGER: 2"}
       - {label: "entry[3] col5 remaining = 0%",            col: 5, inst: 3, expected: "Gauge32: 0"}
       - {label: "entry[3] col6 powerOnHoursAtTest = 3800", col: 6, inst: 3, expected: "Counter64: 3800"}
