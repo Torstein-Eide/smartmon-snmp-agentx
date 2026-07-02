@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -2749,6 +2749,25 @@ _SATA_ATTR_DEVSTAT_FALLBACK = {
     242: ("Total_LBAs_Read",     "Logical Sectors Read"),
 }
 
+# ATA device statistics log page 3 ("Rotating Media Statistics") defines
+# these two counters' hour count in the low-order 2 bytes only; some
+# firmware (e.g. Seagate ST4000LM024) leaves the remaining reserved bytes
+# non-zero, producing nonsensical multi-billion-hour raw values. Only mask
+# when the entry's flags mark it "normalized" (flags.value == 224, i.e. the
+# quirky-firmware signature seen in practice) so a drive that legitimately
+# reports a wider raw counter under the same name isn't truncated.
+_DEVSTAT_MASK16_NAMES = {"Head Flying Hours", "Spindle Motor Power-on Hours"}
+_DEVSTAT_MASK16_FLAGS = 224
+
+
+def _devstat_raw_value(entry: dict) -> int:
+    v = int(entry.get("value", 0) or 0)
+    flags = entry.get("flags") or {}
+    if (str(entry.get("name") or "") in _DEVSTAT_MASK16_NAMES
+            and int(flags.get("value", 0) or 0) == _DEVSTAT_MASK16_FLAGS):
+        v &= 0xFFFF
+    return v
+
 
 def _parse_sata_attrs(raw: dict, attr_formats: Optional[Dict[int, str]] = None) -> List[dict]:
     attr_formats = attr_formats or {}
@@ -2794,7 +2813,7 @@ def _parse_sata_attrs(raw: dict, attr_formats: Optional[Dict[int, str]] = None) 
             for entry in page.get("table") or []:
                 name = entry.get("name")
                 if name in wanted_names and name not in devstat_values:
-                    devstat_values[name] = int(entry.get("value", 0) or 0)
+                    devstat_values[name] = _devstat_raw_value(entry)
         for aid, (attr_name, stat_name) in missing.items():
             if stat_name not in devstat_values:
                 continue
@@ -3199,7 +3218,7 @@ def _add_sata_devstat(add, dev: dict, d_idx: int) -> int:
         for entry in (page.get("table") or []):
             offset = int(entry.get("offset", 0) or 0)
             flags  = entry.get("flags") or {}
-            raw_v  = int(entry.get("value", 0) or 0)
+            raw_v  = _devstat_raw_value(entry)
             fval = int(flags.get("value", 0) or 0)
             add(T+(3, d_idx, page_num, offset), *_string(page_name))
             add(T+(4, d_idx, page_num, offset), *_string(str(entry.get("name") or "")))
