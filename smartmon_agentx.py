@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -680,6 +680,13 @@ def _probe_power_state(spec: dict) -> Tuple[int, bool]:
     is_asleep) without waking a sleeping drive.  Only meaningful for specs in
     _STANDBY_CAPABLE_SUFFIXES; callers must not call this for nvme."""
     proc = _run_smartctl(["-n", "idle", "-i", "-j"] + spec["dev_args"] + [spec["dev"]])
+    if _looks_like_perm_failure(proc):
+        # sudo rejected the command (e.g. a sudoers grant that doesn't cover
+        # this exact invocation) rather than the drive being unresponsive —
+        # must not be reported as asleep, or the wake-inducing poll below
+        # gets skipped forever and the device silently goes stale.
+        _warn_sudoers_once()
+        return POWER_STATE_UNKNOWN, False
     try:
         data = json.loads(proc.stdout or "")
     except json.JSONDecodeError:
