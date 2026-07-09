@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.2.2"
+VERSION = "0.2.4"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -676,16 +676,20 @@ def _log_power_state_change(spec: dict, power_state: int) -> None:
 
 
 def _probe_power_state(spec: dict) -> Tuple[int, bool]:
-    """Cheap `smartctl -n standby -i -j` probe: returns (power_state_enum,
+    """Cheap `smartctl -n idle -i -j` probe: returns (power_state_enum,
     is_asleep) without waking a sleeping drive.  Only meaningful for specs in
     _STANDBY_CAPABLE_SUFFIXES; callers must not call this for nvme."""
-    proc = _run_smartctl(["-n", "standby", "-i", "-j"] + spec["dev_args"] + [spec["dev"]])
+    proc = _run_smartctl(["-n", "idle", "-i", "-j"] + spec["dev_args"] + [spec["dev"]])
     try:
         data = json.loads(proc.stdout or "")
     except json.JSONDecodeError:
         # No parseable JSON at all (timeout/hung bus) — true ATA SLEEP mode
         # leaves the device unresponsive, so treat a hard failure as asleep.
         return POWER_STATE_SLEEPING, True
+    # `-n idle` exits 2 ("do not wake") for IDLE_A/B/C, STANDBY_Y/Z, and SLEEP
+    # alike, so this bit is the "skip the wake-inducing poll" signal, not a
+    # literal is-asleep flag. The actual tier is decoded from power_mode
+    # below whenever ATA reports it (e.g. ata_value 255 == "ACTIVE or IDLE").
     asleep = bool(proc.returncode & 0x02)
     pm = data.get("power_mode")  # ATA only: {"ata_value": N, "name": "IDLE_B"}
     if isinstance(pm, dict) and "ata_value" in pm:
