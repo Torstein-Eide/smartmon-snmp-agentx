@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 __version__ = VERSION
 
 VERBOSE = 15
@@ -64,6 +64,14 @@ BASE_OID  = (1, 3, 6, 1, 4, 1, 65891, 1, 1)
 # Default TTL = worker poll interval (see _collector_loop).  30s balances trap /
 # data-refresh latency against idle cost; CI overrides to 0 for fast traps.
 CACHE_TTL = 30
+
+# respect_standby normally republishes a sleeping drive's last cached payload
+# forever rather than waking it. Force one real poll if a drive has gone this
+# long without one, so a genuinely dead/hung drive (vs. one that's merely
+# power-saving) is still noticed within about a day. 23h45m rather than a
+# round 24h so the forced wake drifts earlier across days instead of landing
+# on the same disk-busy hour every time.
+MAX_ASLEEP_POLL_AGE = 23 * 3600 + 45 * 60
 
 # net-snmp's table_dataset mishandles Unsigned32 row indexes >= 2^31 during
 # GETNEXT: a walk stops after the first such row. Keep every table index
@@ -721,20 +729,29 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
     successfully collected payload is republished instead (with a freshly
     probed power state stamped on it) so the device's OIDs don't disappear.
     If there is no cached payload yet (first sighting of this drive), the
-    wake-inducing pull proceeds anyway so the device gets an initial reading."""
+    wake-inducing pull proceeds anyway so the device gets an initial reading.
+    A drive that has gone without a real poll for MAX_ASLEEP_POLL_AGE is
+    woken regardless, so a hung/dead drive masquerading as "asleep" forever
+    doesn't go unnoticed and SMART data doesn't go arbitrarily stale."""
     power_state = POWER_STATE_UNKNOWN
     if _st.respect_standby and spec["suffix"] in _STANDBY_CAPABLE_SUFFIXES:
         power_state, asleep = _probe_power_state(spec)
         _log_power_state_change(spec, power_state)
         if asleep:
             cached = _st.last_raw.get(spec["key"])
-            if cached is not None:
+            last_poll = _st.last_wake_poll.get(spec["key"])
+            stale = last_poll is None or (time.monotonic() - last_poll) >= MAX_ASLEEP_POLL_AGE
+            if cached is not None and not stale:
                 LOGGER.verbose("disk %s is asleep — reusing last poll, no wake", spec["dev"])
                 raw = dict(cached)
                 raw["_power_state"] = power_state
                 return spec["key"], raw
-            LOGGER.verbose("disk %s is asleep with no cached data yet — "
-                            "waking it for an initial read", spec["dev"])
+            if cached is not None:
+                LOGGER.info("disk %s has been asleep for over %.1fh — forcing a wake "
+                            "poll", spec["dev"], MAX_ASLEEP_POLL_AGE / 3600)
+            else:
+                LOGGER.verbose("disk %s is asleep with no cached data yet — "
+                                "waking it for an initial read", spec["dev"])
 
     _t0 = time.monotonic()
     proc = _run_smartctl(["-x", "-j"] + spec["dev_args"] + [spec["dev"]])
@@ -768,6 +785,7 @@ def _collect_one(spec: dict) -> Optional[Tuple[str, dict]]:
         raw["_nvme_link_info"] = _nvme_link_info(spec["dev"])
     LOGGER.verbose("collected %s (type=%s) in %.3fs", spec["dev"], spec["dtype"], elapsed)
     _st.last_raw[spec["key"]] = raw
+    _st.last_wake_poll[spec["key"]] = time.monotonic()
     return spec["key"], raw
 
 
@@ -1197,6 +1215,7 @@ class _State:
         self.respect_standby       = True
         self.last_raw: dict        = {}
         self.last_power_state: dict = {}   # spec["key"] -> last logged power-state enum
+        self.last_wake_poll: dict  = {}    # spec["key"] -> monotonic time of last real -x -j poll
         # File mode: main-device path -> sibling *.farm.ata.json path whose
         # seagate_farm_log merges into that device (see _discover_devices).
         self.farm_sidecars: dict   = {}
